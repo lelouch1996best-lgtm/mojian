@@ -20,6 +20,7 @@ Next.js 14 (App Router) + Tailwind 的 AI 剧本开发工具：故事扩写 → 
 
 ## 运行
 - dev：`npm run dev`（本机 3000 常被占用，可 `-p 3300`）。
+- **依赖坑**：`package.json` 中 `next` 版本号曾误写为 `^9.3.3`（Next 9），与 React 18 peer dependency 冲突导致 `npm install` ERESOLVE 报错。2026-07-03 已修正为 `^14.2.5`。若再次遇到同类报错，先检查 next 版本号是否被改回。
 - **⚠️ 热更新保护规则**：`next build` 会在 `.next/` 生成 production 产物，与 `next dev` 的 development 产物互不兼容。若 `next build` 与 dev server 同时存在，dev server 会被污染导致 `Cannot find module` 错误。
   - `package.json` 已配置 `predev` / `prebuild` 自动清理 `.next/`。
   - **Agent 规则**：完成 `next build` 验证后，必须立即 `rm -rf .next` 清理，避免污染用户正在运行的 dev server。
