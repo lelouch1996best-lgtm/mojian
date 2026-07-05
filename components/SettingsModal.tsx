@@ -38,7 +38,6 @@ import {
 import {
   getCosSettings,
   saveCosSettings,
-  isCosConfigured,
 } from "@/lib/cos-client";
 import type { CosSettings, ImageGenSettings, LLMSettings, VideoGenSettings } from "@/lib/types";
 
@@ -163,9 +162,10 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
 
     // COS
     const cos = await getCosSettings();
+    const cosCfg = !!(cos?.secretId && cos?.secretKey && cos?.bucket && cos?.region);
     setCosSettings(cos ?? { secretId: "", secretKey: "", bucket: "", region: "ap-guangzhou", customDomain: "" });
-    setCosPanelOpen(await isCosConfigured());
-    setCosConfigured(await isCosConfigured());
+    setCosPanelOpen(cosCfg);
+    setCosConfigured(cosCfg);
     setCosSaved(false);
     setCosTestResult(null);
     })();

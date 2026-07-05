@@ -7,10 +7,12 @@ import { streamLLM, callLLM } from "@/lib/llm-client";
 import {
   expansionMessages,
   storyboardMessages,
+  extractCharacterMessages,
 } from "@/lib/prompts";
 import { worldSettingsToText, getWorldSettings } from "@/lib/world-settings";
-import { extractShots, toShot } from "@/lib/utils";
-import type { Shot, WorldSettings } from "@/lib/types";
+import { characterSettingsToText, getCharacterSettings } from "@/lib/character-settings";
+import { extractShots, toShot, extractCharacters, toCharacterProfile } from "@/lib/utils";
+import type { Shot, WorldSettings, CharacterProfile } from "@/lib/types";
 
 interface ContentExpansionProps {
   originalContent: string;
@@ -19,10 +21,14 @@ interface ContentExpansionProps {
   previousContext?: string;
   /** 系列级世界设定（优先使用，有值时不用全局） */
   worldSettings?: WorldSettings | null;
+  /** 系列级人物设定（优先使用，有值时不用全局） */
+  characterSettings?: CharacterProfile[] | null;
   onOriginalChange: (v: string) => void;
   onExpandedChange: (v: string) => void;
   onShotsGenerated: (shots: Shot[]) => void;
   onEnterStep2: () => void;
+  /** 提取人物设定后的回调，返回合并结果用于 UI 提示 */
+  onCharactersExtracted?: (characters: CharacterProfile[]) => Promise<{ added: number; overwritten: number; total: number; skipped: number }>;
 }
 
 export default function ContentExpansion({
@@ -30,22 +36,38 @@ export default function ContentExpansion({
   expandedContent,
   previousContext,
   worldSettings,
+  characterSettings,
   onOriginalChange,
   onExpandedChange,
   onShotsGenerated,
   onEnterStep2,
+  onCharactersExtracted,
 }: ContentExpansionProps) {
   const [expanding, setExpanding] = useState(false);
   const [generatingBoard, setGeneratingBoard] = useState(false);
+  const [extractingCharacters, setExtractingCharacters] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [globalWorldText, setGlobalWorldText] = useState("");
   const worldText = worldSettings ? worldSettingsToText(worldSettings) : globalWorldText;
+  const [globalCharacterText, setGlobalCharacterText] = useState("");
+  const characterText = characterSettings
+    ? characterSettingsToText(characterSettings)
+    : globalCharacterText;
 
   useEffect(() => {
     if (!worldSettings) {
       getWorldSettings().then((ws) => setGlobalWorldText(worldSettingsToText(ws)));
     }
   }, [worldSettings]);
+
+  useEffect(() => {
+    if (!characterSettings) {
+      getCharacterSettings().then((cs) =>
+        setGlobalCharacterText(characterSettingsToText(cs))
+      );
+    }
+  }, [characterSettings]);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleExpand() {
@@ -60,7 +82,7 @@ export default function ContentExpansion({
     abortRef.current = controller;
     try {
       let acc = "";
-      for await (const chunk of streamLLM(expansionMessages(originalContent, worldText, previousContext), {
+      for await (const chunk of streamLLM(expansionMessages(originalContent, worldText, characterText, previousContext), {
         signal: controller.signal,
         temperature: 0.8,
       })) {
@@ -90,7 +112,7 @@ export default function ContentExpansion({
     setError(null);
     setGeneratingBoard(true);
     try {
-      const raw = await callLLM(storyboardMessages(content, worldText), {
+      const raw = await callLLM(storyboardMessages(content, worldText, characterText), {
         responseFormat: "json_object",
         temperature: 0.5,
       });
@@ -106,6 +128,53 @@ export default function ContentExpansion({
       setError((e as Error).message);
     } finally {
       setGeneratingBoard(false);
+    }
+  }
+
+  async function handleExtractCharacters() {
+    const content = expandedContent.trim();
+    if (!content) {
+      setError("请先扩写内容");
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setExtractingCharacters(true);
+    try {
+      const raw = await callLLM(extractCharacterMessages(content), {
+        responseFormat: "json_object",
+        temperature: 0.4,
+      });
+      const rawChars = extractCharacters(raw);
+      if (rawChars.length === 0) {
+        setError("未能提取出人物，请重试或调整扩写内容");
+        return;
+      }
+      const characters = rawChars
+        .map(toCharacterProfile)
+        .filter((c) => c.name.trim());
+      if (characters.length === 0) {
+        setError("未能提取出有效人物");
+        return;
+      }
+      if (onCharactersExtracted) {
+        const result = await onCharactersExtracted(characters);
+        const parts: string[] = [];
+        if (result.added > 0) parts.push(`新增 ${result.added} 个`);
+        if (result.overwritten > 0) parts.push(`覆盖 ${result.overwritten} 个`);
+        if (result.skipped > 0) parts.push(`跳过 ${result.skipped} 个`);
+        if (parts.length > 0) {
+          setNotice(`人物设定已更新：${parts.join("，")}（共 ${result.total} 条记录）`);
+        } else {
+          setNotice(`提取了 ${characters.length} 个人物，但全部已存在，未重复添加`);
+        }
+      } else {
+        setNotice(`已提取 ${characters.length} 个人物设定`);
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setExtractingCharacters(false);
     }
   }
 
@@ -153,6 +222,14 @@ export default function ContentExpansion({
         />
         <div className="mt-2 flex items-center gap-2">
           <Button
+            variant="ghost"
+            onClick={handleExtractCharacters}
+            loading={extractingCharacters}
+            disabled={expanding || !expandedContent.trim()}
+          >
+            提取人物设定
+          </Button>
+          <Button
             variant="secondary"
             onClick={handleGenerateStoryboard}
             loading={generatingBoard}
@@ -169,6 +246,12 @@ export default function ContentExpansion({
       {error && (
         <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {notice}
         </div>
       )}
     </div>

@@ -22,15 +22,16 @@ export function getDb(): Database.Database {
   // 建表
   db.exec(`
     CREATE TABLE IF NOT EXISTS series (
-      id             TEXT PRIMARY KEY,
-      title          TEXT NOT NULL DEFAULT '',
-      description    TEXT NOT NULL DEFAULT '',
-      order_num      INTEGER NOT NULL DEFAULT 0,
-      world_settings TEXT NOT NULL DEFAULT '{}',
-      style_settings TEXT NOT NULL DEFAULT '{}',
-      episode_order  TEXT NOT NULL DEFAULT '[]',
-      created_at     INTEGER NOT NULL,
-      updated_at     INTEGER NOT NULL
+      id                TEXT PRIMARY KEY,
+      title             TEXT NOT NULL DEFAULT '',
+      description       TEXT NOT NULL DEFAULT '',
+      order_num         INTEGER NOT NULL DEFAULT 0,
+      world_settings    TEXT NOT NULL DEFAULT '{}',
+      character_settings TEXT NOT NULL DEFAULT '[]',
+      style_settings    TEXT NOT NULL DEFAULT '{}',
+      episode_order     TEXT NOT NULL DEFAULT '[]',
+      created_at        INTEGER NOT NULL,
+      updated_at        INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS episodes (
@@ -54,6 +55,13 @@ export function getDb(): Database.Database {
       updated_at INTEGER NOT NULL
     );
   `);
+
+  // 迁移：为旧库的 series 表补 character_settings 列（CREATE TABLE IF NOT EXISTS 不会改已有表结构）
+  try {
+    db.prepare("SELECT character_settings FROM series LIMIT 1").get();
+  } catch {
+    db.exec("ALTER TABLE series ADD COLUMN character_settings TEXT NOT NULL DEFAULT '[]'");
+  }
 
   return db;
 }

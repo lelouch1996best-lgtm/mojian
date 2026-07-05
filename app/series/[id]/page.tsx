@@ -3,15 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import EpisodeList from "@/components/EpisodeList";
-import WorldSettingsModal from "@/components/WorldSettingsModal";
-import StyleSettingsModal from "@/components/StyleSettingsModal";
 import Button from "@/components/ui/Button";
 import { getSeries, saveSeries, deleteEpisode, getEpisodesBySeries, saveEpisode } from "@/lib/storage";
 import { emptyEpisode } from "@/lib/utils";
 import { getSettings } from "@/lib/llm-client";
-import { getWorldSettings } from "@/lib/world-settings";
-import { getStyleSettings } from "@/lib/style-settings";
-import type { Episode, Series, WorldSettings, StyleSettings } from "@/lib/types";
+import type { Episode, Series } from "@/lib/types";
 
 export default function SeriesPage() {
   const router = useRouter();
@@ -20,8 +16,6 @@ export default function SeriesPage() {
 
   const [series, setSeries] = useState<Series | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
-  const [worldSettingsOpen, setWorldSettingsOpen] = useState(false);
-  const [styleSettingsOpen, setStyleSettingsOpen] = useState(false);
   const [titleEditing, setTitleEditing] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [notFound, setNotFound] = useState(false);
@@ -81,20 +75,6 @@ export default function SeriesPage() {
     await saveSeries(updated);
     setSeries(updated);
     setEpisodes((prev) => prev.filter((ep) => ep.id !== epId));
-  }
-
-  function handleWorldSettingsSave(ws: WorldSettings) {
-    if (!series) return;
-    const updated = { ...series, worldSettings: ws };
-    saveSeries(updated);
-    setSeries(updated);
-  }
-
-  function handleStyleSettingsSave(ss: StyleSettings) {
-    if (!series) return;
-    const updated = { ...series, styleSettings: ss };
-    saveSeries(updated);
-    setSeries(updated);
   }
 
   if (notFound) {
@@ -164,7 +144,7 @@ export default function SeriesPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="md" onClick={() => setWorldSettingsOpen(true)}>
+          <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/world-settings`)}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.8" />
               <ellipse cx="12" cy="12" rx="4" ry="10" stroke="currentColor" strokeWidth="1.8" />
@@ -172,7 +152,19 @@ export default function SeriesPage() {
             </svg>
             世界设定
           </Button>
-          <Button variant="ghost" size="md" onClick={() => setStyleSettingsOpen(true)}>
+          <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/characters`)}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.8" />
+              <path
+                d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+            人物设定
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/style-settings`)}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
               <path
                 d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c3.31 0 6-2.69 6-6 0-4.97-4.5-9-10-9z"
@@ -199,20 +191,6 @@ export default function SeriesPage() {
       ) : (
         <div className="py-20 text-center text-slate-400">加载中…</div>
       )}
-
-      <WorldSettingsModal
-        open={worldSettingsOpen}
-        onClose={() => setWorldSettingsOpen(false)}
-        initialSettings={series.worldSettings}
-        onSave={handleWorldSettingsSave}
-      />
-
-      <StyleSettingsModal
-        open={styleSettingsOpen}
-        onClose={() => setStyleSettingsOpen(false)}
-        initialSettings={series.styleSettings}
-        onSave={handleStyleSettingsSave}
-      />
     </main>
   );
 }

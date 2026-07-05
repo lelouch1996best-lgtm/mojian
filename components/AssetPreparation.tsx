@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
 import EditableCell from "./EditableCell";
@@ -11,13 +11,15 @@ import { generateImage, getImageSettings } from "@/lib/image-client";
 import { assetMessages } from "@/lib/prompts";
 import { getCosSettings, isCosConfigured } from "@/lib/cos-client";
 import { getActiveStyle, getAssetTemplate, styleToText } from "@/lib/style-settings";
+import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
 import {
   extractAllTags,
   extractAssets,
   normalizeAssetType,
   ASSET_TYPE_LABELS,
+  uuid,
 } from "@/lib/utils";
-import type { Asset, AssetType, Episode, StyleSettings } from "@/lib/types";
+import type { Asset, AssetStatus, AssetType, CharacterProfile, Episode, StyleSettings } from "@/lib/types";
 
 interface AssetPreparationProps {
   episode: Episode;
@@ -26,6 +28,8 @@ interface AssetPreparationProps {
   onBackToStep2: () => void;
   /** 系列级漫剧风格设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
+  /** 系列级人物设定（优先使用，不传则用全局） */
+  characterSettings?: CharacterProfile[] | null;
 }
 
 const TYPE_OPTIONS: { value: AssetType; label: string }[] = [
@@ -46,6 +50,7 @@ export default function AssetPreparation({
   onReplaceAssets,
   onBackToStep2,
   seriesStyleSettings,
+  characterSettings,
 }: AssetPreparationProps) {
   const [generating, setGenerating] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
@@ -61,12 +66,55 @@ export default function AssetPreparation({
   const [cosConfigured, setCosConfigured] = useState(false);
   useEffect(() => { isCosConfigured().then(setCosConfigured); }, []);
 
-  // 当前所有镜头里的 @标签@（去重，按首次出现顺序）
+  // 当前所有镜头里的 @标签（去重，按首次出现顺序）
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
 
   // 图片 API 是否已配置
   const [imageConfigured, setImageConfigured] = useState(false);
   useEffect(() => { getImageSettings().then((s) => setImageConfigured(!!s?.apiKey)); }, []);
+
+  // 人物设定文本（系列级优先，否则回退全局）
+  const [globalCharacterText, setGlobalCharacterText] = useState("");
+  const characterText = characterSettings
+    ? characterSettingsToText(characterSettings)
+    : globalCharacterText;
+  useEffect(() => {
+    if (!characterSettings) {
+      getCharacterSettings().then((cs) =>
+        setGlobalCharacterText(characterSettingsToText(cs))
+      );
+    }
+  }, [characterSettings]);
+
+  // 自动预填：进入 Step3 时，若有人物设定且尚无资产，自动预填人物资产卡片
+  const didPrefill = useRef(false);
+  useEffect(() => {
+    if (didPrefill.current) return;
+    const chars = getLatestVersions(characterSettings ?? []);
+    if (chars.length === 0) return;
+    if (episode.assets.length > 0) return;
+    didPrefill.current = true;
+    const prefilled: Asset[] = chars
+      .filter((c) => c.name.trim())
+      .map((c) => {
+        const descParts: string[] = [];
+        if (c.personality.trim()) descParts.push(`性格：${c.personality.trim()}`);
+        if (c.appearance.trim()) descParts.push(`外貌：${c.appearance.trim()}`);
+        return {
+          id: uuid(),
+          name: c.name.trim(),
+          type: "character" as AssetType,
+          description: descParts.join("；"),
+          imagePrompt: c.appearance.trim(),
+          imageUrl: c.imageUrl ?? "",
+          status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
+        };
+      });
+    if (prefilled.length > 0) {
+      onReplaceAssets(prefilled);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [characterSettings, episode.assets.length]);
 
   // 已有资产按 name 索引，判断哪些标签还没建资产
   const existingNames = useMemo(
@@ -85,7 +133,7 @@ export default function AssetPreparation({
     setError(null);
     try {
       const styleText = styleToText(await getActiveStyle(seriesStyleSettings));
-      const raw = await callLLM(assetMessages(tags, episode.expandedContent, styleText), {
+      const raw = await callLLM(assetMessages(tags, episode.expandedContent, styleText, characterText), {
         responseFormat: "json_object",
         temperature: 0.5,
       });
@@ -94,20 +142,26 @@ export default function AssetPreparation({
         setError("未能解析出资产，请重试");
         return;
       }
-      // 保留已有的 imageUrl / status，按 name 匹配
+      // 保留已有的 imageUrl / status，按 name 匹配；同时匹配人物设定中的图片
+      const charImageByName = new Map<string, string>();
+      for (const c of getLatestVersions(characterSettings ?? [])) {
+        if (c.imageUrl) charImageByName.set(c.name.trim(), c.imageUrl);
+      }
       const prevByName = new Map(episode.assets.map((a) => [a.name, a]));
       const next: Asset[] = rawAssets
         .filter((r) => r.name)
         .map((r) => {
           const prev = prevByName.get(r.name!);
+          const charImage = charImageByName.get(r.name!.trim());
+          const imageUrl = prev?.imageUrl ?? charImage ?? "";
           return {
             id: prev?.id ?? crypto.randomUUID(),
             name: r.name!,
             type: normalizeAssetType(r.type),
             description: r.description ?? "",
             imagePrompt: r.imagePrompt ?? "",
-            imageUrl: prev?.imageUrl ?? "",
-            status: prev?.status ?? "pending",
+            imageUrl,
+            status: imageUrl ? "ready" : (prev?.status ?? "pending"),
           };
         });
       onReplaceAssets(next);
@@ -163,7 +217,7 @@ export default function AssetPreparation({
   /** 将 Seedream 生成的图片 URL 转存到 COS（24h 过期保护） */
   async function transferImageToCos(asset: Asset, sourceUrl: string) {
     if (!cosConfigured) return;
-    const cosSettings = getCosSettings();
+    const cosSettings = await getCosSettings();
     if (!cosSettings) return;
 
     try {
@@ -214,7 +268,7 @@ export default function AssetPreparation({
       setError("未配置 COS 存储，请先在设置中配置腾讯云 COS");
       return;
     }
-    const cosSettings = getCosSettings();
+    const cosSettings = await getCosSettings();
     if (!cosSettings) {
       setError("COS 设置读取失败");
       return;
@@ -360,7 +414,7 @@ export default function AssetPreparation({
         <p className="mb-1 font-medium text-slate-700">第三步 · 资产准备</p>
         <p>
           系统已从第二步的分镜画面描述中识别出以下{" "}
-          <span className="font-medium text-amber-700">@标签@</span>。点击「一键生成资产信息」后，AI
+          <span className="font-medium text-amber-700">@标签</span>。点击「一键生成资产信息」后，AI
           会为每个标签分类（人物/场景/物品）并生成用于图片生成的中文提示词。随后可对每个资产生成参考图片（图片 API 待接入）。
         </p>
       </div>

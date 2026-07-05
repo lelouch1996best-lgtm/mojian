@@ -21,6 +21,33 @@ export interface WorldSettings {
   style: string;
 }
 
+/** 单个人物设定档案 —— 系列级，跨集共享。同一角色可有多个版本（如剧情发展中外貌/性格变化）。 */
+export interface CharacterProfile {
+  id: string;
+  /** 人物组 ID（同一角色的多个版本共享此 ID） */
+  characterId: string;
+  /** 版本号（1, 2, 3...，越大越新） */
+  version: number;
+  /** 版本标签（如"少年期""觉醒后"） */
+  versionLabel: string;
+  /** 姓名 */
+  name: string;
+  /** 角色定位（主角/配角/反派等） */
+  role: string;
+  /** 性别年龄，如"男，25岁" */
+  genderAge: string;
+  /** 外貌描述 */
+  appearance: string;
+  /** 性格特点 */
+  personality: string;
+  /** 背景故事 */
+  background: string;
+  /** 人物关系 */
+  relationships: string;
+  /** 人物形象图 URL（未来扩展） */
+  imageUrl?: string;
+}
+
 /** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、漫剧风格 */
 export interface Series {
   id: string;
@@ -31,6 +58,8 @@ export interface Series {
   updatedAt: number;
   /** 世界设定 —— 每系列独立 */
   worldSettings: WorldSettings;
+  /** 人物设定 —— 每系列独立，跨集共享 */
+  characterSettings: CharacterProfile[];
   /** 漫剧风格配置 —— 每系列独立 */
   styleSettings: StyleSettings;
   /** 该系列下的剧集 ID 列表，决定顺序 */
@@ -83,10 +112,10 @@ export type AssetType = "character" | "scene" | "object";
 /** 资产生成状态 */
 export type AssetStatus = "pending" | "ready" | "failed";
 
-/** Step3 资产 —— 由 Step2 标注的 @标签@ 派生 */
+/** Step3 资产 —— 由 Step2 标注的 @标签 派生 */
 export interface Asset {
   id: string;
-  name: string; // @标签@ 内的名字，如 "小明"
+  name: string; // @标签 内的名字，如 "小明"
   type: AssetType; // 人物/场景/物品
   description: string; // LLM 生成的资产描述
   imagePrompt: string; // 图片生成提示词（中文，LLM 生成）

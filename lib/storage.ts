@@ -1,10 +1,32 @@
-import type { Episode, Series } from "@/lib/types";
+import type { CharacterProfile, Episode, Series } from "@/lib/types";
 import { normalizeEpisode } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
 
 const EPISODES_KEY = "ai-script-episodes";
 const SERIES_KEY = "mojian_series";
 const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
+
+/** 兼容旧 Series 数据：补全缺失字段（worldSettings / characterSettings / styleSettings 等） */
+export function normalizeSeries(s: Series): Series {
+  return {
+    ...s,
+    worldSettings: s.worldSettings ?? { background: "", theme: "", style: "" },
+    characterSettings: (s.characterSettings ?? []).map(normalizeCharacterProfile),
+    styleSettings: s.styleSettings ?? { selectedStyleId: "realistic", overrides: {} },
+    episodeOrder: s.episodeOrder ?? [],
+    order: s.order ?? 0,
+  };
+}
+
+/** 兼容旧 CharacterProfile 数据：补全 characterId / version / versionLabel */
+function normalizeCharacterProfile(c: CharacterProfile): CharacterProfile {
+  return {
+    ...c,
+    characterId: c.characterId || c.id,
+    version: c.version ?? 1,
+    versionLabel: c.versionLabel ?? "",
+  };
+}
 
 // ========== Episode 底层读写 ==========
 
@@ -46,14 +68,7 @@ function safeReadSeries(): Record<string, Series> {
     if (!raw) return {};
     const map = JSON.parse(raw) as Record<string, Series>;
     for (const k of Object.keys(map)) {
-      const s = map[k];
-      map[k] = {
-        ...s,
-        worldSettings: s.worldSettings ?? { background: "", theme: "", style: "" },
-        styleSettings: s.styleSettings ?? { selectedStyleId: "realistic", overrides: {} },
-        episodeOrder: s.episodeOrder ?? [],
-        order: s.order ?? 0,
-      };
+      map[k] = normalizeSeries(map[k]);
     }
     return map;
   } catch {
@@ -124,12 +139,18 @@ export async function getEpisodesBySeries(seriesId: string): Promise<Episode[]> 
 // ========== Series 公开 API ==========
 
 export async function listSeries(): Promise<Series[]> {
-  if (STORAGE_MODE === "server") return apiClient.listSeries();
+  if (STORAGE_MODE === "server") {
+    const list = await apiClient.listSeries();
+    return list.map(normalizeSeries).sort((a, b) => a.order - b.order);
+  }
   return Object.values(safeReadSeries()).sort((a, b) => a.order - b.order);
 }
 
 export async function getSeries(id: string): Promise<Series | null> {
-  if (STORAGE_MODE === "server") return apiClient.getSeries(id);
+  if (STORAGE_MODE === "server") {
+    const s = await apiClient.getSeries(id);
+    return s ? normalizeSeries(s) : null;
+  }
   return safeReadSeries()[id] ?? null;
 }
 

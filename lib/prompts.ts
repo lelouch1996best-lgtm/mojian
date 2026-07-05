@@ -6,13 +6,21 @@ function worldContext(text: string): string {
   return `\n\n【世界设定 —— 请严格遵循以下世界观和风格要求】\n${text.trim()}\n`;
 }
 
+/** 人物设定前缀模板 */
+function characterContext(text: string): string {
+  if (!text?.trim()) return "";
+  return `\n\n【人物设定 —— 请保持以下人物的性格、外貌、关系一致性】\n${text.trim()}\n`;
+}
+
 // (a) Step1 内容扩写
 export function expansionMessages(
   content: string,
   worldText = "",
+  characterText = "",
   previousEpisodesContext = "",
 ): LLMMessage[] {
   const ctx = worldContext(worldText);
+  const charCtx = characterContext(characterText);
   const prevCtx = previousEpisodesContext
     ? `\n\n【前文剧情（前几集扩写内容，供参考以保持剧情连贯）】\n${previousEpisodesContext}\n`
     : "";
@@ -20,19 +28,20 @@ export function expansionMessages(
     {
       role: "system",
       content:
-        `你是一位专业的视频剧本编剧助手。你的任务是对用户提供的粗略故事内容进行扩写和润色，使其更加丰富、生动、有画面感。保持原意，但补充细节、对话、场景描写和情感表达。直接输出扩写后的完整内容，不要添加任何额外说明、标题或前缀。${ctx}${prevCtx}`,
+        `你是一位专业的视频剧本编剧助手。你的任务是对用户提供的粗略故事内容进行扩写和润色，使其更加丰富、生动、有画面感。保持原意，但补充细节、对话、场景描写和情感表达。直接输出扩写后的完整内容，不要添加任何额外说明、标题或前缀。${ctx}${charCtx}${prevCtx}`,
     },
     { role: "user", content: `请扩写以下内容：\n\n${content}` },
   ];
 }
 
 // (b) Step2 分镜生成（要求返回 JSON）
-export function storyboardMessages(content: string, worldText = ""): LLMMessage[] {
+export function storyboardMessages(content: string, worldText = "", characterText = ""): LLMMessage[] {
   const ctx = worldContext(worldText);
+  const charCtx = characterContext(characterText);
   return [
     {
       role: "system",
-      content: `你是一位专业的视频分镜师。请将剧本内容拆分为多个镜头，生成分镜数据。${ctx}
+      content: `你是一位专业的视频分镜师。请将剧本内容拆分为多个镜头，生成分镜数据。${ctx}${charCtx}
 要求：
 1. 根据内容合理划分镜头，每个镜头应是一个完整的视觉单元
 2. 为每个镜头填写全部字段
@@ -146,12 +155,14 @@ export function taggingMessages(shots: Shot[]): LLMMessage[] {
 export function assetMessages(
   tags: string[],
   expandedContent: string,
-  styleText = ""
+  styleText = "",
+  characterText = ""
 ): LLMMessage[] {
   const tagList = tags.map((t, i) => `${i + 1}. ${t}`).join("\n");
   const styleCtx = styleText
     ? `\n\n【漫剧风格 —— 生成图片提示词时请遵循以下风格要求】\n${styleText}\n\n重要：生成 imagePrompt 时，请确保提示词内容与上述风格匹配。风格模板会在图片生成时自动拼接到提示词末尾，因此你生成的 imagePrompt 只需关注实体本身的具体外观描述即可。`
     : "";
+  const charCtx = characterContext(characterText);
 
   return [
     {
@@ -166,7 +177,7 @@ export function assetMessages(
 必须返回一个合法的 JSON 对象，格式为：
 {"assets":[{"name":"小明","type":"character","description":"...","imagePrompt":"..."}]}
 
-不要包含任何其他文字、不要使用 markdown 代码块。${styleCtx}`,
+不要包含任何其他文字、不要使用 markdown 代码块。${styleCtx}${charCtx}`,
     },
     {
       role: "user",
@@ -254,5 +265,37 @@ ${relatedList}
 【全部资产（如果画面描述中出现了这些资产的名称，也必须引用）】
 ${allList}`,
     },
+  ];
+}
+
+// (g) Step1 人物设定提取：从扩写内容中提取人物档案
+// 输出：JSON {"characters":[{"name":"...","role":"...","genderAge":"...","appearance":"...","personality":"...","background":"...","relationships":"..."}]}
+export function extractCharacterMessages(expandedContent: string): LLMMessage[] {
+  return [
+    {
+      role: "system",
+      content: `你是一位专业的剧本分析师。请从提供的剧本扩写内容中提取所有出现的人物，为每个人物生成详细的人物设定档案。
+
+对每个人物，提取以下字段：
+1. name：人物姓名或称呼（如剧本中只出现"女孩""老人"等泛称，也作为 name 使用）
+2. role：角色定位（主角/配角/反派/路人等，根据出场重要程度判断）
+3. genderAge：性别和年龄（如"男，25岁"；如剧本未明确，根据上下文合理推断）
+4. appearance：外貌描述（外貌特征、穿着打扮；如剧本未明确描述，根据角色定位合理推断）
+5. personality：性格特点（根据言行举止推断）
+6. background：背景故事（根据剧本内容合理推断补充，不要凭空捏造与剧本矛盾的内容）
+7. relationships：与其他人物的关系（如"A 的妻子""B 的上司"）
+
+要求：
+1. 只提取剧本中实际出现或有明确提及的人物，不要添加剧本中不存在的人物
+2. 字段内容应基于剧本内容，可合理推断但不要与剧本矛盾
+3. 如果剧本信息不足以填充某字段，填写"未明确"
+4. 同一人物只输出一条记录
+
+必须返回合法的 JSON 对象，格式为：
+{"characters":[{"name":"...","role":"...","genderAge":"...","appearance":"...","personality":"...","background":"...","relationships":"..."}]}
+
+不要包含任何其他文字、不要使用 markdown 代码块。`,
+    },
+    { role: "user", content: `请从以下剧本扩写内容中提取人物设定：\n\n${expandedContent}` },
   ];
 }

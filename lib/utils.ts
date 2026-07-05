@@ -1,4 +1,4 @@
-import type { Asset, AssetType, Episode, RawShot, Series, Shot } from "./types";
+import type { Asset, AssetType, CharacterProfile, Episode, RawShot, Series, Shot } from "./types";
 
 /** 简易 uuid（无需严格，本地用） */
 export function uuid(): string {
@@ -59,6 +59,7 @@ export function emptySeries(order = 1, title = "未命名企划"): Series {
     createdAt: now,
     updatedAt: now,
     worldSettings: { background: "", theme: "", style: "" },
+    characterSettings: [],
     styleSettings: { selectedStyleId: "realistic", overrides: {} },
     episodeOrder: [],
   };
@@ -338,4 +339,69 @@ export function normalizeAssetType(t?: string): AssetType {
   if (t === "场景") return "scene";
   if (t === "物品" || t === "道具") return "object";
   return "character";
+}
+
+/** 从 LLM 返回文本中提取人物设定数组 */
+export interface RawCharacter {
+  name?: string;
+  role?: string;
+  genderAge?: string;
+  appearance?: string;
+  personality?: string;
+  background?: string;
+  relationships?: string;
+}
+
+export function extractCharacters(text: string): RawCharacter[] {
+  if (!text) return [];
+  const trimmed = text.trim();
+  const tryParse = (s: string): RawCharacter[] | null => {
+    try {
+      const parsed = JSON.parse(s);
+      if (parsed && Array.isArray(parsed.characters)) return parsed.characters as RawCharacter[];
+      if (Array.isArray(parsed)) return parsed as RawCharacter[];
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+
+  const direct = tryParse(trimmed);
+  if (direct) return direct;
+
+  const codeBlock = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeBlock) {
+    const r = tryParse(codeBlock[1].trim());
+    if (r) return r;
+  }
+
+  const arrMatch = trimmed.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    const r = tryParse(arrMatch[0]);
+    if (r) return r;
+  }
+
+  const objMatch = trimmed.match(/\{[\s\S]*"characters"[\s\S]*\}/);
+  if (objMatch) {
+    const r = tryParse(objMatch[0]);
+    if (r) return r;
+  }
+  return [];
+}
+
+/** 从 RawCharacter 构造 CharacterProfile（补全 id + 缺失字段） */
+export function toCharacterProfile(raw: RawCharacter): CharacterProfile {
+  return {
+    id: uuid(),
+    characterId: uuid(),
+    version: 1,
+    versionLabel: "",
+    name: raw.name?.trim() ?? "",
+    role: raw.role?.trim() ?? "",
+    genderAge: raw.genderAge?.trim() ?? "",
+    appearance: raw.appearance?.trim() ?? "",
+    personality: raw.personality?.trim() ?? "",
+    background: raw.background?.trim() ?? "",
+    relationships: raw.relationships?.trim() ?? "",
+  };
 }

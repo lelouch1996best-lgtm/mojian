@@ -8,11 +8,14 @@ import StoryboardTable from "@/components/StoryboardTable";
 import AssetPreparation from "@/components/AssetPreparation";
 import VideoGeneration from "@/components/VideoGeneration";
 import Button from "@/components/ui/Button";
-import SettingsModal from "@/components/SettingsModal";
-import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries } from "@/lib/storage";
+import CharacterConflictModal, {
+  type CharacterConflictItem,
+  type ConflictAction,
+} from "@/components/CharacterConflictModal";
+import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings } from "@/lib/llm-client";
 import { emptyShot, debounce } from "@/lib/utils";
-import type { Asset, Episode, Shot, VideoStatus, StyleSettings, WorldSettings } from "@/lib/types";
+import type { Asset, Episode, Shot, VideoStatus, StyleSettings, WorldSettings, CharacterProfile } from "@/lib/types";
 
 export default function EpisodePage() {
   const router = useRouter();
@@ -23,13 +26,16 @@ export default function EpisodePage() {
   const [seriesOrder, setSeriesOrder] = useState<number>(1);
   const [seriesStyleSettings, setSeriesStyleSettings] = useState<StyleSettings | null>(null);
   const [seriesWorldSettings, setSeriesWorldSettings] = useState<WorldSettings | null>(null);
+  const [seriesCharacterSettings, setSeriesCharacterSettings] = useState<CharacterProfile[]>([]);
   const [previousContext, setPreviousContext] = useState<string>("");
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
   const [titleEditing, setTitleEditing] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedHint, setSavedHint] = useState(false);
+  const [conflictModalOpen, setConflictModalOpen] = useState(false);
+  const [conflictItems, setConflictItems] = useState<CharacterConflictItem[]>([]);
+  const conflictResolverRef = useRef<((items: CharacterConflictItem[]) => void) | null>(null);
 
   const episodeRef = useRef<Episode | null>(null);
   episodeRef.current = episode;
@@ -76,6 +82,7 @@ export default function EpisodePage() {
       setSeriesOrder(currentIdx >= 0 ? currentIdx + 1 : 1);
       setSeriesStyleSettings(seriesData?.styleSettings ?? null);
       setSeriesWorldSettings(seriesData?.worldSettings ?? null);
+      setSeriesCharacterSettings(seriesData?.characterSettings ?? []);
       const prevEpisodes = allEpisodes.filter((_, i) => i < currentIdx && allEpisodes[i].expandedContent.trim());
       const prev = prevEpisodes.map((e, i) => `【第${i + 1}集】\n${e.expandedContent.trim()}`);
       // 限制总字数，避免超出 token 限制（保留约 3000 字）
@@ -117,6 +124,113 @@ export default function EpisodePage() {
   // ---- Step1 handlers ----
   function handleShotsGenerated(shots: Shot[]) {
     update((ep) => ({ ...ep, shots, step: 2 }));
+  }
+
+  /** 提取人物设定后，合并到系列级。已存在同名人物时弹出 Modal 选择：覆盖最新版本/新建版本/跳过 */
+  async function handleCharactersExtracted(characters: CharacterProfile[]): Promise<{ added: number; overwritten: number; total: number; skipped: number }> {
+    if (!episode) return { added: 0, overwritten: 0, total: 0, skipped: 0 };
+    const seriesData = await getSeries(episode.seriesId);
+    if (!seriesData) return { added: 0, overwritten: 0, total: 0, skipped: 0 };
+    const existingList = seriesData.characterSettings ?? [];
+    // 按 name 分组已有人物
+    const existingByName = new Map<string, CharacterProfile[]>();
+    for (const c of existingList) {
+      const arr = existingByName.get(c.name);
+      if (arr) arr.push(c);
+      else existingByName.set(c.name, [c]);
+    }
+
+    let merged = [...existingList];
+    let added = 0;
+    let overwritten = 0;
+    let skipped = 0;
+
+    // 收集冲突项
+    const conflicts: CharacterConflictItem[] = [];
+    const newCharacters: CharacterProfile[] = [];
+
+    for (const incoming of characters) {
+      const existing = existingByName.get(incoming.name);
+      if (!existing || existing.length === 0) {
+        // 新人物，直接添加
+        newCharacters.push(incoming);
+        existingByName.set(incoming.name, [incoming]);
+        added++;
+        continue;
+      }
+      // 已存在同名，收集到冲突列表（按 version 降序排列已有版本）
+      const sorted = [...existing].sort((a, b) => (b.version ?? 1) - (a.version ?? 1));
+      conflicts.push({
+        incoming,
+        existing: sorted,
+        action: "overwrite",
+      });
+    }
+
+    // 若有冲突，弹出 Modal 等待用户选择
+    if (conflicts.length > 0) {
+      setConflictItems(conflicts);
+      setConflictModalOpen(true);
+      const resolved = await new Promise<CharacterConflictItem[]>((resolve) => {
+        conflictResolverRef.current = resolve;
+      });
+
+      // 按用户选择处理
+      for (const item of resolved) {
+        if (item.action === "skip") {
+          skipped++;
+          continue;
+        }
+        if (item.action === "overwrite") {
+          // 找到最新版本，覆盖内容字段，保留 id/characterId/version/versionLabel/name/imageUrl
+          const latest = item.existing[0];
+          const overwrittenProfile: CharacterProfile = {
+            ...latest,
+            role: item.incoming.role,
+            genderAge: item.incoming.genderAge,
+            appearance: item.incoming.appearance,
+            personality: item.incoming.personality,
+            background: item.incoming.background,
+            relationships: item.incoming.relationships,
+          };
+          merged = merged.map((c) => (c.id === latest.id ? overwrittenProfile : c));
+          overwritten++;
+        } else if (item.action === "newVersion") {
+          // 新建版本：继承 characterId，version + 1
+          const maxVersion = item.existing.reduce((max, c) => Math.max(max, c.version ?? 1), 0);
+          const newVersion: CharacterProfile = {
+            ...item.incoming,
+            characterId: item.existing[0].characterId,
+            version: maxVersion + 1,
+            versionLabel: `v${maxVersion + 1}`,
+          };
+          merged.push(newVersion);
+          added++;
+        }
+      }
+    }
+
+    // 合并新人物
+    merged = [...merged, ...newCharacters];
+
+    if (added > 0 || overwritten > 0) {
+      await saveSeries({ ...seriesData, characterSettings: merged });
+      setSeriesCharacterSettings(merged);
+    }
+    return { added, overwritten, total: merged.length, skipped };
+  }
+
+  function handleConflictConfirm() {
+    setConflictModalOpen(false);
+    conflictResolverRef.current?.(conflictItems);
+    conflictResolverRef.current = null;
+  }
+
+  function handleConflictCancel() {
+    setConflictModalOpen(false);
+    // 取消 = 全部视为跳过
+    conflictResolverRef.current?.(conflictItems.map((c) => ({ ...c, action: "skip" as ConflictAction })));
+    conflictResolverRef.current = null;
   }
 
   // ---- Step2 handlers ----
@@ -262,13 +376,6 @@ export default function EpisodePage() {
             step2Done={step2Done}
             step3Done={step3Done}
           />
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setSettingsOpen(true)}
-          >
-            设置
-          </Button>
         </div>
       </header>
 
@@ -279,6 +386,7 @@ export default function EpisodePage() {
             expandedContent={episode.expandedContent}
             previousContext={previousContext}
             worldSettings={seriesWorldSettings}
+            characterSettings={seriesCharacterSettings}
             onOriginalChange={(v) =>
               update((ep) => ({ ...ep, originalContent: v }))
             }
@@ -287,6 +395,7 @@ export default function EpisodePage() {
             }
             onShotsGenerated={handleShotsGenerated}
             onEnterStep2={() => gotoStep(2)}
+            onCharactersExtracted={handleCharactersExtracted}
           />
         </div>
       ) : currentStep === 2 ? (
@@ -308,6 +417,7 @@ export default function EpisodePage() {
             onReplaceAssets={handleReplaceAssets}
             onBackToStep2={() => gotoStep(2)}
             seriesStyleSettings={seriesStyleSettings}
+            characterSettings={seriesCharacterSettings}
           />
         </div>
       ) : (
@@ -322,7 +432,18 @@ export default function EpisodePage() {
         />
       )}
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <CharacterConflictModal
+        open={conflictModalOpen}
+        conflicts={conflictItems}
+        onActionChange={(i, action) =>
+          setConflictItems((prev) =>
+            prev.map((c, idx) => (idx === i ? { ...c, action } : c))
+          )
+        }
+        onConfirm={handleConflictConfirm}
+        onCancel={handleConflictCancel}
+      />
+
     </main>
   );
 }
