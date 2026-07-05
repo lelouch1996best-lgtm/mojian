@@ -1,4 +1,4 @@
-import type { CharacterProfile, Episode, Series } from "@/lib/types";
+import type { CharacterProfile, Episode, ObjectProfile, SceneProfile, Series } from "@/lib/types";
 import { normalizeEpisode } from "@/lib/utils";
 import { apiClient } from "@/lib/api-client";
 
@@ -6,12 +6,14 @@ const EPISODES_KEY = "ai-script-episodes";
 const SERIES_KEY = "mojian_series";
 const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
 
-/** 兼容旧 Series 数据：补全缺失字段（worldSettings / characterSettings / styleSettings 等） */
+/** 兼容旧 Series 数据：补全缺失字段（worldSettings / characterSettings / objectSettings / styleSettings 等） */
 export function normalizeSeries(s: Series): Series {
   return {
     ...s,
     worldSettings: s.worldSettings ?? { background: "", theme: "", style: "" },
     characterSettings: (s.characterSettings ?? []).map(normalizeCharacterProfile),
+    objectSettings: (s.objectSettings ?? []).map(normalizeObjectProfile),
+    sceneSettings: (s.sceneSettings ?? []).map(normalizeSceneProfile),
     styleSettings: s.styleSettings ?? { selectedStyleId: "realistic", overrides: {} },
     episodeOrder: s.episodeOrder ?? [],
     order: s.order ?? 0,
@@ -25,6 +27,26 @@ function normalizeCharacterProfile(c: CharacterProfile): CharacterProfile {
     characterId: c.characterId || c.id,
     version: c.version ?? 1,
     versionLabel: c.versionLabel ?? "",
+  };
+}
+
+/** 兼容旧 ObjectProfile 数据：补全 objectId / version / versionLabel */
+function normalizeObjectProfile(o: ObjectProfile): ObjectProfile {
+  return {
+    ...o,
+    objectId: o.objectId || o.id,
+    version: o.version ?? 1,
+    versionLabel: o.versionLabel ?? "",
+  };
+}
+
+/** 兼容旧 SceneProfile 数据：补全 sceneId / version / versionLabel */
+function normalizeSceneProfile(s: SceneProfile): SceneProfile {
+  return {
+    ...s,
+    sceneId: s.sceneId || s.id,
+    version: s.version ?? 1,
+    versionLabel: s.versionLabel ?? "",
   };
 }
 

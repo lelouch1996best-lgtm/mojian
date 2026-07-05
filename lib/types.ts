@@ -48,6 +48,52 @@ export interface CharacterProfile {
   imageUrl?: string;
 }
 
+/** 单个物品设定档案 —— 系列级，跨集共享。同一物品可有多个版本（如不同形态/等级）。 */
+export interface ObjectProfile {
+  id: string;
+  /** 物品组 ID（同一物品的多个版本共享此 ID） */
+  objectId: string;
+  /** 版本号（1, 2, 3...，越大越新） */
+  version: number;
+  /** 版本标签（如"初始形态""觉醒后"） */
+  versionLabel: string;
+  /** 名称 */
+  name: string;
+  /** 分类（武器/道具/载具等） */
+  category: string;
+  /** 外观描述 */
+  appearance: string;
+  /** 功能用途 */
+  purpose: string;
+  /** 来源背景 */
+  origin: string;
+  /** 物品形象图 URL */
+  imageUrl?: string;
+}
+
+/** 单个场景设定档案 —— 系列级，跨集共享。同一场景可有多个版本（如白天/夜晚/战火后）。 */
+export interface SceneProfile {
+  id: string;
+  /** 场景组 ID（同一场景的多个版本共享此 ID） */
+  sceneId: string;
+  /** 版本号（1, 2, 3...，越大越新） */
+  version: number;
+  /** 版本标签（如"白天""夜晚""破败后"） */
+  versionLabel: string;
+  /** 名称 */
+  name: string;
+  /** 分类（室内/室外/特定地点等） */
+  category: string;
+  /** 外观描述 */
+  appearance: string;
+  /** 光影氛围 */
+  lightingMood: string;
+  /** 来源背景 */
+  origin: string;
+  /** 场景形象图 URL */
+  imageUrl?: string;
+}
+
 /** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、漫剧风格 */
 export interface Series {
   id: string;
@@ -60,6 +106,10 @@ export interface Series {
   worldSettings: WorldSettings;
   /** 人物设定 —— 每系列独立，跨集共享 */
   characterSettings: CharacterProfile[];
+  /** 物品设定 —— 每系列独立，跨集共享 */
+  objectSettings: ObjectProfile[];
+  /** 场景设定 —— 每系列独立，跨集共享 */
+  sceneSettings: SceneProfile[];
   /** 漫剧风格配置 —— 每系列独立 */
   styleSettings: StyleSettings;
   /** 该系列下的剧集 ID 列表，决定顺序 */

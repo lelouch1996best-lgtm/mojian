@@ -1,11 +1,11 @@
 import { useRef } from "react";
-import type { CharacterProfile } from "@/lib/types";
+import type { SceneProfile } from "@/lib/types";
 import Spinner from "@/components/ui/Spinner";
 import ImageLightbox from "@/components/ImageLightbox";
 
-/** 单个人物版本卡片 */
-export function CharacterCard({
-  character,
+/** 单个场景版本卡片 */
+export function SceneCard({
+  scene,
   isLatest,
   expanded,
   onToggle,
@@ -16,11 +16,11 @@ export function CharacterCard({
   onUploadImage,
   isUploading,
 }: {
-  character: CharacterProfile;
+  scene: SceneProfile;
   isLatest: boolean;
   expanded: boolean;
   onToggle: () => void;
-  onUpdate: (field: keyof CharacterProfile, value: string) => void;
+  onUpdate: (field: keyof SceneProfile, value: string) => void;
   onDelete: () => void;
   onGenerateImage: () => void;
   isGenerating: boolean;
@@ -34,10 +34,10 @@ export function CharacterCard({
     }`}>
       {/* 图片区域 */}
       <div className="relative flex h-28 items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
-        {character.imageUrl ? (
-          <ImageLightbox src={character.imageUrl} alt={character.name} className="h-full w-full">
+        {scene.imageUrl ? (
+          <ImageLightbox src={scene.imageUrl} alt={scene.name} className="h-full w-full">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={character.imageUrl} alt={character.name} className="h-full w-full object-cover" />
+            <img src={scene.imageUrl} alt={scene.name} className="h-full w-full object-cover" />
           </ImageLightbox>
         ) : isGenerating ? (
           <div className="flex flex-col items-center gap-1 text-slate-400">
@@ -54,8 +54,8 @@ export function CharacterCard({
             <button onClick={onGenerateImage}
               className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500">
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-                <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <rect x="3" y="7" width="18" height="13" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M8 7V5a1 1 0 011-1h6a1 1 0 011 1v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               <span className="text-xs">生成图片</span>
             </button>
@@ -81,32 +81,17 @@ export function CharacterCard({
         <span className={`absolute left-2 top-2 rounded px-1.5 py-0.5 text-xs backdrop-blur ${
           isLatest ? "bg-brand-500/80 text-white" : "bg-black/20 text-white"
         }`}>
-          {character.versionLabel || `v${character.version}`}
+          {scene.versionLabel || `v${scene.version}`}
           {isLatest && " · 最新"}
         </span>
         {/* 重新生成按钮 */}
-        {character.imageUrl && !isGenerating && (
+        {scene.imageUrl && !isGenerating && (
           <button onClick={onGenerateImage}
             className="absolute bottom-2 right-2 rounded-md bg-white/80 p-1.5 text-slate-500 backdrop-blur transition-colors hover:text-brand-500"
             title="重新生成图片">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
               <path d="M21 12a9 9 0 11-3-6.7M21 4v4h-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
-          </button>
-        )}
-        {/* 上传替换按钮 */}
-        {character.imageUrl && !isUploading && (
-          <button onClick={() => fileInputRef.current?.click()}
-            className="absolute right-2 top-10 rounded-md bg-white/80 p-1.5 text-slate-500 backdrop-blur transition-colors hover:text-brand-500"
-            title="上传替换图片">
-            {isUploading ? (
-              <Spinner size={14} />
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-              </svg>
-            )}
           </button>
         )}
         {/* 删除按钮 */}
@@ -123,12 +108,12 @@ export function CharacterCard({
       {/* 卡片内容 */}
       <div className="px-4 py-3">
         <div className="flex items-center gap-2">
-          <input type="text" value={character.name}
-            onChange={(e) => onUpdate("name", e.target.value)} placeholder="人物姓名"
+          <input type="text" value={scene.name}
+            onChange={(e) => onUpdate("name", e.target.value)} placeholder="场景名称"
             className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm font-medium text-slate-800 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20" />
-          {character.role.trim() && (
-            <span className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
-              {character.role.trim()}
+          {scene.category.trim() && (
+            <span className="shrink-0 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">
+              {scene.category.trim()}
             </span>
           )}
         </div>
@@ -136,14 +121,14 @@ export function CharacterCard({
         {/* 版本标签编辑 */}
         <div className="mt-2 flex items-center gap-2">
           <span className="text-xs text-slate-400">版本标签</span>
-          <input type="text" value={character.versionLabel}
+          <input type="text" value={scene.versionLabel}
             onChange={(e) => onUpdate("versionLabel", e.target.value)}
-            placeholder="如：少年期、觉醒后…"
+            placeholder="如：白天、夜晚、战火后…"
             className="flex-1 rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 focus:border-brand-400 focus:outline-none" />
         </div>
 
-        {character.genderAge.trim() && !expanded && (
-          <p className="mt-1.5 text-xs text-slate-400">{character.genderAge}</p>
+        {scene.category.trim() && !expanded && (
+          <p className="mt-1.5 text-xs text-slate-400">{scene.category}</p>
         )}
 
         <button onClick={onToggle}
@@ -157,55 +142,42 @@ export function CharacterCard({
 
         {expanded && (
           <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
-            <div className="grid grid-cols-2 gap-2">
-              <Field label="角色定位">
-                <input type="text" value={character.role}
-                  onChange={(e) => onUpdate("role", e.target.value)}
-                  placeholder="主角、配角…" className="char-input" />
-              </Field>
-              <Field label="性别年龄">
-                <input type="text" value={character.genderAge}
-                  onChange={(e) => onUpdate("genderAge", e.target.value)}
-                  placeholder="男，25岁" className="char-input" />
-              </Field>
-            </div>
-            <Field label="外貌" hint="外貌特征、穿着打扮">
-              <textarea value={character.appearance}
+            <Field label="分类" hint="室内/室外/特定地点等">
+              <input type="text" value={scene.category}
+                onChange={(e) => onUpdate("category", e.target.value)}
+                placeholder="如：室内、室外、奇幻地…" className="scene-input" />
+            </Field>
+            <Field label="外观描述" hint="视觉特征、布局、建筑风格">
+              <textarea value={scene.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
-                placeholder="如：短发，戴黑框眼镜，常穿深色风衣…"
-                className="char-input resize-y" rows={3} />
+                placeholder="如：古朴的木质茶馆，挂着红灯笼，门前有石阶流水…"
+                className="scene-input resize-y" rows={3} />
             </Field>
-            <Field label="性格" hint="性格特点、行为方式">
-              <textarea value={character.personality}
-                onChange={(e) => onUpdate("personality", e.target.value)}
-                placeholder="如：冷静内敛，不善言辞但观察力敏锐…"
-                className="char-input resize-y" rows={2} />
+            <Field label="光影氛围" hint="光线、色调、氛围">
+              <textarea value={scene.lightingMood}
+                onChange={(e) => onUpdate("lightingMood", e.target.value)}
+                placeholder="如：黄昏暖光、逆光剪影、冷色调月光…"
+                className="scene-input resize-y" rows={2} />
             </Field>
-            <Field label="背景故事">
-              <textarea value={character.background}
-                onChange={(e) => onUpdate("background", e.target.value)}
-                placeholder="如：曾是一名记者，因报道失误转行…"
-                className="char-input resize-y" rows={3} />
-            </Field>
-            <Field label="人物关系" hint="与其他人物的关系">
-              <textarea value={character.relationships}
-                onChange={(e) => onUpdate("relationships", e.target.value)}
-                placeholder="如：小红的丈夫，老张的下属…"
-                className="char-input resize-y" rows={2} />
+            <Field label="来源背景">
+              <textarea value={scene.origin}
+                onChange={(e) => onUpdate("origin", e.target.value)}
+                placeholder="如：主角家族传承的老宅，隐藏在深巷百年…"
+                className="scene-input resize-y" rows={3} />
             </Field>
           </div>
         )}
       </div>
 
       <style jsx>{`
-        :global(.char-input) {
+        :global(.scene-input) {
           width: 100%; border-radius: 6px; border: 1px solid #e7e5e4;
           background: #fff; padding: 6px 10px; font-size: 13px; color: #44403c;
         }
-        :global(.char-input:focus) {
+        :global(.scene-input:focus) {
           outline: none; border-color: #d97706; box-shadow: 0 0 0 2px rgba(217,119,6,0.2);
         }
-        :global(.char-input::placeholder) { color: #a8a29e; }
+        :global(.scene-input::placeholder) { color: #a8a29e; }
       `}</style>
     </div>
   );

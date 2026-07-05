@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
 import EditableCell from "./EditableCell";
@@ -16,7 +16,7 @@ import {
 import { videoPromptMessages } from "@/lib/prompts";
 import { isCosConfigured, getCosSettings } from "@/lib/cos-client";
 import { getVideoStyleSuffix } from "@/lib/style-settings";
-import { ASSET_TYPE_LABELS } from "@/lib/utils";
+import { ASSET_TYPE_LABELS, extractTags } from "@/lib/utils";
 import type { Asset, Episode, Shot, VideoStatus, StyleSettings } from "@/lib/types";
 
 interface VideoGenerationProps {
@@ -82,6 +82,34 @@ export default function VideoGeneration({
     }
     return m;
   }, [episode.assets]);
+
+  // 资产按名称索引（小写匹配），用于自动关联
+  const assetIdByName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of episode.assets) {
+      m.set(a.name.toLowerCase(), a.id);
+    }
+    return m;
+  }, [episode.assets]);
+
+  // 进入 Step4 时，根据画面描述中的 @标签自动关联资产（仅执行一次）
+  const didAutoLink = useRef(false);
+  useEffect(() => {
+    if (didAutoLink.current) return;
+    if (episode.assets.length === 0 || episode.shots.length === 0) return;
+    didAutoLink.current = true;
+    for (const shot of episode.shots) {
+      const tagNames = extractTags(shot.visualDescription);
+      if (tagNames.length === 0) continue;
+      for (const tagName of tagNames) {
+        const assetId = assetIdByName.get(tagName.toLowerCase());
+        if (assetId && !shot.relatedAssetIds?.includes(assetId)) {
+          onLinkAsset(shot.id, assetId);
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode.assets.length, episode.shots.length, assetIdByName, onLinkAsset]);
 
   // @ 补全选项（供所有 VideoCard 共享）
   const atMentionOptions = useMemo(

@@ -164,6 +164,31 @@ export default function SeriesPage() {
             </svg>
             人物设定
           </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/objects`)}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path
+                d="M3 7l9-4 9 4-9 4-9-4z"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M3 7v10l9 4 9-4V7"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinejoin="round"
+              />
+              <path d="M12 11v10" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+            </svg>
+            物品设定
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/scenes`)}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path d="M3 17l6-6 4 4 4-7 4 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M3 21h18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            场景设定
+          </Button>
           <Button variant="ghost" size="md" onClick={() => router.push(`/series/${id}/style-settings`)}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
               <path

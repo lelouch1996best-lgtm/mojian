@@ -14,8 +14,8 @@ import CharacterConflictModal, {
 } from "@/components/CharacterConflictModal";
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings } from "@/lib/llm-client";
-import { emptyShot, debounce } from "@/lib/utils";
-import type { Asset, Episode, Shot, VideoStatus, StyleSettings, WorldSettings, CharacterProfile } from "@/lib/types";
+import { emptyShot, debounce, removeTagPrefix } from "@/lib/utils";
+import type { Asset, Episode, Shot, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
 
 export default function EpisodePage() {
   const router = useRouter();
@@ -27,6 +27,8 @@ export default function EpisodePage() {
   const [seriesStyleSettings, setSeriesStyleSettings] = useState<StyleSettings | null>(null);
   const [seriesWorldSettings, setSeriesWorldSettings] = useState<WorldSettings | null>(null);
   const [seriesCharacterSettings, setSeriesCharacterSettings] = useState<CharacterProfile[]>([]);
+  const [seriesObjectSettings, setSeriesObjectSettings] = useState<ObjectProfile[]>([]);
+  const [seriesSceneSettings, setSeriesSceneSettings] = useState<SceneProfile[]>([]);
   const [previousContext, setPreviousContext] = useState<string>("");
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
   const [titleEditing, setTitleEditing] = useState(false);
@@ -83,6 +85,8 @@ export default function EpisodePage() {
       setSeriesStyleSettings(seriesData?.styleSettings ?? null);
       setSeriesWorldSettings(seriesData?.worldSettings ?? null);
       setSeriesCharacterSettings(seriesData?.characterSettings ?? []);
+    setSeriesObjectSettings(seriesData?.objectSettings ?? []);
+    setSeriesSceneSettings(seriesData?.sceneSettings ?? []);
       const prevEpisodes = allEpisodes.filter((_, i) => i < currentIdx && allEpisodes[i].expandedContent.trim());
       const prev = prevEpisodes.map((e, i) => `【第${i + 1}集】\n${e.expandedContent.trim()}`);
       // 限制总字数，避免超出 token 限制（保留约 3000 字）
@@ -220,6 +224,24 @@ export default function EpisodePage() {
     return { added, overwritten, total: merged.length, skipped };
   }
 
+  /** 保存物品设定（资产准备中提取物品资产时调用） */
+  async function handleSaveObjectSettings(objects: ObjectProfile[]) {
+    if (!episode) return;
+    const seriesData = await getSeries(episode.seriesId);
+    if (!seriesData) return;
+    await saveSeries({ ...seriesData, objectSettings: objects });
+    setSeriesObjectSettings(objects);
+  }
+
+  /** 保存场景设定（资产准备中提取场景资产时调用） */
+  async function handleSaveSceneSettings(scenes: SceneProfile[]) {
+    if (!episode) return;
+    const seriesData = await getSeries(episode.seriesId);
+    if (!seriesData) return;
+    await saveSeries({ ...seriesData, sceneSettings: scenes });
+    setSeriesSceneSettings(scenes);
+  }
+
   function handleConflictConfirm() {
     setConflictModalOpen(false);
     conflictResolverRef.current?.(conflictItems);
@@ -259,6 +281,17 @@ export default function EpisodePage() {
       };
     });
   }
+
+  /** 从所有分镜画面描述中移除某标签的 @ 前缀（删除标注，保留名称） */
+  function handleRemoveTag(tagName: string) {
+    update((ep) => ({
+      ...ep,
+      shots: ep.shots.map((s) => ({
+        ...s,
+        visualDescription: removeTagPrefix(s.visualDescription, tagName),
+      })),
+    }));
+  }
   function handleAddRow() {
     update((ep) => ({ ...ep, shots: [...ep.shots, emptyShot()] }));
   }
@@ -288,6 +321,17 @@ export default function EpisodePage() {
   }
   function handleReplaceAssets(assets: Asset[]) {
     update((ep) => ({ ...ep, assets }));
+  }
+  /** 删除资产（同时清理分镜中的关联引用） */
+  function handleDeleteAsset(assetId: string) {
+    update((ep) => ({
+      ...ep,
+      assets: ep.assets.filter((a) => a.id !== assetId),
+      shots: ep.shots.map((s) => ({
+        ...s,
+        relatedAssetIds: (s.relatedAssetIds ?? []).filter((id) => id !== assetId),
+      })),
+    }));
   }
 
   // ---- Step4 handlers ----
@@ -408,6 +452,7 @@ export default function EpisodePage() {
           onMoveRow={handleMoveRow}
           onBackToStep1={() => gotoStep(1)}
           onEnterStep3={() => gotoStep(3)}
+          onRemoveTag={handleRemoveTag}
         />
       ) : currentStep === 3 ? (
         <div className="mx-auto max-w-6xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -418,6 +463,12 @@ export default function EpisodePage() {
             onBackToStep2={() => gotoStep(2)}
             seriesStyleSettings={seriesStyleSettings}
             characterSettings={seriesCharacterSettings}
+            objectSettings={seriesObjectSettings}
+            onSaveObjectSettings={handleSaveObjectSettings}
+            sceneSettings={seriesSceneSettings}
+            onSaveSceneSettings={handleSaveSceneSettings}
+            onRemoveTag={handleRemoveTag}
+            onDeleteAsset={handleDeleteAsset}
           />
         </div>
       ) : (

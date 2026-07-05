@@ -60,6 +60,8 @@ export function emptySeries(order = 1, title = "未命名企划"): Series {
     updatedAt: now,
     worldSettings: { background: "", theme: "", style: "" },
     characterSettings: [],
+    objectSettings: [],
+    sceneSettings: [],
     styleSettings: { selectedStyleId: "realistic", overrides: {} },
     episodeOrder: [],
   };
@@ -215,6 +217,23 @@ export function extractAllTags(shots: Shot[]): string[] {
     }
   }
   return result;
+}
+
+/**
+ * 从文本中移除指定标签的 @ 前缀（保留名称文字）。
+ * 处理所有出现位置，仅匹配完整标签（@ + tagName + 边界字符）。
+ * 同时吸收标签后的一个分隔空格（LLM 标注时按规则在标签后加的空格，
+ * 中文文本中多余，删除时一并去掉；标签后是标点/行尾则不动）。
+ * 如「@小明 走进 @咖啡馆」移除「小明」后变为「小明走进 @咖啡馆」。
+ */
+export function removeTagPrefix(text: string, tagName: string): string {
+  if (!text || !tagName) return text ?? "";
+  const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 标签边界字符集（与 extractTags 一致）+ @
+  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…—·@]";
+  // @tagName + lookahead(边界|$) 确保完整匹配，再消耗一个可选尾随空格
+  const re = new RegExp(`@${escaped}(?=${boundary}|$) ?`, "g");
+  return text.replace(re, tagName);
 }
 
 /** 兼容旧 Episode 数据：补全缺失字段（assets / shot 视频字段 等） */

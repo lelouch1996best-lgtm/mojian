@@ -6,12 +6,17 @@ import Spinner from "./ui/Spinner";
 import EditableCell from "./EditableCell";
 import TaggedText from "./TaggedText";
 import ImageLightbox from "./ImageLightbox";
+import CharacterAssetCard from "./CharacterAssetCard";
+import ObjectAssetCard from "./ObjectAssetCard";
+import SceneAssetCard from "./SceneAssetCard";
 import { callLLM } from "@/lib/llm-client";
 import { generateImage, getImageSettings } from "@/lib/image-client";
 import { assetMessages } from "@/lib/prompts";
 import { getCosSettings, isCosConfigured } from "@/lib/cos-client";
 import { getActiveStyle, getAssetTemplate, styleToText } from "@/lib/style-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
+import { getLatestObjectVersions } from "@/lib/object-settings";
+import { getLatestSceneVersions } from "@/lib/scene-settings";
 import {
   extractAllTags,
   extractAssets,
@@ -19,7 +24,7 @@ import {
   ASSET_TYPE_LABELS,
   uuid,
 } from "@/lib/utils";
-import type { Asset, AssetStatus, AssetType, CharacterProfile, Episode, StyleSettings } from "@/lib/types";
+import type { Asset, AssetStatus, AssetType, CharacterProfile, Episode, ObjectProfile, SceneProfile, StyleSettings } from "@/lib/types";
 
 interface AssetPreparationProps {
   episode: Episode;
@@ -30,6 +35,18 @@ interface AssetPreparationProps {
   seriesStyleSettings?: StyleSettings | null;
   /** 系列级人物设定（优先使用，不传则用全局） */
   characterSettings?: CharacterProfile[] | null;
+  /** 系列级物品设定 */
+  objectSettings?: ObjectProfile[] | null;
+  /** 保存物品设定（提取物品资产时调用） */
+  onSaveObjectSettings?: (objects: ObjectProfile[]) => void;
+  /** 系列级场景设定 */
+  sceneSettings?: SceneProfile[] | null;
+  /** 保存场景设定（提取场景资产时调用） */
+  onSaveSceneSettings?: (scenes: SceneProfile[]) => void;
+  /** 从所有分镜画面描述中移除某个标签的 @ 前缀（删除标注） */
+  onRemoveTag?: (tagName: string) => void;
+  /** 删除资产（同时清理分镜中的关联引用） */
+  onDeleteAsset?: (assetId: string) => void;
 }
 
 const TYPE_OPTIONS: { value: AssetType; label: string }[] = [
@@ -51,6 +68,12 @@ export default function AssetPreparation({
   onBackToStep2,
   seriesStyleSettings,
   characterSettings,
+  objectSettings,
+  onSaveObjectSettings,
+  sceneSettings,
+  onSaveSceneSettings,
+  onRemoveTag,
+  onDeleteAsset,
 }: AssetPreparationProps) {
   const [generating, setGenerating] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
@@ -61,6 +84,9 @@ export default function AssetPreparation({
   const [showAddCard, setShowAddCard] = useState(false);
   const [newAssetName, setNewAssetName] = useState("");
   const [newAssetType, setNewAssetType] = useState<AssetType>("character");
+  // 添加模式：新建 / 从设定选择
+  const [addMode, setAddMode] = useState<"new" | "select">("new");
+  const [selectedSettingId, setSelectedSettingId] = useState("");
 
   // COS 配置（async）
   const [cosConfigured, setCosConfigured] = useState(false);
@@ -123,6 +149,107 @@ export default function AssetPreparation({
   );
   const missingTags = tags.filter((t) => !existingNames.has(t));
 
+  // 可从设定中选择的列表（过滤掉已添加为资产的），按当前选择的类型动态切换
+  const availableSettings = useMemo(() => {
+    if (newAssetType === "character") {
+      return getLatestVersions(characterSettings ?? [])
+        .filter((c) => c.name.trim() && !existingNames.has(c.name.trim()))
+        .map((c) => ({ id: c.id, label: c.name.trim(), sub: c.versionLabel || `v${c.version ?? 1}`, hasImage: !!c.imageUrl }));
+    }
+    if (newAssetType === "object") {
+      return getLatestObjectVersions(objectSettings ?? [])
+        .filter((o) => o.name.trim() && !existingNames.has(o.name.trim()))
+        .map((o) => ({ id: o.id, label: o.name.trim(), sub: o.versionLabel || `v${o.version ?? 1}`, hasImage: !!o.imageUrl }));
+    }
+    return getLatestSceneVersions(sceneSettings ?? [])
+      .filter((s) => s.name.trim() && !existingNames.has(s.name.trim()))
+      .map((s) => ({ id: s.id, label: s.name.trim(), sub: s.versionLabel || `v${s.version ?? 1}`, hasImage: !!s.imageUrl }));
+  }, [newAssetType, characterSettings, objectSettings, sceneSettings, existingNames]);
+
+  // 按人物姓名索引所有版本（升序），用于人物资产卡片选择版本
+  const characterVersionsByName = useMemo(() => {
+    const map = new Map<string, CharacterProfile[]>();
+    for (const c of characterSettings ?? []) {
+      const key = c.name.trim();
+      if (!key) continue;
+      const arr = map.get(key);
+      if (arr) arr.push(c);
+      else map.set(key, [c]);
+    }
+    for (const arr of Array.from(map.values())) {
+      arr.sort((a, b) => (a.version ?? 1) - (b.version ?? 1));
+    }
+    return map;
+  }, [characterSettings]);
+
+  // 按物品姓名索引所有版本（升序），用于物品资产卡片选择版本
+  const objectVersionsByName = useMemo(() => {
+    const map = new Map<string, ObjectProfile[]>();
+    for (const o of objectSettings ?? []) {
+      const key = o.name.trim();
+      if (!key) continue;
+      const arr = map.get(key);
+      if (arr) arr.push(o);
+      else map.set(key, [o]);
+    }
+    for (const arr of Array.from(map.values())) {
+      arr.sort((a, b) => (a.version ?? 1) - (b.version ?? 1));
+    }
+    return map;
+  }, [objectSettings]);
+
+  // 按场景姓名索引所有版本（升序），用于场景资产卡片选择版本
+  const sceneVersionsByName = useMemo(() => {
+    const map = new Map<string, SceneProfile[]>();
+    for (const s of sceneSettings ?? []) {
+      const key = s.name.trim();
+      if (!key) continue;
+      const arr = map.get(key);
+      if (arr) arr.push(s);
+      else map.set(key, [s]);
+    }
+    for (const arr of Array.from(map.values())) {
+      arr.sort((a, b) => (a.version ?? 1) - (b.version ?? 1));
+    }
+    return map;
+  }, [sceneSettings]);
+
+  /** 把物品资产提取到物品设定（作为 v1 版本保存） */
+  function handleExtractObject(asset: Asset) {
+    if (!onSaveObjectSettings) return;
+    const newObj: ObjectProfile = {
+      id: uuid(),
+      objectId: uuid(),
+      version: 1,
+      versionLabel: "v1",
+      name: asset.name.trim(),
+      category: "",
+      appearance: asset.imagePrompt.trim(),
+      purpose: asset.description.trim(),
+      origin: "",
+      imageUrl: asset.imageUrl || "",
+    };
+    onSaveObjectSettings([...(objectSettings ?? []), newObj]);
+  }
+
+  /** 把场景资产提取到场景设定（作为 v1 版本保存） */
+  function handleExtractScene(asset: Asset) {
+    if (!onSaveSceneSettings) return;
+    const newScene: SceneProfile = {
+      id: uuid(),
+      sceneId: uuid(),
+      version: 1,
+      versionLabel: "v1",
+      name: asset.name.trim(),
+      category: "",
+      appearance: asset.imagePrompt.trim(),
+      lightingMood: "",
+      origin: "",
+      imageUrl: asset.imageUrl || "",
+    };
+    onSaveSceneSettings([...(sceneSettings ?? []), newScene]);
+  }
+
   /** 一键生成：把所有标签交给 LLM，返回分类 + 图片提示词，覆盖现有资产 */
   async function handleGenerateAll() {
     if (tags.length === 0) {
@@ -142,10 +269,18 @@ export default function AssetPreparation({
         setError("未能解析出资产，请重试");
         return;
       }
-      // 保留已有的 imageUrl / status，按 name 匹配；同时匹配人物设定中的图片
+      // 保留已有的 imageUrl / status，按 name 匹配；同时匹配人物/物品设定中的图片
       const charImageByName = new Map<string, string>();
       for (const c of getLatestVersions(characterSettings ?? [])) {
         if (c.imageUrl) charImageByName.set(c.name.trim(), c.imageUrl);
+      }
+      const objectImageByName = new Map<string, string>();
+      for (const o of getLatestObjectVersions(objectSettings ?? [])) {
+        if (o.imageUrl) objectImageByName.set(o.name.trim(), o.imageUrl);
+      }
+      const sceneImageByName = new Map<string, string>();
+      for (const s of getLatestSceneVersions(sceneSettings ?? [])) {
+        if (s.imageUrl) sceneImageByName.set(s.name.trim(), s.imageUrl);
       }
       const prevByName = new Map(episode.assets.map((a) => [a.name, a]));
       const next: Asset[] = rawAssets
@@ -153,7 +288,9 @@ export default function AssetPreparation({
         .map((r) => {
           const prev = prevByName.get(r.name!);
           const charImage = charImageByName.get(r.name!.trim());
-          const imageUrl = prev?.imageUrl ?? charImage ?? "";
+          const objImage = objectImageByName.get(r.name!.trim());
+          const sceneImage = sceneImageByName.get(r.name!.trim());
+          const imageUrl = prev?.imageUrl ?? charImage ?? objImage ?? sceneImage ?? "";
           return {
             id: prev?.id ?? crypto.randomUUID(),
             name: r.name!,
@@ -245,7 +382,22 @@ export default function AssetPreparation({
       setError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
-    const pending = episode.assets.filter((a) => a.imagePrompt && a.status !== "ready");
+    const pending = episode.assets.filter((a) => {
+      if (!a.imagePrompt || a.status === "ready") return false;
+      // 已关联人物设定的人物资产用人物图片，不参与 AI 生图
+      if (a.type === "character" && (characterVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
+        return false;
+      }
+      // 已关联物品设定的物品资产用物品图片，不参与 AI 生图
+      if (a.type === "object" && (objectVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
+        return false;
+      }
+      // 已关联场景设定的场景资产用场景图片，不参与 AI 生图
+      if (a.type === "scene" && (sceneVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
+        return false;
+      }
+      return true;
+    });
     if (pending.length === 0) {
       setError("没有待生成图片的资产");
       return;
@@ -346,8 +498,77 @@ export default function AssetPreparation({
       status: "pending",
     };
     onReplaceAssets([...episode.assets, newAsset]);
+    resetAddCard();
+  }
+
+  /** 从已有设定添加资产 */
+  function handleAddFromSettings() {
+    if (!selectedSettingId) {
+      setError("请选择一个设定");
+      return;
+    }
+    let newAsset: Asset | null = null;
+    if (newAssetType === "character") {
+      const c = getLatestVersions(characterSettings ?? []).find((x) => x.id === selectedSettingId);
+      if (!c) return;
+      const descParts: string[] = [];
+      if (c.personality.trim()) descParts.push(`性格：${c.personality.trim()}`);
+      if (c.appearance.trim()) descParts.push(`外貌：${c.appearance.trim()}`);
+      newAsset = {
+        id: crypto.randomUUID(),
+        name: c.name.trim(),
+        type: "character",
+        description: descParts.join("；"),
+        imagePrompt: c.appearance.trim(),
+        imageUrl: c.imageUrl ?? "",
+        status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
+      };
+    } else if (newAssetType === "object") {
+      const o = getLatestObjectVersions(objectSettings ?? []).find((x) => x.id === selectedSettingId);
+      if (!o) return;
+      const descParts: string[] = [];
+      if (o.appearance.trim()) descParts.push(`外观：${o.appearance.trim()}`);
+      if (o.purpose.trim()) descParts.push(`功能：${o.purpose.trim()}`);
+      newAsset = {
+        id: crypto.randomUUID(),
+        name: o.name.trim(),
+        type: "object",
+        description: descParts.join("；"),
+        imagePrompt: o.appearance.trim(),
+        imageUrl: o.imageUrl ?? "",
+        status: (o.imageUrl ? "ready" : "pending") as AssetStatus,
+      };
+    } else {
+      const s = getLatestSceneVersions(sceneSettings ?? []).find((x) => x.id === selectedSettingId);
+      if (!s) return;
+      const descParts: string[] = [];
+      if (s.appearance.trim()) descParts.push(`外观：${s.appearance.trim()}`);
+      if (s.lightingMood.trim()) descParts.push(`氛围：${s.lightingMood.trim()}`);
+      newAsset = {
+        id: crypto.randomUUID(),
+        name: s.name.trim(),
+        type: "scene",
+        description: descParts.join("；"),
+        imagePrompt: s.appearance.trim(),
+        imageUrl: s.imageUrl ?? "",
+        status: (s.imageUrl ? "ready" : "pending") as AssetStatus,
+      };
+    }
+    if (!newAsset) return;
+    if (episode.assets.some((a) => a.name === newAsset!.name)) {
+      setError(`资产「${newAsset!.name}」已存在`);
+      return;
+    }
+    onReplaceAssets([...episode.assets, newAsset]);
+    resetAddCard();
+  }
+
+  /** 重置添加卡片状态 */
+  function resetAddCard() {
     setNewAssetName("");
     setNewAssetType("character");
+    setSelectedSettingId("");
+    setAddMode("new");
     setShowAddCard(false);
     setError(null);
   }
@@ -430,13 +651,25 @@ export default function AssetPreparation({
             return (
               <span
                 key={t}
-                className={`rounded px-2 py-0.5 text-xs ${
+                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs ${
                   has
                     ? "bg-amber-100 text-amber-800"
                     : "bg-slate-100 text-slate-500"
                 }`}
               >
                 @{t}
+                {onRemoveTag && (
+                  <button
+                    type="button"
+                    onClick={() => onRemoveTag(t)}
+                    className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-slate-400 hover:bg-slate-300 hover:text-red-600"
+                    title={`移除「${t}」标注`}
+                  >
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                )}
               </span>
             );
           })
@@ -459,18 +692,73 @@ export default function AssetPreparation({
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {episode.assets.map((asset) => (
-            <AssetCard
-              key={asset.id}
-              asset={asset}
-              isGenerating={generatingImageIds.has(asset.id)}
-              isUploading={uploadingIds.has(asset.id)}
-              cosConfigured={cosConfigured}
-              onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
-              onGenerateImage={() => handleGenerateImage(asset)}
-              onUpload={() => handleUploadToCos(asset)}
-            />
-          ))}
+          {episode.assets.map((asset) => {
+            // 人物资产若匹配到人物设定版本，则用人物资产卡片（可选择版本、复用图片）
+            const charVersions =
+              asset.type === "character" ? characterVersionsByName.get(asset.name.trim()) : undefined;
+            if (charVersions && charVersions.length > 0) {
+              return (
+                <CharacterAssetCard
+                  key={asset.id}
+                  asset={asset}
+                  versions={charVersions}
+                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
+                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                />
+              );
+            }
+            // 物品资产若匹配到物品设定版本，则用物品资产卡片（可选择版本、复用图片）
+            const objVersions =
+              asset.type === "object" ? objectVersionsByName.get(asset.name.trim()) : undefined;
+            if (objVersions && objVersions.length > 0) {
+              return (
+                <ObjectAssetCard
+                  key={asset.id}
+                  asset={asset}
+                  versions={objVersions}
+                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
+                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                />
+              );
+            }
+            // 场景资产若匹配到场景设定版本，则用场景资产卡片（可选择版本、复用图片）
+            const sceneVersions =
+              asset.type === "scene" ? sceneVersionsByName.get(asset.name.trim()) : undefined;
+            if (sceneVersions && sceneVersions.length > 0) {
+              return (
+                <SceneAssetCard
+                  key={asset.id}
+                  asset={asset}
+                  versions={sceneVersions}
+                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
+                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                />
+              );
+            }
+            return (
+              <AssetCard
+                key={asset.id}
+                asset={asset}
+                isGenerating={generatingImageIds.has(asset.id)}
+                isUploading={uploadingIds.has(asset.id)}
+                cosConfigured={cosConfigured}
+                onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
+                onGenerateImage={() => handleGenerateImage(asset)}
+                onUpload={() => handleUploadToCos(asset)}
+                onExtractObject={
+                  asset.type === "object" && onSaveObjectSettings
+                    ? () => handleExtractObject(asset)
+                    : undefined
+                }
+                onExtractScene={
+                  asset.type === "scene" && onSaveSceneSettings
+                    ? () => handleExtractScene(asset)
+                    : undefined
+                }
+                onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+              />
+            );
+          })}
           {/* 添加资产占位卡片 */}
           {!showAddCard ? (
             <button
@@ -485,45 +773,116 @@ export default function AssetPreparation({
             </button>
           ) : (
             <div className="flex flex-col overflow-hidden rounded-xl border-2 border-dashed border-brand-400 bg-white shadow-sm">
-              <div className="flex aspect-[4/3] items-center justify-center bg-slate-50">
-                <div className="flex flex-col items-center gap-2 px-4 text-center">
-                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="text-brand-400">
-                    <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
-                    <path d="M12 10v6M9 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                  <span className="text-xs font-medium text-slate-500">新建资产</span>
-                </div>
+              {/* 模式切换 */}
+              <div className="flex border-b border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => { setAddMode("new"); setSelectedSettingId(""); }}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "new" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
+                >
+                  新建资产
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAddMode("select"); setNewAssetName(""); }}
+                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "select" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
+                >
+                  从设定选择
+                </button>
               </div>
-              <div className="flex flex-col gap-2.5 p-3">
-                <div>
-                  <label className="mb-0.5 block text-xs text-slate-400">资产名称</label>
-                  <input
-                    type="text"
-                    value={newAssetName}
-                    onChange={(e) => setNewAssetName(e.target.value)}
-                    placeholder="如：小明、咖啡馆"
-                    className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
-                    onKeyDown={(e) => { if (e.key === "Enter") handleAddAsset(); }}
-                    autoFocus
-                  />
+              {addMode === "new" ? (
+                <>
+                  <div className="flex aspect-[4/3] items-center justify-center bg-slate-50">
+                    <div className="flex flex-col items-center gap-2 px-4 text-center">
+                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="text-brand-400">
+                        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                        <path d="M12 10v6M9 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                      </svg>
+                      <span className="text-xs font-medium text-slate-500">新建资产</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2.5 p-3">
+                    <div>
+                      <label className="mb-0.5 block text-xs text-slate-400">资产名称</label>
+                      <input
+                        type="text"
+                        value={newAssetName}
+                        onChange={(e) => setNewAssetName(e.target.value)}
+                        placeholder="如：小明、咖啡馆"
+                        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+                        onKeyDown={(e) => { if (e.key === "Enter") handleAddAsset(); }}
+                        autoFocus
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-0.5 block text-xs text-slate-400">类型</label>
+                      <select
+                        value={newAssetType}
+                        onChange={(e) => setNewAssetType(e.target.value as AssetType)}
+                        className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+                      >
+                        {TYPE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button size="sm" className="flex-1" onClick={handleAddAsset}>确认</Button>
+                      <Button variant="ghost" size="sm" className="flex-1" onClick={resetAddCard}>取消</Button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="flex flex-col gap-2.5 p-3">
+                  <div>
+                    <label className="mb-0.5 block text-xs text-slate-400">设定类型</label>
+                    <select
+                      value={newAssetType}
+                      onChange={(e) => { setNewAssetType(e.target.value as AssetType); setSelectedSettingId(""); }}
+                      className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+                    >
+                      {TYPE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}设定</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-0.5 block text-xs text-slate-400">选择设定</label>
+                    {availableSettings.length === 0 ? (
+                      <p className="rounded-md bg-slate-50 px-2.5 py-2 text-xs text-slate-400">
+                        暂无可选的{ASSET_TYPE_LABELS[newAssetType]}设定，或已全部添加
+                      </p>
+                    ) : (
+                      <div className="max-h-48 space-y-1 overflow-y-auto">
+                        {availableSettings.map((s) => (
+                          <label
+                            key={s.id}
+                            className={`flex cursor-pointer items-center justify-between rounded-md border px-2.5 py-1.5 text-sm transition-colors ${selectedSettingId === s.id ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-200 text-slate-700 hover:bg-slate-50"}`}
+                          >
+                            <span className="flex items-center gap-2">
+                              <input
+                                type="radio"
+                                name="setting-select"
+                                value={s.id}
+                                checked={selectedSettingId === s.id}
+                                onChange={() => setSelectedSettingId(s.id)}
+                                className="h-3.5 w-3.5"
+                              />
+                              {s.label}
+                              <span className="text-xs text-slate-400">{s.sub}</span>
+                            </span>
+                            {s.hasImage && <span className="text-xs text-emerald-600">有图</span>}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <Button size="sm" className="flex-1" onClick={handleAddFromSettings} disabled={!selectedSettingId}>确认添加</Button>
+                    <Button variant="ghost" size="sm" className="flex-1" onClick={resetAddCard}>取消</Button>
+                  </div>
                 </div>
-                <div>
-                  <label className="mb-0.5 block text-xs text-slate-400">类型</label>
-                  <select
-                    value={newAssetType}
-                    onChange={(e) => setNewAssetType(e.target.value as AssetType)}
-                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
-                  >
-                    {TYPE_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <Button size="sm" className="flex-1" onClick={handleAddAsset}>确认</Button>
-                  <Button variant="ghost" size="sm" className="flex-1" onClick={() => { setShowAddCard(false); setNewAssetName(""); setNewAssetType("character"); setError(null); }}>取消</Button>
-                </div>
-              </div>
+              )}
             </div>
           )}
         </div>
@@ -541,6 +900,9 @@ function AssetCard({
   onUpdate,
   onGenerateImage,
   onUpload,
+  onExtractObject,
+  onExtractScene,
+  onDelete,
 }: {
   asset: Asset;
   isGenerating: boolean;
@@ -549,6 +911,9 @@ function AssetCard({
   onUpdate: (field: keyof Asset, value: string) => void;
   onGenerateImage: () => void;
   onUpload: () => void;
+  onExtractObject?: () => void;
+  onExtractScene?: () => void;
+  onDelete?: () => void;
 }) {
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -595,6 +960,19 @@ function AssetCard({
             </svg>
             <span className="text-xs">图片待生成</span>
           </div>
+        )}
+        {/* 删除按钮 */}
+        {onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur transition-colors hover:bg-red-500"
+            title="删除该资产"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
+          </button>
         )}
       </div>
 
@@ -663,6 +1041,28 @@ function AssetCard({
               title="上传本地图片到 COS 存储"
             >
               上传
+            </Button>
+          )}
+          {onExtractObject && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onExtractObject}
+              disabled={isGenerating || isUploading}
+              title="提取到物品设定，可关联多版本图片"
+            >
+              提取到物品设定
+            </Button>
+          )}
+          {onExtractScene && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={onExtractScene}
+              disabled={isGenerating || isUploading}
+              title="提取到场景设定，可关联多版本图片"
+            >
+              提取到场景设定
             </Button>
           )}
           {asset.status === "failed" && (

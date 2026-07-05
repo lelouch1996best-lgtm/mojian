@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import StoryboardRow from "./StoryboardRow";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
@@ -19,6 +19,8 @@ interface StoryboardTableProps {
   onMoveRow: (id: string, direction: "up" | "down") => void;
   onBackToStep1: () => void;
   onEnterStep3: () => void;
+  /** 从所有分镜画面描述中移除某个标签的 @ 前缀（删除标注） */
+  onRemoveTag?: (tagName: string) => void;
 }
 
 const COLUMNS = [
@@ -40,12 +42,15 @@ export default function StoryboardTable({
   onMoveRow,
   onBackToStep1,
   onEnterStep3,
+  onRemoveTag,
 }: StoryboardTableProps) {
   const [tagging, setTagging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 当前已有标签（去重，按首次出现顺序）
+  const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
   // 当前已有标签数（用于判断是否已标注过）
-  const tagCount = extractAllTags(episode.shots).length;
+  const tagCount = tags.length;
 
   /** 智能标注：调用 LLM 给所有画面描述加 @标签 */
   async function handleTagging() {
@@ -139,6 +144,33 @@ export default function StoryboardTable({
       {tagCount === 0 && (
         <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
           提示：点击「智能标注」可自动识别画面描述中的人物、场景、物品，并用琥珀色 @标签 标注。标注完成后才能进入第三步资产准备。
+        </div>
+      )}
+
+      {/* 标签列表 */}
+      {tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-slate-400">已标注标签：</span>
+          {tags.map((t) => (
+            <span
+              key={t}
+              className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800"
+            >
+              @{t}
+              {onRemoveTag && (
+                <button
+                  type="button"
+                  onClick={() => onRemoveTag(t)}
+                  className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-amber-400 hover:bg-amber-300 hover:text-red-600"
+                  title={`移除「${t}」标注`}
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                    <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                </button>
+              )}
+            </span>
+          ))}
         </div>
       )}
 

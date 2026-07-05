@@ -63,6 +63,20 @@ export function getDb(): Database.Database {
     db.exec("ALTER TABLE series ADD COLUMN character_settings TEXT NOT NULL DEFAULT '[]'");
   }
 
+  // 迁移：为旧库的 series 表补 object_settings 列
+  try {
+    db.prepare("SELECT object_settings FROM series LIMIT 1").get();
+  } catch {
+    db.exec("ALTER TABLE series ADD COLUMN object_settings TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  // 迁移：为旧库的 series 表补 scene_settings 列
+  try {
+    db.prepare("SELECT scene_settings FROM series LIMIT 1").get();
+  } catch {
+    db.exec("ALTER TABLE series ADD COLUMN scene_settings TEXT NOT NULL DEFAULT '[]'");
+  }
+
   return db;
 }
 

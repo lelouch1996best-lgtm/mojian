@@ -16,6 +16,8 @@ interface EditableCellProps {
   minWidth?: string;
   /** 显示态是否把 @名称@ 渲染为蓝色标签 */
   renderTags?: boolean;
+  /** 点击标签上的 × 移除标注时回调（传入不含 @ 的标签名） */
+  onRemoveTag?: (tagName: string) => void;
   /**
    * 当输入 @ 时弹出的可选项列表（仅 multiline 模式下生效）。
    * label 为展示文本，value 为插入的名称（不含 @）。
@@ -39,6 +41,7 @@ export default function EditableCell({
   multiline = false,
   minWidth = "120px",
   renderTags = false,
+  onRemoveTag,
   atMentionOptions,
   onAtMentionSelect,
 }: EditableCellProps) {
@@ -268,7 +271,7 @@ export default function EditableCell({
     >
       {value ? (
         renderTags ? (
-          <TaggedText text={value} />
+          <TaggedText text={value} onRemoveTag={onRemoveTag} />
         ) : (
           value
         )

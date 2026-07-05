@@ -13,15 +13,21 @@ export async function POST(request: Request) {
       for (const [id, s] of Object.entries(body.series)) {
         const ser = s as any;
         db.prepare(`
-          INSERT INTO series (id, title, description, order_num, world_settings, style_settings, episode_order, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO series (id, title, description, order_num, world_settings, character_settings, object_settings, scene_settings, style_settings, episode_order, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(id) DO UPDATE SET
             title = excluded.title, description = excluded.description, order_num = excluded.order_num,
-            world_settings = excluded.world_settings, style_settings = excluded.style_settings,
+            world_settings = excluded.world_settings, character_settings = excluded.character_settings,
+            object_settings = excluded.object_settings, scene_settings = excluded.scene_settings,
+            style_settings = excluded.style_settings,
             episode_order = excluded.episode_order, updated_at = excluded.updated_at
         `).run(
           ser.id, ser.title ?? "", ser.description ?? "", ser.order ?? 0,
-          JSON.stringify(ser.worldSettings ?? {}), JSON.stringify(ser.styleSettings ?? {}),
+          JSON.stringify(ser.worldSettings ?? {}),
+          JSON.stringify(ser.characterSettings ?? []),
+          JSON.stringify(ser.objectSettings ?? []),
+          JSON.stringify(ser.sceneSettings ?? []),
+          JSON.stringify(ser.styleSettings ?? {}),
           JSON.stringify(ser.episodeOrder ?? []), ser.createdAt ?? now, now
         );
       }

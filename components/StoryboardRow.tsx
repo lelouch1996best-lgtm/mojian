@@ -1,6 +1,7 @@
 "use client";
 
 import EditableCell from "./EditableCell";
+import { removeTagPrefix } from "@/lib/utils";
 import type { Shot } from "@/lib/types";
 
 interface StoryboardRowProps {
@@ -47,6 +48,9 @@ export default function StoryboardRow({
         <EditableCell
           value={shot.visualDescription}
           onChange={(v) => onUpdate("visualDescription", v)}
+          onRemoveTag={(tagName) =>
+            onUpdate("visualDescription", removeTagPrefix(shot.visualDescription, tagName))
+          }
           placeholder="描述画面内容…"
           multiline
           minWidth="200px"
