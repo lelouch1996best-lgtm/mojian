@@ -15,7 +15,8 @@ import CharacterConflictModal, {
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings } from "@/lib/llm-client";
 import { emptyShot, debounce, removeTagPrefix } from "@/lib/utils";
-import type { Asset, Episode, Shot, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
+import type { Asset, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
+import { DEFAULT_SHOT_VIDEO_CONFIG } from "@/lib/model-presets";
 
 export default function EpisodePage() {
   const router = useRouter();
@@ -268,6 +269,17 @@ export default function EpisodePage() {
       shots: ep.shots.map((s) => (s.id === shotId ? { ...s, videoStatus: status } : s)),
     }));
   }
+  /** 卡片级视频配置增量更新（惰性写入：首次修改时落库 videoConfig） */
+  function handleUpdateVideoConfig(shotId: string, patch: Partial<ShotVideoConfig>) {
+    update((ep) => ({
+      ...ep,
+      shots: ep.shots.map((s) => {
+        if (s.id !== shotId) return s;
+        const base = s.videoConfig ?? DEFAULT_SHOT_VIDEO_CONFIG;
+        return { ...s, videoConfig: { ...base, ...patch } };
+      }),
+    }));
+  }
   function handleUpdateManyVisuals(
     updates: { id: string; visualDescription: string }[]
   ) {
@@ -476,6 +488,7 @@ export default function EpisodePage() {
           episode={episode}
           onUpdateShot={handleUpdateShot}
           onUpdateVideoStatus={handleUpdateVideoStatus}
+          onUpdateVideoConfig={handleUpdateVideoConfig}
           onBackToStep3={() => gotoStep(3)}
           onLinkAsset={handleLinkAsset}
           onUnlinkAsset={handleUnlinkAsset}

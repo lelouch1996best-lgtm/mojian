@@ -1,9 +1,6 @@
 import type { CharacterProfile } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
 
-const CHARACTER_KEY = "mojian_character_settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
 /** 创建空白人物档案 */
 export function emptyCharacterProfile(): CharacterProfile {
   return {
@@ -22,31 +19,15 @@ export function emptyCharacterProfile(): CharacterProfile {
 }
 
 export async function getCharacterSettings(): Promise<CharacterProfile[]> {
-  if (STORAGE_MODE === "server") {
-    try {
-      return await apiClient.getSetting<CharacterProfile[]>("character");
-    } catch {
-      return [];
-    }
-  }
-  if (typeof window === "undefined") return [];
   try {
-    const raw = localStorage.getItem(CHARACTER_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return (await apiClient.getSetting<CharacterProfile[]>("character")) ?? [];
   } catch {
     return [];
   }
 }
 
 export async function saveCharacterSettings(c: CharacterProfile[]): Promise<void> {
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("character", c);
-    return;
-  }
-  if (typeof window === "undefined") return;
-  localStorage.setItem(CHARACTER_KEY, JSON.stringify(c));
+  await apiClient.saveSetting("character", c);
 }
 
 /**

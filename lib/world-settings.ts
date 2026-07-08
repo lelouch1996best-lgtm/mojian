@@ -1,9 +1,6 @@
 import type { WorldSettings } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
 
-const WORLD_KEY = "mojian_world_settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
 const DEFAULTS: WorldSettings = {
   background: "",
   theme: "",
@@ -11,25 +8,14 @@ const DEFAULTS: WorldSettings = {
 };
 
 export async function getWorldSettings(): Promise<WorldSettings> {
-  if (STORAGE_MODE === "server") {
-    try { return await apiClient.getSetting<WorldSettings>("world"); } catch { return { ...DEFAULTS }; }
-  }
-  if (typeof window === "undefined") return { ...DEFAULTS };
   try {
-    const raw = localStorage.getItem(WORLD_KEY);
-    return raw ? { ...DEFAULTS, ...(JSON.parse(raw) as Partial<WorldSettings>) } : { ...DEFAULTS };
-  } catch {
-    return { ...DEFAULTS };
-  }
+    const value = await apiClient.getSetting<WorldSettings>("world");
+    return value ?? { ...DEFAULTS };
+  } catch { return { ...DEFAULTS }; }
 }
 
 export async function saveWorldSettings(s: WorldSettings): Promise<void> {
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("world", s);
-    return;
-  }
-  if (typeof window === "undefined") return;
-  localStorage.setItem(WORLD_KEY, JSON.stringify(s));
+  await apiClient.saveSetting("world", s);
 }
 
 /** 生成用于 LLM 上下文的世界设定文本片段，为空字段不输出 */

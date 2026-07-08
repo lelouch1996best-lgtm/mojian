@@ -1,4 +1,4 @@
-/** 服务端模式的 API 客户端。仅当 STORAGE_MODE === "server" 时使用。 */
+/** 服务端 API 客户端 */
 
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 

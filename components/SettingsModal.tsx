@@ -33,6 +33,7 @@ import {
   getVideoModels,
   saveVideoModels,
   resetVideoModels,
+  initAllModels,
   type ModelEntry,
 } from "@/lib/model-presets";
 import {
@@ -106,6 +107,9 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     ok: boolean;
     message: string;
   } | null>(null);
+
+  // ---- 初始化模型 ----
+  const [initializing, setInitializing] = useState(false);
 
   // 打开时载入已存设置
   useEffect(() => {
@@ -332,17 +336,11 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     const updated = videoModels.filter((m) => m.value !== value);
     setVideoModels(updated);
     await saveVideoModels(updated);
-    if (vidSettings.model === value && updated.length > 0) {
-      updateVid("model", updated[0].value);
-    }
   }
 
   async function handleResetVideoModels() {
     const defaults = await resetVideoModels();
     setVideoModels(defaults);
-    if (!defaults.some((m) => m.value === vidSettings.model) && defaults.length > 0) {
-      updateVid("model", defaults[0].value);
-    }
   }
 
   // ---- COS handlers ----
@@ -419,6 +417,40 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
     setCosSaved(true);
   }
 
+  /** 初始化：用代码中的默认模型覆盖数据库 */
+  async function handleInitModels() {
+    if (!window.confirm(
+      "确定要用代码中的默认模型配置覆盖数据库中的所有模型列表吗？\n\n" +
+      "将覆盖：\n" +
+      "• 所有 LLM 服务商的模型列表\n" +
+      "• 图片生成模型列表\n" +
+      "• 视频生成模型列表\n\n" +
+      "自定义添加的模型将被清除。"
+    )) {
+      return;
+    }
+    setInitializing(true);
+    try {
+      await initAllModels();
+      // 刷新 UI 中的模型列表
+      const llmDefaults = await getLLMModels(provider);
+      const imgDefaults = await getImageModels();
+      const vidDefaults = await getVideoModels();
+      setLLMModels(llmDefaults);
+      setImageModels(imgDefaults);
+      setVideoModels(vidDefaults);
+      // 如果当前选中的模型不在默认列表中，切换到第一个
+      if (!llmDefaults.some((m) => m.value === model) && llmDefaults.length > 0) {
+        setModel(llmDefaults[0].value);
+      }
+      if (!imgDefaults.some((m) => m.value === imgSettings.model) && imgDefaults.length > 0) {
+        updateImg("model", imgDefaults[0].value);
+      }
+    } finally {
+      setInitializing(false);
+    }
+  }
+
   return (
     <Modal
       open={open}
@@ -426,9 +458,19 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
       title="API 设置"
       footer={
         <div className="flex items-center justify-between w-full">
-          <Button variant="ghost" onClick={onClose}>
-            关闭
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              关闭
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleInitModels}
+              loading={initializing}
+            >
+              初始化模型列表
+            </Button>
+          </div>
           <Button size="sm" onClick={handleSaveAll}>
             保存全部设置
           </Button>
@@ -708,10 +750,10 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                 <input type="password" value={vidSettings.apiKey} onChange={(e) => updateVid("apiKey", e.target.value)} placeholder="ark-...（留空复用图片 API）" className="input" autoComplete="off" />
               </Field>
 
-              {/* --- 视频模型选择器 + 管理 --- */}
+              {/* --- 视频模型列表管理（供第四步卡片下拉使用） --- */}
               <div>
                 <div className="mb-1.5 flex items-baseline justify-between">
-                  <label className="text-sm font-medium text-slate-700">模型</label>
+                  <label className="text-sm font-medium text-slate-700">模型列表</label>
                   <button
                     type="button"
                     onClick={() => setShowVideoManager(!showVideoManager)}
@@ -720,13 +762,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     {showVideoManager ? "收起管理" : "管理模型"}
                   </button>
                 </div>
-                <select value={vidSettings.model} onChange={(e) => updateVid("model", e.target.value)} className="input">
-                  {videoModels.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label ? `${m.label}（${m.value}）` : m.value}
-                    </option>
-                  ))}
-                </select>
+                <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在每个镜头卡片的「模型」下拉中。模型、分辨率、时长等生成参数在第四步每个镜头卡片单独配置。</p>
 
                 {showVideoManager && (
                   <ModelManagerPanel
@@ -738,48 +774,9 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
                     onAdd={handleAddVideoModel}
                     onDelete={handleDeleteVideoModel}
                     onReset={handleResetVideoModels}
-                    currentModel={vidSettings.model}
                   />
                 )}
               </div>
-
-              <Field label="分辨率">
-                <select value={vidSettings.resolution} onChange={(e) => updateVid("resolution", e.target.value as VideoGenSettings["resolution"])} className="input">
-                  <option value="480p">480p</option>
-                  <option value="720p">720p</option>
-                  <option value="1080p">1080p</option>
-                </select>
-              </Field>
-
-              <Field label="宽高比">
-                <select value={vidSettings.ratio} onChange={(e) => updateVid("ratio", e.target.value as VideoGenSettings["ratio"])} className="input">
-                  <option value="16:9">16:9</option>
-                  <option value="9:16">9:16（竖屏）</option>
-                  <option value="1:1">1:1</option>
-                  <option value="4:3">4:3</option>
-                  <option value="3:4">3:4</option>
-                  <option value="21:9">21:9</option>
-                  <option value="adaptive">adaptive（自动）</option>
-                </select>
-              </Field>
-
-              <Field label="视频时长（秒）" hint="Seedance 1.0 Pro: 2-12 秒；1.5 Pro: 4-12 秒">
-                <input type="number" min={2} max={12} value={vidSettings.duration} onChange={(e) => updateVid("duration", Number(e.target.value))} className="input" />
-              </Field>
-
-              <Field label="水印">
-                <label className="inline-flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={vidSettings.watermark} onChange={(e) => updateVid("watermark", e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
-                  <span className="text-sm text-slate-700">{vidSettings.watermark ? "添加水印" : "不添加水印"}</span>
-                </label>
-              </Field>
-
-              <Field label="有声视频" hint="仅 1.5 Pro / 2.0 系列支持">
-                <label className="inline-flex cursor-pointer items-center gap-2">
-                  <input type="checkbox" checked={vidSettings.generateAudio} onChange={(e) => updateVid("generateAudio", e.target.checked)} className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500" />
-                  <span className="text-sm text-slate-700">{vidSettings.generateAudio ? "生成有声视频" : "无声视频"}</span>
-                </label>
-              </Field>
 
             </div>
           )}
@@ -865,7 +862,7 @@ export default function SettingsModal({ open, onClose }: SettingsModalProps) {
         </fieldset>
 
         <p className="text-xs text-slate-400">
-          说明：API Key 仅保存在你本机浏览器 localStorage 中，通过本地服务转发请求，不会上传到任何第三方。
+          说明：API Key 保存在服务端数据库中，通过本地服务转发请求，不会上传到任何第三方。
         </p>
       </div>
 
@@ -1000,7 +997,7 @@ function ModelManagerPanel({
           }}
           className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
         >
-          恢复默认模型列表
+          初始化模型列表
         </button>
       </div>
     </div>

@@ -1,31 +1,14 @@
 import type { CosSettings } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
 
-const COS_STORAGE_KEY = "mojian_cos_settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
-/** 从 localStorage 读取 COS 配置 */
+/** 读取 COS 配置 */
 export async function getCosSettings(): Promise<CosSettings | null> {
-  if (STORAGE_MODE === "server") {
-    try { return await apiClient.getSetting<CosSettings>("cos"); } catch { return null; }
-  }
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(COS_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as CosSettings) : null;
-  } catch {
-    return null;
-  }
+  try { return await apiClient.getSetting<CosSettings>("cos"); } catch { return null; }
 }
 
-/** 保存 COS 配置到 localStorage */
+/** 保存 COS 配置 */
 export async function saveCosSettings(settings: CosSettings): Promise<void> {
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("cos", settings);
-    return;
-  }
-  if (typeof window === "undefined") return;
-  localStorage.setItem(COS_STORAGE_KEY, JSON.stringify(settings));
+  await apiClient.saveSetting("cos", settings);
 }
 
 /** 检查 COS 配置是否完整 */
@@ -59,4 +42,42 @@ export interface CosUploadResponse {
   key: string; // COS 对象 key
   bucket: string;
   region: string;
+}
+
+/**
+ * 将本地文件上传到 COS，返回公网 URL。
+ * 用于视频卡片上传参考视频/音频/尾帧图等参考素材。
+ * @param file 用户选择的文件
+ * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
+ */
+export async function uploadRefFile(
+  file: File,
+  nameHint: string
+): Promise<string> {
+  const settings = await getCosSettings();
+  if (!settings) {
+    throw new Error("未配置 COS 存储，请先在设置中配置腾讯云 COS");
+  }
+  // 读取为 base64
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+  const ext = file.name.split(".").pop() ?? "bin";
+  const res = await fetch("/api/cos/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      base64,
+      fileName: `${nameHint}.${ext}`,
+      settings,
+    }),
+  });
+  const data = (await res.json()) as CosUploadResponse | { error?: string };
+  if (!res.ok || !("url" in data)) {
+    throw new Error((data as { error?: string }).error ?? "上传失败");
+  }
+  return (data as CosUploadResponse).url;
 }

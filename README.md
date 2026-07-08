@@ -9,12 +9,14 @@
 - **四步创作流程**：故事扩写 → 分镜表 → 资产准备 → 视频生成，逐步推进，随时回溯
 - **多 LLM 接入**：支持 DeepSeek / GLM / 小米 MiMo 等兼容 OpenAI 格式的模型，自带 API 代理转发
 - **智能分镜**：一键将扩写内容拆解为结构化分镜表（景别/运镜/光影/对白/音效），全字段可编辑
-- **资产自动派生**：从分镜文本中的 `@标签` 自动提取人物/场景/物品，生成描述与图片提示词
+- **系列级资产设定**：人物 / 物品 / 场景设定档案独立于剧集，跨集共享；同一资产支持多版本管理（如「少年期」「觉醒后」），LLM 上下文自动取最新版本
+- **资产自动派生**：从分镜文本中的 `@标签` 自动提取人物/场景/物品，生成描述与图片提示词，并与系列设定智能匹配（冲突可手动选择覆盖来源）
 - **图片生成**：接入火山引擎 Seedream/Doubao，一键生成角色立绘、场景设定、道具图
-- **视频生成**：接入火山引擎 Seedance，支持参考帧、分辨率/比例/时长/有声视频配置
-- **腾讯云 COS**：资产图片上传至 COS，生成公网 URL 供视频 API 直接引用
-- **世界设定**：全局故事背景/主题/写作风格，自动注入 LLM 上下文，保持系列一致性
-- **漫剧风格预设**：不同风格的图片/视频提示词模板，每个系列可独立配置
+- **视频生成**：接入火山引擎 Seedance，支持文生/首帧/首尾帧/多模态参考生视频，卡片级配置分辨率/比例/时长/有声，内置模型能力矩阵自动适配可用选项
+- **模型预设管理**：LLM / 图片 / 视频模型列表可自定义增删，未自定义时回退内置默认列表
+- **腾讯云 COS**：资产图片上传至 COS，生成公网 URL 供视频 API 直接引用，支持自定义 CDN 域名
+- **世界设定**：每系列独立的故事背景/主题/写作风格，自动注入 LLM 上下文，保持系列一致性
+- **漫剧风格预设**：内置真人/2D 动漫/国漫修仙/水墨四种风格，每系列可独立配置并自定义图片与视频提示词模板
 - **暖色设计语言**：墨间原创暖色系 UI，Noto Serif SC + Noto Sans SC 字体搭配
 
 ## 🛠 技术栈
@@ -24,7 +26,7 @@
 | 框架 | Next.js 14 (App Router) + React 18 |
 | 样式 | Tailwind CSS 3.4（自定义暖色主题） |
 | 语言 | TypeScript 5.5 |
-| 数据存储 | localStorage（前端）/ better-sqlite3（服务端可选） |
+| 数据存储 | better-sqlite3（服务端 SQLite） |
 | 对象存储 | 腾讯云 COS（cos-nodejs-sdk-v5） |
 | AI 服务 | LLM（OpenAI 兼容格式）/ 火山引擎 Seedream + Seedance |
 
@@ -65,9 +67,15 @@ npm start
 mojian/
 ├── app/                        # Next.js App Router
 │   ├── page.tsx                # 落地页（暖色设计稿还原）
-│   ├── home/page.tsx           # 剧集列表页
+│   ├── home/page.tsx           # 企划列表页
 │   ├── episode/[id]/page.tsx   # 四步编辑器
-│   ├── series/[id]/page.tsx    # 系列管理
+│   ├── series/[id]/            # 系列管理（每系列独立设定）
+│   │   ├── page.tsx            #   系列详情 + 剧集列表
+│   │   ├── characters/         #   人物设定页（含 CharacterCard）
+│   │   ├── objects/            #   物品设定页（含 ObjectCard）
+│   │   ├── scenes/             #   场景设定页（含 SceneCard）
+│   │   ├── world-settings/     #   世界设定页
+│   │   └── style-settings/     #   漫剧风格设置页
 │   ├── layout.tsx              # 全局布局
 │   ├── globals.css             # 全局样式
 │   └── api/                    # API Routes（服务端代理）
@@ -76,20 +84,21 @@ mojian/
 │       ├── video/              #   视频生成（create/query/cancel）
 │       ├── cos/                #   COS 上传/迁移
 │       ├── data/               #   服务端数据 CRUD（episodes/series）
-│       ├── settings/           #   设置读写
-│       └── migrate/route.ts    #   localStorage → 服务端迁移
+│       └── settings/           #   设置读写
 ├── components/                 # React 组件
 │   ├── ContentExpansion.tsx    #   Step1 故事扩写
 │   ├── StoryboardTable.tsx     #   Step2 分镜表
 │   ├── StoryboardRow.tsx       #   分镜行（可编辑单元格）
 │   ├── AssetPreparation.tsx    #   Step3 资产准备
 │   ├── VideoGeneration.tsx     #   Step4 视频生成
+│   ├── CharacterAssetCard.tsx  #   人物资产卡片
+│   ├── ObjectAssetCard.tsx     #   物品资产卡片
+│   ├── SceneAssetCard.tsx      #   场景资产卡片
+│   ├── CharacterConflictModal.tsx # 人物冲突处理弹窗
 │   ├── Stepper.tsx             #   步骤导航
 │   ├── EpisodeList.tsx         #   剧集列表
 │   ├── SeriesList.tsx          #   系列列表
 │   ├── SettingsModal.tsx       #   LLM/图片/视频 API 设置
-│   ├── WorldSettingsModal.tsx  #   世界设定
-│   ├── StyleSettingsModal.tsx  #   漫剧风格设置
 │   ├── TaggedText.tsx          #   @标签高亮渲染
 │   ├── EditableCell.tsx        #   可编辑单元格
 │   ├── ImageLightbox.tsx       #   图片大图查看
@@ -101,17 +110,19 @@ mojian/
 │   ├── image-client.ts         #   图片生成封装
 │   ├── video-client.ts         #   视频生成封装
 │   ├── cos-client.ts           #   COS 客户端
-│   ├── storage.ts              #   数据持久化（localStorage）
+│   ├── storage.ts              #   数据持久化（服务端 API）
 │   ├── db.ts                   #   服务端数据库（better-sqlite3）
 │   ├── prompts.ts              #   LLM Prompt 模板
-│   ├── model-presets.ts        #   模型预设
+│   ├── model-presets.ts        #   模型预设 + 视频能力矩阵
+│   ├── character-settings.ts   #   人物设定管理（多版本）
+│   ├── object-settings.ts      #   物品设定管理（多版本）
+│   ├── scene-settings.ts       #   场景设定管理（多版本）
 │   ├── world-settings.ts       #   世界设定管理
 │   ├── style-settings.ts       #   风格预设管理
-│   ├── auth.ts                 #   鉴权
+│   ├── auth.ts                 #   Bearer Token 鉴权
 │   └── utils.ts                #   工具函数
 ├── tailwind.config.ts          # Tailwind 暖色主题配置
-├── next.config.mjs             # Next.js 配置
-└── DEPLOY.md                   # 部署指南
+└── next.config.mjs             # Next.js 配置
 ```
 
 ## 🎬 四步创作流程
@@ -129,17 +140,19 @@ mojian/
 
 1. **故事扩写**：输入简短灵感，AI 扩写为完整故事段落，可手动编辑
 2. **分镜拆解**：将故事自动拆解为结构化分镜（景别/运镜/光影/对白/音效），全字段可编辑
-3. **资产准备**：从分镜中的 `@标签` 自动派生资产，生成图片提示词并调用图片 API
+3. **资产准备**：从分镜中的 `@标签` 自动派生资产，生成图片提示词并调用图片 API；可手动关联系列级设定档案，冲突时选择覆盖来源
 4. **视频生成**：将分镜的最终提示词 + 关联资产图片传给视频 API，生成短视频
 
 ## 🔧 配置说明
 
-所有配置项通过应用内「设置」面板管理，存储在 localStorage（或服务端数据库）。需要配置：
+所有配置项通过应用内「设置」面板管理，存储在服务端数据库。需要配置：
 
 - **LLM 设置**：选择 provider → 填入 baseURL / apiKey / model
 - **图片 API**：火山引擎方舟 API Key + 模型 ID
 - **视频 API**：与图片 API 共用同一 Key + Seedance 模型 ID
-- **腾讯云 COS**（可选）：SecretId / SecretKey / Bucket / Region
+- **腾讯云 COS**（可选）：SecretId / SecretKey / Bucket / Region / 自定义 CDN 域名
+
+> **鉴权**：服务端数据 API 通过 Bearer Token 鉴权。设置环境变量 `STORAGE_TOKEN` 后启用；开发模式下若未设置则自动放行。前端通过 `NEXT_PUBLIC_STORAGE_TOKEN` 传入同一 Token。
 
 ## 🎨 设计系统
 

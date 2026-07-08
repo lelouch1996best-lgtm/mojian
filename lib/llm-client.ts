@@ -1,9 +1,6 @@
 import type { LLMSettings, LLMMessage, LLMProxyRequest } from "./types";
 import { apiClient } from "./api-client";
 
-const SETTINGS_KEY = "ai-script-llm-settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
 /** 预设 provider 默认值 */
 export interface ProviderPreset {
   baseURL: string;
@@ -53,25 +50,12 @@ export const PROVIDER_PRESETS: Record<LLMSettings["provider"], ProviderPreset> =
 };
 
 export async function getSettings(): Promise<LLMSettings | null> {
-  if (STORAGE_MODE === "server") {
-    try { return await apiClient.getSetting<LLMSettings>("llm"); } catch { return null; }
-  }
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    return raw ? (JSON.parse(raw) as LLMSettings) : null;
-  } catch {
-    return null;
-  }
+  try { return await apiClient.getSetting<LLMSettings>("llm"); } catch { return null; }
 }
 
 export async function saveSettings(s: LLMSettings): Promise<void> {
   const normalized: LLMSettings = { ...s, baseURL: s.baseURL.replace(/\/+$/, "") };
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("llm", normalized);
-    return;
-  }
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
+  await apiClient.saveSetting("llm", normalized);
 }
 
 interface CallOptions {

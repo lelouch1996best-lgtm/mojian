@@ -5,9 +5,6 @@ import type {
 } from "./types";
 import { apiClient } from "./api-client";
 
-const SETTINGS_KEY = "ai-script-image-settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
 /** 火山引擎 Seedream 模型预设 */
 export const IMAGE_MODEL_PRESETS: {
   value: string;
@@ -48,18 +45,7 @@ export const DEFAULT_IMAGE_SETTINGS: ImageGenSettings = {
 };
 
 export async function getImageSettings(): Promise<ImageGenSettings | null> {
-  if (STORAGE_MODE === "server") {
-    try { return await apiClient.getSetting<ImageGenSettings>("image"); } catch { return null; }
-  }
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<ImageGenSettings>;
-    return { ...DEFAULT_IMAGE_SETTINGS, ...parsed };
-  } catch {
-    return null;
-  }
+  try { return await apiClient.getSetting<ImageGenSettings>("image"); } catch { return null; }
 }
 
 export async function saveImageSettings(s: ImageGenSettings): Promise<void> {
@@ -67,11 +53,7 @@ export async function saveImageSettings(s: ImageGenSettings): Promise<void> {
     ...s,
     baseURL: s.baseURL.replace(/\/+$/, ""),
   };
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("image", normalized);
-    return;
-  }
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
+  await apiClient.saveSetting("image", normalized);
 }
 
 /**

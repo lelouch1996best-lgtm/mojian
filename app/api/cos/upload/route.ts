@@ -89,16 +89,27 @@ export async function POST(req: Request) {
   }
 
   // ====== 从 base64 提取 Buffer ======
+  if (typeof base64 !== "string" || base64.length === 0) {
+    return Response.json(
+      { error: `base64 参数无效（类型：${typeof base64}，长度：${base64?.length ?? 0}）` },
+      { status: 400 }
+    );
+  }
+
   let buffer: Buffer;
   try {
-    const matches = base64.match(/^data:([^;]+);base64,(.+)$/);
-    if (matches) {
-      buffer = Buffer.from(matches[2], "base64");
-    } else {
-      buffer = Buffer.from(base64, "base64");
-    }
-  } catch {
-    return Response.json({ error: "无法解码 base64 图片数据" }, { status: 400 });
+    // 用字符串操作代替正则，避免大 base64 触发 "Maximum call stack size exceeded"
+    const commaIdx = base64.indexOf(",");
+    const raw =
+      commaIdx >= 0 && base64.startsWith("data:")
+        ? base64.slice(commaIdx + 1)
+        : base64;
+    buffer = Buffer.from(raw, "base64");
+  } catch (e) {
+    return Response.json(
+      { error: `无法解码 base64 图片数据：${(e as Error).message}` },
+      { status: 400 }
+    );
   }
 
   // ====== 根据文件名推断 ContentType ======
@@ -110,13 +121,25 @@ export async function POST(req: Request) {
     webp: "image/webp",
     gif: "image/gif",
     bmp: "image/bmp",
+    mp4: "video/mp4",
+    mov: "video/quicktime",
+    webm: "video/webm",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    m4a: "audio/mp4",
+    aac: "audio/aac",
   };
   const contentType = contentTypeMap[ext] ?? "image/png";
 
-  // ====== 生成唯一 key ======
+  // ====== 按素材类型分目录生成唯一 key ======
+  const dirByExt: Record<string, string> = {
+    mp4: "videos", mov: "videos", webm: "videos",
+    mp3: "audios", wav: "audios", m4a: "audios", aac: "audios",
+  };
+  const subdir = dirByExt[ext] ?? "assets";
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 8);
-  const key = `ai-script/assets/${timestamp}-${random}.${ext}`;
+  const key = `ai-script/${subdir}/${timestamp}-${random}.${ext}`;
 
   // ====== 上传到 COS ======
   try {

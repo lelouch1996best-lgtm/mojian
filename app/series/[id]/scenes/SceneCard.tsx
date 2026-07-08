@@ -69,6 +69,20 @@ export function SceneCard({
             </button>
           </div>
         )}
+        {/* 重新生成中遮罩（已有图片时覆盖在图片上） */}
+        {isGenerating && scene.imageUrl && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm">
+            <Spinner size={24} />
+            <span className="text-xs text-white">重新生成中…</span>
+          </div>
+        )}
+        {/* 上传中遮罩（已有图片时覆盖在图片上） */}
+        {isUploading && scene.imageUrl && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm">
+            <Spinner size={24} />
+            <span className="text-xs text-white">上传中…</span>
+          </div>
+        )}
         <input ref={fileInputRef} type="file"
           accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
           className="hidden"

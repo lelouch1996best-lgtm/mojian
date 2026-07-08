@@ -5,7 +5,8 @@ export async function GET(request: Request, { params }: { params: { key: string 
   if (!validateAuth(request)) return authError();
   const db = getDb();
   const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(params.key) as any;
-  if (!row) return Response.json({ value: null }, { status: 404 });
+  // 未设置时返回 200 + null，而非 404（"未设置"是正常状态，不是错误）
+  if (!row) return Response.json({ value: null });
   try {
     return Response.json({ value: JSON.parse(row.value) });
   } catch {

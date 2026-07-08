@@ -1,4 +1,4 @@
-// LLM 配置（用户自配，存 localStorage）
+// LLM 配置（用户自配，存服务端数据库）
 export interface LLMSettings {
   provider:
     | "deepseek"
@@ -11,7 +11,7 @@ export interface LLMSettings {
   model: string; // 例: deepseek-chat, glm-4-plus, mimo-v2.5-pro
 }
 
-/** 世界设定（全局，存 localStorage），用于故事续写和分镜生成的上下文 */
+/** 世界设定（全局，存服务端数据库），用于故事续写和分镜生成的上下文 */
 export interface WorldSettings {
   /** 故事背景 */
   background: string;
@@ -131,7 +131,7 @@ export interface StylePreset {
   videoStyleSuffix: string;
 }
 
-/** 风格配置（全局，存 localStorage） */
+/** 风格配置（全局，存服务端数据库） */
 export interface StyleSettings {
   selectedStyleId: string;
   /** 用户自定义覆盖（key = styleId） */
@@ -154,6 +154,8 @@ export interface Shot {
   videoTaskId: string; // 视频生成任务 ID（用于轮询）
   /** 该镜头关联的资产 ID 列表（由 @ 补全自动添加，用户可手动解除关联） */
   relatedAssetIds: string[];
+  /** 卡片级视频配置；缺省时回退 DEFAULT_SHOT_VIDEO_CONFIG */
+  videoConfig?: ShotVideoConfig;
 }
 
 /** 资产类型 */
@@ -263,16 +265,39 @@ export type VideoStatus =
   | "expired" // 超时
   | "cancelled"; // 已取消
 
+/** 视频生成模式 */
+export type VideoGenerationMode =
+  | "text2video" // 文生视频
+  | "first-frame" // 图生视频-首帧
+  | "first-last-frame" // 图生视频-首尾帧
+  | "multimodal-ref"; // 多模态参考生视频（仅 2.0）
+
+export type VideoResolution = "480p" | "720p" | "1080p";
+export type VideoRatio = "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive";
+
+/** 单个镜头的视频生成配置（卡片级，覆盖硬编码默认） */
+export interface ShotVideoConfig {
+  model: string;
+  mode: VideoGenerationMode;
+  resolution: VideoResolution;
+  ratio: VideoRatio;
+  duration: number; // -1 = 模型自动（仅支持的模型）
+  watermark: boolean;
+  generateAudio: boolean;
+  /** multimodal-ref 模式：参考视频 URL（仅 2.0） */
+  referenceVideoUrls?: string[];
+  /** multimodal-ref 模式：参考音频 URL（仅 2.0） */
+  referenceAudioUrls?: string[];
+  /** first-frame / first-last-frame 模式：首帧图 URL（单独上传） */
+  firstFrameImageUrl?: string;
+  /** first-last-frame 模式：尾帧图 URL（单独上传） */
+  lastFrameImageUrl?: string;
+}
+
 /** 视频生成 API 配置（火山引擎 Seedance / Doubao） */
 export interface VideoGenSettings {
   apiKey: string; // 火山方舟 API Key（与图片 API 共用同一 Key）
   baseURL: string; // https://ark.cn-beijing.volces.com/api/v3
-  model: string; // 模型 ID，如 doubao-seedance-1-0-pro-250328
-  resolution: "480p" | "720p" | "1080p";
-  ratio: "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive";
-  duration: number; // 秒，整数
-  watermark: boolean;
-  generateAudio: boolean; // 是否生成有声视频（2.0/1.5 Pro 支持）
 }
 
 /** 前端发给 /api/video/create 的请求体 */
@@ -281,10 +306,19 @@ export interface VideoCreateProxyRequest {
   baseURL: string;
   model: string;
   prompt: string;
-  /** 参考图片 URL 列表（关联资产的图片） */
-  imageUrls?: string[];
-  resolution?: string;
-  ratio?: string;
+  mode: VideoGenerationMode;
+  /** 首帧图片 URL（first-frame / first-last-frame 模式） */
+  firstFrameUrl?: string;
+  /** 尾帧图片 URL（first-last-frame 模式） */
+  lastFrameUrl?: string;
+  /** 参考图片 URL 列表（multimodal-ref 模式，role=reference_image） */
+  referenceImageUrls?: string[];
+  /** 参考视频 URL 列表（multimodal-ref 模式，仅 2.0） */
+  referenceVideoUrls?: string[];
+  /** 参考音频 URL 列表（multimodal-ref 模式，仅 2.0） */
+  referenceAudioUrls?: string[];
+  resolution?: VideoResolution;
+  ratio?: VideoRatio;
   duration?: number;
   watermark?: boolean;
   generateAudio?: boolean;

@@ -1,9 +1,6 @@
 import type { AssetType, StylePreset, StyleSettings } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
 
-const STYLE_KEY = "mojian_style_settings";
-const STORAGE_MODE = process.env.NEXT_PUBLIC_STORAGE_MODE;
-
 /** 4 个预设风格 */
 const DEFAULT_PRESETS: StylePreset[] = [
   {
@@ -72,31 +69,15 @@ export async function getStyleSettings(): Promise<StyleSettings> {
     selectedStyleId: "realistic",
     overrides: {},
   };
-  if (STORAGE_MODE === "server") {
-    try { return await apiClient.getSetting<StyleSettings>("style"); } catch { return defaultSettings; }
-  }
-  if (typeof window === "undefined") return defaultSettings;
   try {
-    const raw = localStorage.getItem(STYLE_KEY);
-    if (!raw) return defaultSettings;
-    const parsed = JSON.parse(raw) as Partial<StyleSettings>;
-    return {
-      selectedStyleId: parsed.selectedStyleId ?? "realistic",
-      overrides: parsed.overrides ?? {},
-    };
-  } catch {
-    return defaultSettings;
-  }
+    const value = await apiClient.getSetting<StyleSettings>("style");
+    return value ?? defaultSettings;
+  } catch { return defaultSettings; }
 }
 
 /** 保存风格配置 */
 export async function saveStyleSettings(s: StyleSettings): Promise<void> {
-  if (STORAGE_MODE === "server") {
-    await apiClient.saveSetting("style", s);
-    return;
-  }
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STYLE_KEY, JSON.stringify(s));
+  await apiClient.saveSetting("style", s);
 }
 
 /** 获取所有风格列表（应用用户 override 后） */

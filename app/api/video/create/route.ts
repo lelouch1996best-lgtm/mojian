@@ -17,24 +17,69 @@ export async function POST(req: Request) {
     );
   }
 
+  // 按 mode 校验必需输入
+  if (body.mode === "first-frame" && !body.firstFrameUrl) {
+    return Response.json({ error: "首帧模式需要提供首帧图片 URL" }, { status: 400 });
+  }
+  if (body.mode === "first-last-frame" && (!body.firstFrameUrl || !body.lastFrameUrl)) {
+    return Response.json({ error: "首尾帧模式需要同时提供首帧与尾帧图片 URL" }, { status: 400 });
+  }
+  if (body.mode === "multimodal-ref") {
+    const imgCount = body.referenceImageUrls?.length ?? 0;
+    const vidCount = body.referenceVideoUrls?.length ?? 0;
+    // 音频不可单独输入，需至少 1 个参考图或视频
+    if (imgCount === 0 && vidCount === 0) {
+      return Response.json(
+        { error: "多模态参考模式需至少提供 1 张参考图或 1 个参考视频" },
+        { status: 400 }
+      );
+    }
+  }
+
   const base = body.baseURL.replace(/\/+$/, "");
   const url = `${base}/contents/generations/tasks`;
 
-  // 构造 content 数组
+  // 按 mode 构造 content 数组
   const content: Array<Record<string, unknown>> = [
     { type: "text", text: body.prompt },
   ];
 
-  // 参考图片：第一张作为首帧，其余作为参考图
-  if (body.imageUrls && body.imageUrls.length > 0) {
-    body.imageUrls.forEach((u, i) => {
+  if (body.mode === "first-frame") {
+    content.push({
+      type: "image_url",
+      image_url: { url: body.firstFrameUrl },
+      role: "first_frame",
+    });
+  } else if (body.mode === "first-last-frame") {
+    content.push({
+      type: "image_url",
+      image_url: { url: body.firstFrameUrl },
+      role: "first_frame",
+    });
+    content.push({
+      type: "image_url",
+      image_url: { url: body.lastFrameUrl },
+      role: "last_frame",
+    });
+  } else if (body.mode === "multimodal-ref") {
+    // 参考图（role=reference_image）
+    (body.referenceImageUrls ?? []).forEach((u) => {
       content.push({
         type: "image_url",
         image_url: { url: u },
-        role: i === 0 ? "first_frame" : "reference_image",
+        role: "reference_image",
       });
     });
+    // 参考视频（仅 2.0）
+    (body.referenceVideoUrls ?? []).forEach((u) => {
+      content.push({ type: "video_url", video_url: { url: u } });
+    });
+    // 参考音频（仅 2.0，不可单独输入）
+    (body.referenceAudioUrls ?? []).forEach((u) => {
+      content.push({ type: "audio_url", audio_url: { url: u } });
+    });
   }
+  // text2video：不加任何素材
 
   const upstreamBody: Record<string, unknown> = {
     model: body.model,

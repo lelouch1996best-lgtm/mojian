@@ -28,6 +28,8 @@ export function getDb(): Database.Database {
       order_num         INTEGER NOT NULL DEFAULT 0,
       world_settings    TEXT NOT NULL DEFAULT '{}',
       character_settings TEXT NOT NULL DEFAULT '[]',
+      object_settings   TEXT NOT NULL DEFAULT '[]',
+      scene_settings    TEXT NOT NULL DEFAULT '[]',
       style_settings    TEXT NOT NULL DEFAULT '{}',
       episode_order     TEXT NOT NULL DEFAULT '[]',
       created_at        INTEGER NOT NULL,
