@@ -62,10 +62,39 @@ export default function EpisodePage() {
       if (!prev) return prev;
       const next = mut({ ...prev });
       next.updatedAt = Date.now();
-      persist(next);
       return next;
     });
   }
+
+  // 监听 episode 变化，防抖保存（跳过首次加载，避免无意义回存）
+  const skipPersistRef = useRef(true);
+  useEffect(() => {
+    if (!episode) return;
+    if (skipPersistRef.current) {
+      skipPersistRef.current = false;
+      return;
+    }
+    persist(episode);
+  }, [episode, persist]);
+
+  // 页面卸载时兜底保存，防止防抖未触发导致数据丢失
+  useEffect(() => {
+    const handler = () => {
+      const ep = episodeRef.current;
+      if (!ep) return;
+      fetch("/api/data/episodes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+        },
+        body: JSON.stringify(ep),
+        keepalive: true,
+      });
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -223,6 +252,15 @@ export default function EpisodePage() {
       setSeriesCharacterSettings(merged);
     }
     return { added, overwritten, total: merged.length, skipped };
+  }
+
+  /** 保存人物设定（资产准备中提取人物资产时调用） */
+  async function handleSaveCharacterSettings(characters: CharacterProfile[]) {
+    if (!episode) return;
+    const seriesData = await getSeries(episode.seriesId);
+    if (!seriesData) return;
+    await saveSeries({ ...seriesData, characterSettings: characters });
+    setSeriesCharacterSettings(characters);
   }
 
   /** 保存物品设定（资产准备中提取物品资产时调用） */
@@ -475,6 +513,7 @@ export default function EpisodePage() {
             onBackToStep2={() => gotoStep(2)}
             seriesStyleSettings={seriesStyleSettings}
             characterSettings={seriesCharacterSettings}
+            onSaveCharacterSettings={handleSaveCharacterSettings}
             objectSettings={seriesObjectSettings}
             onSaveObjectSettings={handleSaveObjectSettings}
             sceneSettings={seriesSceneSettings}

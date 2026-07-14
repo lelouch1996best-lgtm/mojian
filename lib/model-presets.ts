@@ -5,7 +5,7 @@
  * 自定义列表保存在服务端，读取时优先使用自定义列表，未自定义则 fallback 默认列表。
  */
 
-import type { LLMSettings } from "./types";
+import type { LLMSettings, ImageGenSettings, VideoGenSettings } from "./types";
 import type {
   ShotVideoConfig,
   VideoGenerationMode,
@@ -19,6 +19,17 @@ export interface ModelEntry {
   value: string;
   label?: string; // 显示名，缺省时用 value
   hint?: string;
+  /** 是否为默认模型（生成图片/视频参数时优先使用） */
+  isDefault?: boolean;
+  /** 图片模型能力（仅图片模型使用，用户自定义时覆盖注册表/FALLBACK） */
+  capability?: Partial<ImageModelCapability>;
+  /** 视频模型能力（仅视频模型使用，用户自定义时覆盖注册表/FALLBACK） */
+  videoCapability?: Partial<VideoModelCapability>;
+}
+
+/** 从模型列表中获取默认模型 value（优先 isDefault，否则取第一个） */
+export function getDefaultModelValue(models: ModelEntry[]): string | undefined {
+  return models.find((m) => m.isDefault)?.value ?? models[0]?.value;
 }
 
 // ==================== 默认模型列表 ====================
@@ -42,27 +53,387 @@ export const DEFAULT_LLM_MODELS: Record<LLMSettings["provider"], ModelEntry[]> =
     { value: "mimo-v2.5-pro", label: "MiMo V2.5 Pro" },
     { value: "mimo-v2.5", label: "MiMo V2.5" },
   ],
+  ark: [
+    { value: "doubao-seed-2-1-pro-260628", label: "Doubao Seed 2.1 Pro", hint: "最新旗舰，Agent/Coding/多模态全面升级" },
+    { value: "doubao-seed-2-1-turbo-260628", label: "Doubao Seed 2.1 Turbo", hint: "低成本低时延，效果比肩 Pro" },
+    { value: "doubao-seed-2-0-pro-260215", label: "Doubao Seed 2.0 Pro" },
+    { value: "doubao-seed-2-0-lite-260428", label: "Doubao Seed 2.0 Lite", hint: "轻量全模态，企业规模化部署" },
+    { value: "doubao-seed-1-6-251015", label: "Doubao Seed 1.6", hint: "综合模型，支持思考/非思考模式" },
+    { value: "doubao-seed-evolving", label: "Doubao Seed Evolving", hint: "快速迭代，始终最新版本" },
+  ],
+  "ark-agent-plan": [
+    { value: "doubao-seed-2.0-pro", label: "Doubao Seed 2.0 Pro", hint: "进阶，256K 上下文" },
+    { value: "doubao-seed-2.0-code", label: "Doubao Seed 2.0 Code", hint: "进阶，编程场景增强" },
+    { value: "doubao-seed-2.0-lite", label: "Doubao Seed 2.0 Lite", hint: "标准，256K 上下文" },
+    { value: "doubao-seed-2.0-mini", label: "Doubao Seed 2.0 Mini", hint: "极速，低延迟" },
+    { value: "deepseek-v4-pro", label: "DeepSeek V4 Pro", hint: "进阶，1M 超长上下文" },
+    { value: "deepseek-v4-flash", label: "DeepSeek V4 Flash", hint: "标准，1M 超长上下文" },
+    { value: "glm-5.2", label: "GLM 5.2", hint: "进阶，1M 超长上下文" },
+    { value: "minimax-m2.7", label: "MiniMax M2.7", hint: "进阶，200K 上下文" },
+    { value: "minimax-m3", label: "MiniMax M3", hint: "进阶，512K 上下文" },
+    { value: "kimi-k2.6", label: "Kimi K2.6", hint: "进阶，256K 上下文" },
+    { value: "kimi-k2.7-code", label: "Kimi K2.7 Code", hint: "进阶，编程场景" },
+  ],
   custom: [],
 };
 
-/** 图片生成模型默认 */
-export const DEFAULT_IMAGE_MODELS: ModelEntry[] = [
-  { value: "doubao-seedream-5-0-260128", label: "Seedream 5.0 lite", hint: "最新，支持 png/jpeg、组图、联网搜索" },
-  { value: "doubao-seedream-5-0-lite-260128", label: "Seedream 5.0 lite (别名)" },
-  { value: "doubao-seedream-4-5-251128", label: "Seedream 4.5", hint: "支持多图融合、组图" },
-  { value: "doubao-seedream-4-0-250828", label: "Seedream 4.0", hint: "支持多图融合、组图" },
-];
+/** 图片生成模型默认（按供应商），内嵌能力矩阵（参照 docs/image.md） */
+export const DEFAULT_IMAGE_MODELS: Record<ImageGenSettings["provider"], ModelEntry[]> = {
+  ark: [
+    {
+      value: "doubao-seedream-5-0-pro-260628", label: "Seedream 5.0 Pro",
+      hint: "最新旗舰，高精度图片生成，精准位置与元素控制，1K/2K",
+      capability: {
+        resolutions: ["1K", "2K"], outputFormat: false, webSearch: false,
+        optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
+        watermark: true, responseFormat: true, maxRefImages: 10,
+      },
+    },
+    {
+      value: "doubao-seedream-5-0-260128", label: "Seedream 5.0 Lite",
+      hint: "支持 png/jpeg、组图、联网搜索、单/多图生图，2K/3K/4K",
+      isDefault: true,
+      capability: {
+        resolutions: ["2K", "3K", "4K"], outputFormat: true, webSearch: true,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-5-0-lite-260128", label: "Seedream 5.0 Lite (别名)",
+      capability: {
+        resolutions: ["2K", "3K", "4K"], outputFormat: true, webSearch: true,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-4-5-251128", label: "Seedream 4.5",
+      hint: "支持多图融合、组图，2K/4K",
+      capability: {
+        resolutions: ["2K", "4K"], outputFormat: false, webSearch: false,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-4-0-250828", label: "Seedream 4.0",
+      hint: "支持多图融合、组图、极速优化模式，1K/2K/4K",
+      capability: {
+        resolutions: ["1K", "2K", "4K"], outputFormat: false, webSearch: false,
+        optimizePrompt: true, optimizePromptFast: true, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+  ],
+  "ark-plan": [
+    {
+      value: "doubao-seedream-5-0-pro-260628", label: "Seedream 5.0 Pro",
+      hint: "最新旗舰，高精度图片生成，精准位置与元素控制，1K/2K",
+      capability: {
+        resolutions: ["1K", "2K"], outputFormat: false, webSearch: false,
+        optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
+        watermark: true, responseFormat: true, maxRefImages: 10,
+      },
+    },
+    {
+      value: "doubao-seedream-5-0-260128", label: "Seedream 5.0 Lite",
+      hint: "支持 png/jpeg、组图、联网搜索、单/多图生图，2K/3K/4K",
+      isDefault: true,
+      capability: {
+        resolutions: ["2K", "3K", "4K"], outputFormat: true, webSearch: true,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-5-0-lite-260128", label: "Seedream 5.0 Lite (别名)",
+      capability: {
+        resolutions: ["2K", "3K", "4K"], outputFormat: true, webSearch: true,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-4-5-251128", label: "Seedream 4.5",
+      hint: "支持多图融合、组图，2K/4K",
+      capability: {
+        resolutions: ["2K", "4K"], outputFormat: false, webSearch: false,
+        optimizePrompt: true, optimizePromptFast: false, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+    {
+      value: "doubao-seedream-4-0-250828", label: "Seedream 4.0",
+      hint: "支持多图融合、组图、极速优化模式，1K/2K/4K",
+      capability: {
+        resolutions: ["1K", "2K", "4K"], outputFormat: false, webSearch: false,
+        optimizePrompt: true, optimizePromptFast: true, sequentialImageGen: true,
+        watermark: true, responseFormat: true, maxRefImages: 14,
+      },
+    },
+  ],
+  custom: [],
+};
 
-/** 视频生成模型默认 */
-export const DEFAULT_VIDEO_MODELS: ModelEntry[] = [
-  { value: "doubao-seedance-2-0-260128", label: "Seedance 2.0（推荐）", hint: "最新旗舰，多模态参考生视频、有声，4-15s，720p" },
-  { value: "doubao-seedance-2-0-fast-260128", label: "Seedance 2.0 fast", hint: "更快速度，多模态生视频，仅 480p/720p" },
-  { value: "doubao-seedance-1-5-pro-251215", label: "Seedance 1.5 Pro", hint: "有声视频、adaptive 宽高比、Draft 样片模式" },
-  { value: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro", hint: "首尾帧/首帧/文生视频，支持 1080p" },
-  { value: "doubao-seedance-1-0-pro-fast-251015", label: "Seedance 1.0 Pro Fast", hint: "更快的生成速度，仅首帧/文生视频" },
-];
+/** 视频生成模型默认（按供应商），内嵌能力矩阵（参照 docs/model.md） */
+export const DEFAULT_VIDEO_MODELS: Record<VideoGenSettings["provider"], ModelEntry[]> = {
+  ark: [
+    {
+      value: "doubao-seedance-2-0-260128", label: "Seedance 2.0（推荐）",
+      hint: "最新旗舰，音画同生，多模态生视频/编辑/延长，480p/720p/1080p/4k，4-15s",
+      isDefault: true,
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p", "1080p", "4k"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-2-0-fast-260128", label: "Seedance 2.0 fast",
+      hint: "更快速度，音画同生，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-2-0-mini-260615", label: "Seedance 2.0 mini",
+      hint: "轻量版，音画同生，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-5-pro-251215", label: "Seedance 1.5 Pro（即将下线）",
+      hint: "音画同生、adaptive 宽高比、Draft 样片模式，4-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 12], durationAuto: true, audio: true, draft: true,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro",
+      hint: "首尾帧/首帧/文生视频，480p/720p/1080p，2-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        durationRange: [2, 12], durationAuto: false, audio: false, draft: false,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-0-pro-fast-251015", label: "Seedance 1.0 Pro Fast",
+      hint: "更快的生成速度，仅首帧/文生视频，2-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        durationRange: [2, 12], durationAuto: false, audio: false, draft: false,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+  ],
+  "ark-plan": [
+    {
+      value: "doubao-seedance-2-0-260128", label: "Seedance 2.0（推荐）",
+      hint: "最新旗舰，音画同生，多模态生视频/编辑/延长，480p/720p/1080p/4k，4-15s",
+      isDefault: true,
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p", "1080p", "4k"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-2-0-fast-260128", label: "Seedance 2.0 fast",
+      hint: "更快速度，音画同生，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-2-0-mini-260615", label: "Seedance 2.0 mini",
+      hint: "轻量版，音画同生，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: true, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: true, priority: true, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-5-pro-251215", label: "Seedance 1.5 Pro（即将下线）",
+      hint: "音画同生、adaptive 宽高比、Draft 样片模式，4-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 12], durationAuto: true, audio: true, draft: true,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-0-pro-250528", label: "Seedance 1.0 Pro",
+      hint: "首尾帧/首帧/文生视频，480p/720p/1080p，2-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        durationRange: [2, 12], durationAuto: false, audio: false, draft: false,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+    {
+      value: "doubao-seedance-1-0-pro-fast-251015", label: "Seedance 1.0 Pro Fast",
+      hint: "更快的生成速度，仅首帧/文生视频，2-12s",
+      videoCapability: {
+        modes: ["text2video", "first-frame"],
+        resolutions: ["480p", "720p", "1080p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        durationRange: [2, 12], durationAuto: false, audio: false, draft: false,
+        seed: true, cameraFixed: true, webSearch: false, priority: false, returnLastFrame: true,
+      },
+    },
+  ],
+  custom: [],
+};
 
 // ==================== 模型能力描述 ====================
+
+/** 图片模型能力描述 */
+export interface ImageModelCapability {
+  /** 支持的分辨率档位（方式2，通过 size 字段传输） */
+  resolutions: string[];
+  /** 支持输出格式选择（output_format，仅 5.0 Lite） */
+  outputFormat: boolean;
+  /** 支持联网搜索（tools.web_search，仅 5.0 Lite） */
+  webSearch: boolean;
+  /** 支持提示词优化（optimize_prompt_options，5.0 Lite / 4.5 / 4.0） */
+  optimizePrompt: boolean;
+  /** 提示词优化支持 fast 模式（仅 4.0；5.0 Lite / 4.5 仅 standard） */
+  optimizePromptFast: boolean;
+  /** 支持组图功能开关（sequential_image_generation，5.0 Lite / 4.5 / 4.0） */
+  sequentialImageGen: boolean;
+  /** 支持水印设置（所有模型） */
+  watermark: boolean;
+  /** 支持返回格式选择（所有模型） */
+  responseFormat: boolean;
+  /** 最大参考图数量 */
+  maxRefImages: number;
+}
+
+/**
+ * 各图片模型能力注册表（键与 DEFAULT_IMAGE_MODELS 的 value 对齐）。
+ * 参照 docs/image.md 参数支持矩阵：
+ *  - output_format: 仅 doubao-seedream-5.0-lite 支持
+ *  - tools(web_search): 仅 doubao-seedream-5.0-lite 支持
+ *  - optimize_prompt_options: 5.0 Lite / 4.5 / 4.0 支持；fast 模式仅 4.0
+ *  - sequential_image_generation: 5.0 Lite / 4.5 / 4.0 支持
+ * 注：doubao-seedream-5-0-260128 与 doubao-seedream-5-0-lite-260128 为同一模型（见 model.md）。
+ */
+export const IMAGE_MODEL_CAPABILITIES: Record<string, ImageModelCapability> = {
+  "doubao-seedream-5-0-pro-260628": {
+    resolutions: ["1K", "2K"],
+    outputFormat: false,
+    webSearch: false,
+    optimizePrompt: false,
+    optimizePromptFast: false,
+    sequentialImageGen: false,
+    watermark: true,
+    responseFormat: true,
+    maxRefImages: 10,
+  },
+  "doubao-seedream-5-0-260128": {
+    resolutions: ["2K", "3K", "4K"],
+    outputFormat: true,
+    webSearch: true,
+    optimizePrompt: true,
+    optimizePromptFast: false,
+    sequentialImageGen: true,
+    watermark: true,
+    responseFormat: true,
+    maxRefImages: 14,
+  },
+  "doubao-seedream-5-0-lite-260128": {
+    resolutions: ["2K", "3K", "4K"],
+    outputFormat: true,
+    webSearch: true,
+    optimizePrompt: true,
+    optimizePromptFast: false,
+    sequentialImageGen: true,
+    watermark: true,
+    responseFormat: true,
+    maxRefImages: 14,
+  },
+  "doubao-seedream-4-5-251128": {
+    resolutions: ["2K", "4K"],
+    outputFormat: false,
+    webSearch: false,
+    optimizePrompt: true,
+    optimizePromptFast: false,
+    sequentialImageGen: true,
+    watermark: true,
+    responseFormat: true,
+    maxRefImages: 14,
+  },
+  "doubao-seedream-4-0-250828": {
+    resolutions: ["1K", "2K", "4K"],
+    outputFormat: false,
+    webSearch: false,
+    optimizePrompt: true,
+    optimizePromptFast: true,
+    sequentialImageGen: true,
+    watermark: true,
+    responseFormat: true,
+    maxRefImages: 14,
+  },
+};
+
+/** 未知/用户自定义模型的保守回退（启用所有功能，由上游 API 决定是否报错） */
+const FALLBACK_IMAGE_CAPABILITY: ImageModelCapability = {
+  resolutions: ["2K"],
+  outputFormat: true,
+  webSearch: true,
+  optimizePrompt: true,
+  optimizePromptFast: true,
+  sequentialImageGen: true,
+  watermark: true,
+  responseFormat: true,
+  maxRefImages: 14,
+};
+
+/** 查询图片模型能力，未注册模型回退保守能力。传入 models 时优先合并用户自定义能力 */
+export function getImageModelCapability(
+  modelValue: string,
+  models?: ModelEntry[]
+): ImageModelCapability {
+  const base = IMAGE_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_IMAGE_CAPABILITY;
+  if (!models) return base;
+  const entry = models.find((m) => m.value === modelValue);
+  if (!entry?.capability) return base;
+  return { ...base, ...entry.capability };
+}
 
 /** 视频模型能力描述 */
 export interface VideoModelCapability {
@@ -80,18 +451,33 @@ export interface VideoModelCapability {
   audio: boolean;
   /** 是否支持 Draft 样片模式（仅 1.5 Pro） */
   draft: boolean;
+  /** 是否支持 seed（Seedance 2.0 系列不支持） */
+  seed: boolean;
+  /** 是否支持固定摄像头（Seedance 2.0 系列、参考图场景不支持） */
+  cameraFixed: boolean;
+  /** 是否支持联网搜索（仅 Seedance 2.0 系列） */
+  webSearch: boolean;
+  /** 是否支持优先级（仅 Seedance 2.0 系列） */
+  priority: boolean;
+  /** 是否支持返回尾帧图像 */
+  returnLastFrame: boolean;
 }
 
 /** 各模型能力注册表（键与 DEFAULT_VIDEO_MODELS 的 value 对齐） */
 export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
   "doubao-seedance-2-0-260128": {
     modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
-    resolutions: ["480p", "720p", "1080p"],
+    resolutions: ["480p", "720p", "1080p", "4k"],
     ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
     durationRange: [4, 15],
     durationAuto: true,
     audio: true,
     draft: false,
+    seed: false,
+    cameraFixed: false,
+    webSearch: true,
+    priority: true,
+    returnLastFrame: true,
   },
   "doubao-seedance-2-0-fast-260128": {
     modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
@@ -101,6 +487,25 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     durationAuto: true,
     audio: true,
     draft: false,
+    seed: false,
+    cameraFixed: false,
+    webSearch: true,
+    priority: true,
+    returnLastFrame: true,
+  },
+  "doubao-seedance-2-0-mini-260615": {
+    modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+    resolutions: ["480p", "720p"],
+    ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+    durationRange: [4, 15],
+    durationAuto: true,
+    audio: true,
+    draft: false,
+    seed: false,
+    cameraFixed: false,
+    webSearch: true,
+    priority: true,
+    returnLastFrame: true,
   },
   "doubao-seedance-1-5-pro-251215": {
     modes: ["text2video", "first-frame", "first-last-frame"],
@@ -110,6 +515,11 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     durationAuto: true,
     audio: true,
     draft: true,
+    seed: true,
+    cameraFixed: true,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: true,
   },
   "doubao-seedance-1-0-pro-250528": {
     modes: ["text2video", "first-frame", "first-last-frame"],
@@ -119,15 +529,25 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     durationAuto: false,
     audio: false,
     draft: false,
+    seed: true,
+    cameraFixed: true,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: true,
   },
   "doubao-seedance-1-0-pro-fast-251015": {
     modes: ["text2video", "first-frame"],
-    resolutions: ["480p", "720p"],
+    resolutions: ["480p", "720p", "1080p"],
     ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
     durationRange: [2, 12],
     durationAuto: false,
     audio: false,
     draft: false,
+    seed: true,
+    cameraFixed: true,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: true,
   },
 };
 
@@ -140,22 +560,40 @@ const FALLBACK_CAPABILITY: VideoModelCapability = {
   durationAuto: false,
   audio: false,
   draft: false,
+  seed: true,
+  cameraFixed: true,
+  webSearch: false,
+  priority: false,
+  returnLastFrame: true,
 };
 
-/** 查询模型能力，未注册模型回退保守能力 */
-export function getVideoModelCapability(modelValue: string): VideoModelCapability {
-  return VIDEO_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_CAPABILITY;
+/** 查询模型能力，未注册模型回退保守能力。传入 models 时优先合并用户自定义能力 */
+export function getVideoModelCapability(
+  modelValue: string,
+  models?: ModelEntry[]
+): VideoModelCapability {
+  const base = VIDEO_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_CAPABILITY;
+  if (!models) return base;
+  const entry = models.find((m) => m.value === modelValue);
+  if (!entry?.videoCapability) return base;
+  return { ...base, ...entry.videoCapability };
 }
 
 /** 单个镜头视频生成的硬编码默认配置（卡片缺省 videoConfig 时回退） */
 export const DEFAULT_SHOT_VIDEO_CONFIG: ShotVideoConfig = {
   model: "doubao-seedance-2-0-260128",
-  mode: "first-frame",
+  mode: "multimodal-ref",
   resolution: "720p",
   ratio: "16:9",
   duration: 5,
   watermark: false,
-  generateAudio: false,
+  generateAudio: true,
+  seed: -1,
+  cameraFixed: false,
+  returnLastFrame: false,
+  webSearch: false,
+  priority: 0,
+  draft: false,
 };
 
 // ==================== 读写 ====================
@@ -192,51 +630,73 @@ export async function getLLMModelValues(provider: LLMSettings["provider"]): Prom
 
 // ---- 图片 ----
 
-export async function getImageModels(): Promise<ModelEntry[]> {
+/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { ark: [...] } */
+function normalizeImageModelsMap(raw: unknown): Record<string, ModelEntry[]> {
+  if (Array.isArray(raw)) return { ark: raw };
+  return (raw as Record<string, ModelEntry[]>) ?? {};
+}
+
+export async function getImageModels(provider: ImageGenSettings["provider"]): Promise<ModelEntry[]> {
   try {
-    const custom = await apiClient.getSetting<ModelEntry[]>("models_image");
+    const all = normalizeImageModelsMap(await apiClient.getSetting("models_image"));
+    const custom = all?.[provider];
     if (custom && custom.length > 0) return custom;
   } catch { /* fall through */ }
-  return DEFAULT_IMAGE_MODELS;
+  return DEFAULT_IMAGE_MODELS[provider] ?? [];
 }
 
-export async function saveImageModels(models: ModelEntry[]): Promise<void> {
-  await apiClient.saveSetting("models_image", models);
+export async function saveImageModels(provider: ImageGenSettings["provider"], models: ModelEntry[]): Promise<void> {
+  let all: Record<string, ModelEntry[]> = {};
+  try { all = normalizeImageModelsMap(await apiClient.getSetting("models_image")); } catch { /* empty */ }
+  all[provider] = models;
+  await apiClient.saveSetting("models_image", all);
 }
 
-export async function resetImageModels(): Promise<ModelEntry[]> {
-  await saveImageModels(DEFAULT_IMAGE_MODELS);
-  return DEFAULT_IMAGE_MODELS;
+export async function resetImageModels(provider: ImageGenSettings["provider"]): Promise<ModelEntry[]> {
+  const defaults = DEFAULT_IMAGE_MODELS[provider] ?? [];
+  await saveImageModels(provider, defaults);
+  return defaults;
 }
 
 /** 纯 model value 数组 */
-export async function getImageModelValues(): Promise<string[]> {
-  const models = await getImageModels();
+export async function getImageModelValues(provider: ImageGenSettings["provider"]): Promise<string[]> {
+  const models = await getImageModels(provider);
   return models.map((m) => m.value);
 }
 
 // ---- 视频 ----
 
-export async function getVideoModels(): Promise<ModelEntry[]> {
+/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { ark: [...] } */
+function normalizeVideoModelsMap(raw: unknown): Record<string, ModelEntry[]> {
+  if (Array.isArray(raw)) return { ark: raw };
+  return (raw as Record<string, ModelEntry[]>) ?? {};
+}
+
+export async function getVideoModels(provider: VideoGenSettings["provider"]): Promise<ModelEntry[]> {
   try {
-    const custom = await apiClient.getSetting<ModelEntry[]>("models_video");
+    const all = normalizeVideoModelsMap(await apiClient.getSetting("models_video"));
+    const custom = all?.[provider];
     if (custom && custom.length > 0) return custom;
   } catch { /* fall through */ }
-  return DEFAULT_VIDEO_MODELS;
+  return DEFAULT_VIDEO_MODELS[provider] ?? [];
 }
 
-export async function saveVideoModels(models: ModelEntry[]): Promise<void> {
-  await apiClient.saveSetting("models_video", models);
+export async function saveVideoModels(provider: VideoGenSettings["provider"], models: ModelEntry[]): Promise<void> {
+  let all: Record<string, ModelEntry[]> = {};
+  try { all = normalizeVideoModelsMap(await apiClient.getSetting("models_video")); } catch { /* empty */ }
+  all[provider] = models;
+  await apiClient.saveSetting("models_video", all);
 }
 
-export async function resetVideoModels(): Promise<ModelEntry[]> {
-  await saveVideoModels(DEFAULT_VIDEO_MODELS);
-  return DEFAULT_VIDEO_MODELS;
+export async function resetVideoModels(provider: VideoGenSettings["provider"]): Promise<ModelEntry[]> {
+  const defaults = DEFAULT_VIDEO_MODELS[provider] ?? [];
+  await saveVideoModels(provider, defaults);
+  return defaults;
 }
 
 /** 纯 model value 数组 */
-export async function getVideoModelValues(): Promise<string[]> {
-  const models = await getVideoModels();
+export async function getVideoModelValues(provider: VideoGenSettings["provider"]): Promise<string[]> {
+  const models = await getVideoModels(provider);
   return models.map((m) => m.value);
 }
 

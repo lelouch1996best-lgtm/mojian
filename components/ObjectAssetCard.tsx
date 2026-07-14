@@ -1,30 +1,44 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ImageLightbox from "./ImageLightbox";
 import TaggedText from "./TaggedText";
+import EditableCell from "./EditableCell";
+import AiOptimizeButton from "./ui/AiOptimizeButton";
+import Button from "./ui/Button";
+import Spinner from "./ui/Spinner";
 import type { Asset, ObjectProfile } from "@/lib/types";
 
 interface ObjectAssetCardProps {
   asset: Asset;
-  /** 与该物品同名的所有版本（已按 version 升序） */
+  /** 与该物品同名的所有版本（已按 version 升序）；空数组表示未提取 */
   versions: ObjectProfile[];
   onUpdate: (field: keyof Asset, value: string) => void;
-  /** 删除该资产 */
   onDelete?: () => void;
+  isGenerating?: boolean;
+  onGenerateImage?: () => void;
+  /** 未提取时：重新生成外观回调 */
+  onRegenerate?: () => void;
+  /** 未提取时：是否正在重新生成外观 */
+  isRegenerating?: boolean;
+  onExtract?: () => void;
+  seriesId?: string;
 }
 
-/**
- * 物品资产卡片 —— 关联物品设定，选择版本后直接复用物品图片与描述，无需重新生成。
- * 仅用于 type==="object" 且能匹配到物品设定版本的资产。
- */
 export default function ObjectAssetCard({
   asset,
   versions,
   onUpdate,
   onDelete,
+  isGenerating = false,
+  onGenerateImage,
+  onRegenerate,
+  isRegenerating = false,
+  onExtract,
+  seriesId,
 }: ObjectAssetCardProps) {
-  // 当前选中版本：优先按 imageUrl 反查（刷新后可恢复选中态），否则取最新版本（数组末尾）
+  const extracted = versions.length > 0;
+
   const [selectedId, setSelectedId] = useState<string>(() => {
     const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
     return byImage?.id ?? versions[versions.length - 1]?.id ?? "";
@@ -35,21 +49,32 @@ export default function ObjectAssetCard({
     [versions, selectedId]
   );
 
+  useEffect(() => {
+    if (!extracted || !selected) return;
+    if (selected.imageUrl !== asset.imageUrl) {
+      onUpdate("imageUrl", selected.imageUrl ?? "");
+      onUpdate("description", selected.appearance.trim());
+      onUpdate("imagePrompt", selected.appearance.trim());
+      onUpdate("status", selected.imageUrl ? "ready" : "pending");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extracted, selected, asset.imageUrl]);
+
   function handleSelectVersion(id: string) {
     setSelectedId(id);
     const v = versions.find((o) => o.id === id);
     if (!v) return;
-    // 同步该版本信息到 asset，供下游分镜生成使用
     onUpdate("imageUrl", v.imageUrl ?? "");
-    const descParts: string[] = [];
-    if (v.appearance.trim()) descParts.push(`外观：${v.appearance.trim()}`);
-    if (v.purpose.trim()) descParts.push(`功能：${v.purpose.trim()}`);
-    onUpdate("description", descParts.join("；"));
+    onUpdate("description", v.appearance.trim());
     onUpdate("imagePrompt", v.appearance.trim());
     onUpdate("status", v.imageUrl ? "ready" : "pending");
   }
 
-  if (!selected) {
+  function handleGotoSettings() {
+    if (seriesId) window.open(`/series/${seriesId}/objects`, "_blank");
+  }
+
+  if (extracted && !selected) {
     return (
       <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-slate-200 bg-white text-xs text-slate-400">
         未匹配到物品设定
@@ -61,11 +86,32 @@ export default function ObjectAssetCard({
     <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       {/* 图片区 */}
       <div className="relative flex aspect-[4/3] items-center justify-center bg-slate-50">
-        {selected.imageUrl ? (
-          <ImageLightbox src={selected.imageUrl} alt={asset.name} className="h-full w-full">
+        {extracted ? (
+          selected!.imageUrl ? (
+            <ImageLightbox src={selected!.imageUrl} alt={asset.name} className="h-full w-full">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={selected!.imageUrl} alt={asset.name} className="h-full w-full object-cover" />
+            </ImageLightbox>
+          ) : (
+            <div className="flex flex-col items-center gap-1 text-slate-300">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                <path d="M3 7l9-4 9 4-9 4-9-4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                <path d="M3 7v10l9 4 9-4V7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                <path d="M12 11v10" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+              </svg>
+              <span className="text-xs">该版本暂无图片</span>
+            </div>
+          )
+        ) : asset.imageUrl ? (
+          <ImageLightbox src={asset.imageUrl} alt={asset.name} className="h-full w-full">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={selected.imageUrl} alt={asset.name} className="h-full w-full object-cover" />
+            <img src={asset.imageUrl} alt={asset.name} className="h-full w-full object-cover" />
           </ImageLightbox>
+        ) : isGenerating ? (
+          <div className="flex flex-col items-center gap-2 text-slate-400">
+            <Spinner size={28} />
+            <span className="text-xs">生成中…</span>
+          </div>
         ) : (
           <div className="flex flex-col items-center gap-1 text-slate-300">
             <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
@@ -73,14 +119,14 @@ export default function ObjectAssetCard({
               <path d="M3 7v10l9 4 9-4V7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
               <path d="M12 11v10" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
             </svg>
-            <span className="text-xs">该版本暂无图片</span>
+            <span className="text-xs">图片待生成</span>
           </div>
         )}
-        {/* 版本 badge */}
-        <span className="absolute left-2 top-2 rounded bg-black/30 px-1.5 py-0.5 text-xs text-white backdrop-blur">
-          {selected.versionLabel || `v${selected.version ?? 1}`}
-        </span>
-        {/* 删除按钮 */}
+        {extracted && selected && (
+          <span className="absolute left-2 top-2 rounded bg-black/30 px-1.5 py-0.5 text-xs text-white backdrop-blur">
+            {selected.versionLabel || `v${selected.version ?? 1}`}
+          </span>
+        )}
         {onDelete && (
           <button
             type="button"
@@ -102,65 +148,112 @@ export default function ObjectAssetCard({
           <span className="rounded bg-[#FDF0E3] px-1.5 py-0.5 text-xs text-[#92400E]">物品</span>
         </div>
 
-        {/* 版本选择器 */}
-        <div>
-          <label className="mb-0.5 block text-xs text-slate-400">物品版本</label>
-          <select
-            value={selectedId}
-            onChange={(e) => handleSelectVersion(e.target.value)}
-            className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
-          >
-            {versions.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.versionLabel || `v${v.version ?? 1}`}
-                {v.imageUrl ? " · 有图" : ""}
-              </option>
-            ))}
-          </select>
-        </div>
+        {extracted ? (
+          <>
+            <div>
+              <label className="mb-0.5 block text-xs font-semibold text-black">🔄 物品版本</label>
+              <select
+                value={selectedId}
+                onChange={(e) => handleSelectVersion(e.target.value)}
+                className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+              >
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.versionLabel || `v${v.version ?? 1}`}
+                    {v.imageUrl ? " · 有图" : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        {/* 描述（只读，来自物品设定） */}
-        {selected.category.trim() && (
-          <div>
-            <label className="mb-0.5 block text-xs text-slate-400">分类</label>
-            <p className="whitespace-pre-wrap rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
-              {selected.category.trim()}
-            </p>
-          </div>
-        )}
-        {selected.appearance.trim() && (
-          <div>
-            <label className="mb-0.5 block text-xs text-slate-400">外观</label>
-            <p className="whitespace-pre-wrap rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
-              {selected.appearance.trim()}
-            </p>
-          </div>
-        )}
-        {selected.purpose.trim() && (
-          <div>
-            <label className="mb-0.5 block text-xs text-slate-400">功能用途</label>
-            <p className="whitespace-pre-wrap rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
-              {selected.purpose.trim()}
-            </p>
-          </div>
-        )}
-        {selected.origin.trim() && (
-          <div>
-            <label className="mb-0.5 block text-xs text-slate-400">来源背景</label>
-            <p className="whitespace-pre-wrap rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
-              {selected.origin.trim()}
-            </p>
-          </div>
-        )}
+            {selected!.appearance.trim() && (
+              <div>
+                <label className="mb-0.5 block text-xs font-semibold text-black">🎨 外观</label>
+                <p className="whitespace-pre-wrap rounded bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
+                  {selected!.appearance.trim()}
+                </p>
+              </div>
+            )}
 
-        <div className="mt-auto flex items-center gap-2 pt-1">
-          <span className="text-xs text-slate-400">已关联物品设定</span>
-          {selected.imageUrl ? (
-            <span className="text-xs text-emerald-700">✓ 有图</span>
-          ) : (
-            <span className="text-xs text-amber-600">无图，请到物品设定补图</span>
-          )}
-        </div>
+            <div className="mt-auto flex items-center gap-2 pt-1">
+              {seriesId && (
+                <Button size="sm" variant="ghost" onClick={handleGotoSettings}>
+                  前往物品设定 →
+                </Button>
+              )}
+              {selected!.imageUrl ? (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 有图</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-700">⚠️ 无图，请到设定补图</span>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <div className="mb-0.5 flex items-center justify-between text-xs font-semibold text-black">
+                <span>🎨 外观</span>
+                <div className="flex items-center gap-1">
+                  {onRegenerate && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={onRegenerate}
+                      loading={isRegenerating}
+                      disabled={isRegenerating}
+                    >
+                      重新生成外观
+                    </Button>
+                  )}
+                  <AiOptimizeButton
+                    text={asset.description}
+                    onOptimized={(v) => onUpdate("description", v)}
+                    disabled={isRegenerating}
+                  />
+                </div>
+              </div>
+              <EditableCell
+                value={asset.description}
+                onChange={(v) => onUpdate("description", v)}
+                placeholder="描述物品外观特征…"
+                multiline
+                minWidth="100%"
+              />
+            </div>
+
+            <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
+              {onGenerateImage && (
+                <Button
+                  size="sm"
+                  variant={asset.imageUrl ? "ghost" : "secondary"}
+                  className="flex-1"
+                  onClick={onGenerateImage}
+                  loading={isGenerating}
+                  disabled={isGenerating}
+                >
+                  {asset.imageUrl ? "重新生成" : "生成图片"}
+                </Button>
+              )}
+              {onExtract && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={onExtract}
+                  disabled={isGenerating}
+                  title="提取到物品设定，可关联多版本图片"
+                >
+                  提取到物品设定
+                </Button>
+              )}
+              {asset.status === "failed" && (
+                <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-600">❌ 生成失败</span>
+              )}
+              {asset.status === "ready" && asset.imageUrl && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 图片就绪</span>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

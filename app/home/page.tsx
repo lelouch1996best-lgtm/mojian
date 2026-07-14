@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import SeriesList from "@/components/SeriesList";
-import SettingsModal from "@/components/SettingsModal";
 import Button from "@/components/ui/Button";
 import { listSeries, saveSeries, deleteSeries } from "@/lib/storage";
 import { emptySeries } from "@/lib/utils";
@@ -27,7 +26,6 @@ function BrushIcon({ size = 18 }: { size?: number }) {
 export default function Home() {
   const router = useRouter();
   const [seriesList, setSeriesList] = useState<Series[]>([]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   const refresh = useCallback(async () => {
@@ -42,7 +40,7 @@ export default function Home() {
   async function handleNew() {
     const s = getSettings();
     if (!s) {
-      setSettingsOpen(true);
+      router.push("/settings");
       return;
     }
     const maxOrder = seriesList.length > 0 ? Math.max(...seriesList.map((s) => s.order)) : 0;
@@ -90,7 +88,7 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="md" onClick={() => setSettingsOpen(true)}>
+          <Button variant="ghost" size="md" onClick={() => router.push("/settings")}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
               <path
                 d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"
@@ -118,8 +116,6 @@ export default function Home() {
       ) : (
         <div className="py-20 text-center text-slate-400">加载中…</div>
       )}
-
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </main>
   );
 }

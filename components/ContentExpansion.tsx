@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
+import AiOptimizeButton from "./ui/AiOptimizeButton";
 import Textarea from "./ui/Textarea";
 import { streamLLM, callLLM } from "@/lib/llm-client";
 import {
@@ -198,6 +199,11 @@ export default function ContentExpansion({
           <Button onClick={handleExpand} loading={expanding} disabled={!originalContent.trim()}>
             AI 扩写
           </Button>
+          <AiOptimizeButton
+            text={originalContent}
+            onOptimized={(v) => onOriginalChange(v)}
+            disabled={expanding}
+          />
           {expanding && (
             <Button variant="ghost" onClick={handleStop}>
               停止
@@ -229,6 +235,11 @@ export default function ContentExpansion({
           >
             提取人物设定
           </Button>
+          <AiOptimizeButton
+            text={expandedContent}
+            onOptimized={(v) => onExpandedChange(v)}
+            disabled={expanding}
+          />
           <Button
             variant="secondary"
             onClick={handleGenerateStoryboard}

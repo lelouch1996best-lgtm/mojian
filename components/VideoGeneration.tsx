@@ -2,25 +2,25 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
+import AiOptimizeButton from "./ui/AiOptimizeButton";
 import Spinner from "./ui/Spinner";
 import EditableCell from "./EditableCell";
-import TaggedText from "./TaggedText";
 import ImageLightbox from "./ImageLightbox";
 import { callLLM } from "@/lib/llm-client";
 import {
   createVideoTask,
   cancelVideoTask,
   pollVideoTask,
-  isVideoConfigured,
+  getVideoSettings,
 } from "@/lib/video-client";
 import { videoPromptMessages } from "@/lib/prompts";
 import { isCosConfigured, getCosSettings, uploadRefFile } from "@/lib/cos-client";
-import { getVideoStyleSuffix } from "@/lib/style-settings";
-import { ASSET_TYPE_LABELS, extractTags } from "@/lib/utils";
+import { ASSET_TYPE_LABELS, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
 import {
   DEFAULT_SHOT_VIDEO_CONFIG,
   getVideoModelCapability,
   getVideoModels,
+  getDefaultModelValue,
   type ModelEntry,
   type VideoModelCapability,
 } from "@/lib/model-presets";
@@ -87,6 +87,11 @@ function sanitizeConfig(
     next.duration = Math.max(min, Math.min(max, next.duration));
   }
   if (!cap.audio && next.generateAudio) next.generateAudio = false;
+  if (!cap.seed && next.seed !== -1) next.seed = -1;
+  if (!cap.cameraFixed && next.cameraFixed) next.cameraFixed = false;
+  if (!cap.webSearch && next.webSearch) next.webSearch = false;
+  if (!cap.priority && next.priority !== 0) next.priority = 0;
+  if (!cap.draft && next.draft) next.draft = false;
   return next;
 }
 
@@ -107,13 +112,13 @@ const STATUS_LABEL: Record<VideoStatus, string> = {
 };
 
 const STATUS_BADGE_CLASS: Record<VideoStatus, string> = {
-  idle: "bg-slate-100 text-slate-500",
-  queued: "bg-amber-50 text-amber-700",
-  running: "bg-amber-100 text-amber-800",
-  succeeded: "bg-emerald-50 text-emerald-700",
-  failed: "bg-red-50 text-red-600",
-  expired: "bg-slate-100 text-slate-500",
-  cancelled: "bg-slate-100 text-slate-500",
+  idle: "bg-slate-100 text-slate-500 font-medium",
+  queued: "bg-amber-100 text-amber-700 font-medium",
+  running: "bg-blue-100 text-blue-700 font-medium",
+  succeeded: "bg-emerald-100 text-emerald-700 font-medium",
+  failed: "bg-red-100 text-red-600 font-medium",
+  expired: "bg-slate-100 text-slate-500 font-medium",
+  cancelled: "bg-slate-100 text-slate-500 font-medium",
 };
 
 export default function VideoGeneration({
@@ -134,8 +139,14 @@ export default function VideoGeneration({
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
 
   const [videoConfigured, setVideoConfigured] = useState(false);
-  useEffect(() => { isVideoConfigured().then(setVideoConfigured); }, []);
-  useEffect(() => { getVideoModels().then(setVideoModels); }, []);
+  useEffect(() => {
+    (async () => {
+      const settings = await getVideoSettings();
+      const provider = settings?.provider ?? "ark";
+      setVideoConfigured(!!settings?.apiKey);
+      setVideoModels(await getVideoModels(provider));
+    })();
+  }, [seriesStyleSettings]);
 
   const assetById = useMemo(() => {
     const m = new Map<string, Asset>();
@@ -195,11 +206,10 @@ export default function VideoGeneration({
     setError(null);
     try {
       const related = getRelatedAssets(shot);
-      const videoSuffix = await getVideoStyleSuffix(seriesStyleSettings);
-      const prompt = await callLLM(
-        videoPromptMessages(shot, related, episode.assets, videoSuffix),
-        { temperature: 0.6 }
-      );
+      const messages = videoPromptMessages(shot, related);
+      console.log("[VideoPrompt] 镜头提示词生成 messages：", messages);
+      const prompt = await callLLM(messages, { temperature: 0.6 });
+      console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
       onUpdateShot(shot.id, "finalPrompt", prompt.trim());
     } catch (e) {
       setError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
@@ -215,15 +225,14 @@ export default function VideoGeneration({
   async function generateAll() {
     setGeneratingAll(true);
     setError(null);
-    const videoSuffix = await getVideoStyleSuffix(seriesStyleSettings);
     for (const shot of episode.shots) {
       setGeneratingIds((prev) => new Set(prev).add(shot.id));
       try {
         const related = getRelatedAssets(shot);
-        const prompt = await callLLM(
-          videoPromptMessages(shot, related, episode.assets, videoSuffix),
-          { temperature: 0.6 }
-        );
+        const messages = videoPromptMessages(shot, related);
+        console.log("[VideoPrompt] 镜头提示词生成 messages：", messages);
+        const prompt = await callLLM(messages, { temperature: 0.6 });
+        console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
         onUpdateShot(shot.id, "finalPrompt", prompt.trim());
       } catch (e) {
         setError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
@@ -252,8 +261,14 @@ export default function VideoGeneration({
     setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
     setError(null);
 
-    // 卡片级视频配置（缺省回退硬编码默认）
-    const config = shot.videoConfig ?? DEFAULT_SHOT_VIDEO_CONFIG;
+    // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
+    const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
+    const config = shot.videoConfig
+      ? shot.videoConfig
+      : sanitizeConfig(
+          { ...DEFAULT_SHOT_VIDEO_CONFIG, model: defaultVidModel },
+          getVideoModelCapability(defaultVidModel, videoModels)
+        );
     const shotIndex = episode.shots.indexOf(shot) + 1;
 
     // 收集关联资产的图片 URL（已是 COS 公网 URL）
@@ -261,6 +276,14 @@ export default function VideoGeneration({
     const relatedImageUrls = related
       .map((a) => a.imageUrl)
       .filter((u): u is string => !!u);
+
+    // 构造 @资产名称 -> 图片编号/去除@ 映射
+    // 有图的资产替换为 图片N（编号与参考图上传顺序一致）；无图的资产去掉 @ 保留名称
+    let imgNo = 0;
+    const assetImageNo = new Map<string, number | null>();
+    for (const a of related) {
+      assetImageNo.set(a.name, a.imageUrl ? ++imgNo : null);
+    }
 
     // 按 mode 派生输入素材并校验
     let firstFrameUrl: string | undefined;
@@ -282,10 +305,10 @@ export default function VideoGeneration({
         return;
       }
     } else if (config.mode === "multimodal-ref") {
-      referenceImageUrls = relatedImageUrls;
+      referenceImageUrls = [...relatedImageUrls, ...(config.referenceImageAssetUrls ?? [])];
       const vidCount = config.referenceVideoUrls?.length ?? 0;
       if (referenceImageUrls.length === 0 && vidCount === 0) {
-        setError(`镜头 ${shotIndex} 多模态参考模式需至少提供 1 张参考图（关联资产）或 1 个参考视频`);
+        setError(`镜头 ${shotIndex} 多模态参考模式需至少提供 1 张参考图（关联资产/asset://素材）或 1 个参考视频`);
         setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
         return;
       }
@@ -293,11 +316,11 @@ export default function VideoGeneration({
 
     onUpdateVideoStatus(shot.id, "queued");
     try {
-      // 拼接视频风格后缀
-      const suffix = await getVideoStyleSuffix(seriesStyleSettings);
-      const finalVideoPrompt = suffix
-        ? `${shot.finalPrompt}，${suffix}`
-        : shot.finalPrompt;
+      // 发送给 Seedance API 前确定性替换 @资产名称 -> 图片N（兜底，不依赖 LLM 自觉）
+      // 同时将 @视频N/@音频N 去掉 @（Seedance 多模态参考用「视频N」「音频N」指代素材）
+      const finalVideoPrompt = replaceAssetTagsWithImageNos(shot.finalPrompt, assetImageNo)
+        .replace(/@视频(\d+)/g, "视频$1")
+        .replace(/@音频(\d+)/g, "音频$1");
       const createResult = await createVideoTask({
         prompt: finalVideoPrompt,
         config,
@@ -414,8 +437,8 @@ export default function VideoGeneration({
           <span className="text-sm text-slate-500">
             共 {episode.shots.length} 个镜头
             {allReady && (
-              <span className="ml-2 inline-flex items-center rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700">
-                全部提示词已就绪
+              <span className="ml-2 inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
+                ✅ 全部提示词已就绪
               </span>
             )}
           </span>
@@ -485,6 +508,7 @@ export default function VideoGeneration({
               onGenerateVideo={() => generateVideo(shot)}
               onCancelVideo={() => cancelVideo(shot)}
               onUpdatePrompt={(v) => onUpdateShot(shot.id, "finalPrompt", v)}
+              onUpdateVisualDescription={(v) => onUpdateShot(shot.id, "visualDescription", v)}
               onUpdateVideoConfig={(patch) => onUpdateVideoConfig(shot.id, patch)}
               onUnlinkAsset={(assetId) => onUnlinkAsset(shot.id, assetId)}
               onLinkAsset={(assetId) => onLinkAsset(shot.id, assetId)}
@@ -554,6 +578,140 @@ function FrameImageUpload({
   );
 }
 
+/** 参考视频/音频上传区（竖方框卡片样式，与关联资产卡片一致） */
+function MediaUploadArea({
+  label,
+  icon,
+  mediaType,
+  items,
+  uploading,
+  max,
+  onUpload,
+  onRemove,
+  // onAddAsset, // 添加素材ID功能暂时隐藏
+}: {
+  label: string;
+  icon: string;
+  mediaType: "video" | "audio";
+  items: string[];
+  uploading: boolean;
+  max: number;
+  onUpload: () => void;
+  onRemove: (index: number) => void;
+  // onAddAsset: () => void; // 添加素材ID功能暂时隐藏
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [thumbErrors, setThumbErrors] = useState<Set<number>>(new Set());
+
+  const markThumbError = (i: number) =>
+    setThumbErrors((prev) => new Set(prev).add(i));
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-[11px] text-slate-500">
+          {label}（{items.length}/{max}）
+        </span>
+        {/* 添加素材ID功能暂时隐藏
+        {items.length < max && (
+          <Button size="sm" variant="ghost" onClick={onAddAsset}>
+            + 素材ID
+          </Button>
+        )}
+        */}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {items.map((u, i) => (
+          <div
+            key={u}
+            className={`relative flex w-20 flex-col items-center gap-1 rounded-md border p-1 ${u.startsWith("asset://") ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}
+          >
+            <button
+              onClick={() => onRemove(i)}
+              className="absolute -right-1.5 -top-1.5 z-10 flex h-4 w-4 items-center justify-center rounded-full bg-slate-300 text-[10px] leading-none text-white transition-colors hover:bg-red-400"
+              title={`移除${label}${i + 1}`}
+            >
+              ×
+            </button>
+            <button
+              onClick={() => setPreviewUrl(u)}
+              className="flex h-16 w-full items-center justify-center overflow-hidden rounded bg-slate-50 transition-opacity hover:opacity-80"
+              title={`点击预览${label}${i + 1}`}
+            >
+              {u.startsWith("asset://") ? (
+                <span className="text-2xl">{icon}</span>
+              ) : mediaType === "video" && !thumbErrors.has(i) ? (
+                <div className="relative h-full w-full">
+                  <video
+                    src={u}
+                    className="h-full w-full object-cover"
+                    muted
+                    preload="metadata"
+                    onError={() => markThumbError(i)}
+                  />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-black/50 text-white">
+                      ▶
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <span className="text-2xl">{icon}</span>
+              )}
+            </button>
+            <span className="w-full truncate text-center text-[11px] font-medium text-slate-700">
+              {u.startsWith("asset://") ? `素材${i + 1}` : `${label.replace("参考", "")}${i + 1}`}
+            </span>
+          </div>
+        ))}
+        {items.length < max && (
+          <button
+            onClick={onUpload}
+            disabled={uploading}
+            className="flex w-20 flex-col items-center justify-center gap-1 rounded-md border border-dashed border-slate-300 bg-white p-1 text-slate-400 transition-colors hover:border-brand-400 hover:text-brand-600 disabled:opacity-50"
+          >
+            <div className="flex h-16 w-full items-center justify-center rounded bg-slate-50">
+              {uploading ? <Spinner size={16} /> : <span className="text-xl">+</span>}
+            </div>
+            <span className="text-[10px]">上传{label.replace("参考", "")}</span>
+          </button>
+        )}
+      </div>
+
+      {/* 播放预览 lightbox */}
+      {previewUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+          onClick={() => setPreviewUrl(null)}
+        >
+          <button
+            onClick={() => setPreviewUrl(null)}
+            className="absolute right-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white/10 text-white/80 backdrop-blur transition-colors hover:bg-white/20 hover:text-white"
+            aria-label="关闭"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          {mediaType === "video" ? (
+            <video
+              src={previewUrl}
+              controls
+              autoPlay
+              className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <div className="w-full max-w-md rounded-lg bg-white/10 p-8" onClick={(e) => e.stopPropagation()}>
+              <audio src={previewUrl} controls autoPlay className="w-full" />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 单个视频生成卡片 */
 function VideoCard({
   shot,
@@ -569,6 +727,7 @@ function VideoCard({
   onGenerateVideo,
   onCancelVideo,
   onUpdatePrompt,
+  onUpdateVisualDescription,
   onUpdateVideoConfig,
   onUnlinkAsset,
   onLinkAsset,
@@ -586,6 +745,7 @@ function VideoCard({
   onGenerateVideo: () => void;
   onCancelVideo: () => void;
   onUpdatePrompt: (v: string) => void;
+  onUpdateVisualDescription: (v: string) => void;
   onUpdateVideoConfig: (patch: Partial<ShotVideoConfig>) => void;
   onUnlinkAsset: (assetId: string) => void;
   onLinkAsset: (assetId: string) => void;
@@ -595,16 +755,40 @@ function VideoCard({
   const isVideoReady = videoStatus === "succeeded" && !!shot.videoUrl;
   const isVideoBusy = videoStatus === "queued" || videoStatus === "running" || isGeneratingVideo;
 
-  // 卡片级视频配置（缺省回退硬编码默认）+ 对应模型能力
-  const config = shot.videoConfig ?? DEFAULT_SHOT_VIDEO_CONFIG;
-  const cap = getVideoModelCapability(config.model);
+  // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
+  const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
+  const config = shot.videoConfig
+    ? shot.videoConfig
+    : sanitizeConfig(
+        { ...DEFAULT_SHOT_VIDEO_CONFIG, model: defaultVidModel },
+        getVideoModelCapability(defaultVidModel, videoModels)
+      );
+  const cap = getVideoModelCapability(config.model, videoModels);
   const [showVideoConfig, setShowVideoConfig] = useState(false);
+  const [showInputMaterials, setShowInputMaterials] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"video" | "audio" | "firstFrame" | "lastFrame" | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // 添加素材ID功能暂时隐藏
+  // const [assetInputKind, setAssetInputKind] = useState<"image" | "video" | "audio" | null>(null);
+  // const [assetInputValue, setAssetInputValue] = useState("");
+
+  // @ 补全选项：资产 + 卡片级参考视频/音频（仅在 multimodal-ref 模式下有视频/音频）
+  const cardMentionOptions = useMemo(() => {
+    const opts = [...atMentionOptions];
+    if (config.mode === "multimodal-ref") {
+      (config.referenceVideoUrls ?? []).forEach((_, i) => {
+        opts.push({ label: `视频${i + 1}`, value: `视频${i + 1}` });
+      });
+      (config.referenceAudioUrls ?? []).forEach((_, i) => {
+        opts.push({ label: `音频${i + 1}`, value: `音频${i + 1}` });
+      });
+    }
+    return opts;
+  }, [atMentionOptions, config.mode, config.referenceVideoUrls, config.referenceAudioUrls]);
 
   /** 切换模型时收敛配置到新模型能力范围内 */
   function changeModel(newModel: string) {
-    const newCap = getVideoModelCapability(newModel);
+    const newCap = getVideoModelCapability(newModel, videoModels);
     const sanitized = sanitizeConfig({ ...config, model: newModel }, newCap);
     onUpdateVideoConfig(sanitized);
   }
@@ -643,8 +827,34 @@ function VideoCard({
     input.click();
   }
 
-  /** 当用户在提示词中通过 @ 补全选中资产时，自动关联到该镜头 */
+  /* 添加素材ID功能暂时隐藏
+   * 添加 asset:// 素材（预置虚拟人像/已授权真人素材）到参考列表
+  function handleAddAsset(kind: "image" | "video" | "audio") {
+    const raw = assetInputValue.trim();
+    if (!raw) return;
+    const url = raw.startsWith("asset://") ? raw : `asset://${raw}`;
+    setUploadError(null);
+    if (kind === "image") {
+      onUpdateVideoConfig({
+        referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), url],
+      });
+    } else if (kind === "video") {
+      const arr = config.referenceVideoUrls ?? [];
+      if (arr.length >= 3) { setUploadError("参考视频最多 3 个"); return; }
+      onUpdateVideoConfig({ referenceVideoUrls: [...arr, url] });
+    } else {
+      const arr = config.referenceAudioUrls ?? [];
+      if (arr.length >= 3) { setUploadError("参考音频最多 3 个"); return; }
+      onUpdateVideoConfig({ referenceAudioUrls: [...arr, url] });
+    }
+    setAssetInputKind(null);
+    setAssetInputValue("");
+  }
+  */
+
+  /** 当用户在提示词中通过 @ 补全选中资产时，自动关联到该镜头；视频/音频无需关联 */
   function handleMentionSelect(assetName: string) {
+    if (assetName.startsWith("视频") || assetName.startsWith("音频")) return;
     const asset = allAssets.find(
       (a) => a.name === assetName || a.name.toLowerCase() === assetName.toLowerCase()
     );
@@ -677,7 +887,7 @@ function VideoCard({
         </div>
         <div className="flex items-center gap-1.5">
           {hasPrompt && (
-            <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-xs text-emerald-700">提示词 ✓</span>
+            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 提示词已就绪</span>
           )}
           {videoStatus !== "idle" && (
             <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATUS_BADGE_CLASS[videoStatus]}`}>
@@ -724,97 +934,222 @@ function VideoCard({
 
         {/* 画面描述 */}
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">画面描述</label>
-          <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-700">
-            <TaggedText text={shot.visualDescription || "（无）"} />
-          </div>
+          <label className="mb-1 block text-xs font-semibold text-black">🖼️ 画面描述</label>
+          <EditableCell
+            value={shot.visualDescription}
+            onChange={onUpdateVisualDescription}
+            placeholder="（无）"
+            multiline
+            minWidth="100%"
+            renderTags
+            atMentionOptions={cardMentionOptions}
+            onAtMentionSelect={handleMentionSelect}
+          />
         </div>
 
-        {/* 关联资产 */}
-        <div>
-          <label className="mb-1.5 block text-xs font-medium text-slate-500">
-            关联资产（参考图）{relatedAssets.length > 0 && ` · ${relatedAssets.length} 个`}
-          </label>
-          {relatedAssets.length === 0 ? (
-            <p className="text-xs text-slate-400">本镜头画面描述中无 @标签，未关联任何资产</p>
-          ) : (
-            <div className="flex flex-wrap gap-2">
-              {relatedAssets.map((a) => (
-                <div
-                  key={a.id}
-                  className="relative flex w-20 flex-col items-center gap-1 rounded-md border border-slate-200 bg-white p-1.5"
-                  title={a.description}
-                >
-                  {/* 解除关联按钮 */}
-                  <button
-                    onClick={() => onUnlinkAsset(a.id)}
-                    className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-slate-300 text-[10px] leading-none text-white hover:bg-red-400 transition-colors"
-                    title={`解除「${a.name}」与本镜头的关联`}
+        {/* 关联资产（按生成模式动态显示：多模态参考显示参考图；首帧/首尾帧模式隐藏并提示；文生视频整块隐藏） */}
+        {config.mode === "multimodal-ref" ? (
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-black">
+              🔗 关联资产（参考图）{relatedAssets.length > 0 && ` · ${relatedAssets.length} 个`}
+            </label>
+            {relatedAssets.length === 0 ? (
+              <p className="text-xs text-slate-400">本镜头画面描述中无 @标签，未关联任何资产</p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {relatedAssets.map((a) => (
+                  <div
+                    key={a.id}
+                    className="relative flex w-20 flex-col items-center gap-1 rounded-md border border-slate-200 bg-white p-1.5"
+                    title={a.description}
                   >
-                    ×
-                  </button>
-                  <div className="flex h-16 w-full items-center justify-center overflow-hidden rounded bg-slate-50">
-                    {a.imageUrl ? (
-                      <ImageLightbox src={a.imageUrl} alt={a.name} className="h-full w-full">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={a.imageUrl} alt={a.name} className="h-full w-full object-cover" />
-                      </ImageLightbox>
-                    ) : (
-                      <span className="text-xs text-slate-300">无图</span>
-                    )}
+                    {/* 解除关联按钮 */}
+                    <button
+                      onClick={() => onUnlinkAsset(a.id)}
+                      className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-slate-300 text-[10px] leading-none text-white hover:bg-red-400 transition-colors"
+                      title={`解除「${a.name}」与本镜头的关联`}
+                    >
+                      ×
+                    </button>
+                    <div className="flex h-16 w-full items-center justify-center overflow-hidden rounded bg-slate-50">
+                      {a.imageUrl ? (
+                        <ImageLightbox src={a.imageUrl} alt={a.name} className="h-full w-full">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={a.imageUrl} alt={a.name} className="h-full w-full object-cover" />
+                        </ImageLightbox>
+                      ) : (
+                        <span className="text-xs text-slate-300">无图</span>
+                      )}
+                    </div>
+                    <span className={`w-full truncate rounded px-1 py-0.5 text-center text-[10px] ${TYPE_BADGE_CLASS[a.type]}`}>
+                      {ASSET_TYPE_LABELS[a.type]}
+                    </span>
+                    <span className="w-full truncate text-center text-[11px] font-medium text-slate-700">
+                      {a.name}
+                    </span>
                   </div>
-                  <span className={`w-full truncate rounded px-1 py-0.5 text-center text-[10px] ${TYPE_BADGE_CLASS[a.type]}`}>
-                    {ASSET_TYPE_LABELS[a.type]}
-                  </span>
-                  <span className="w-full truncate text-center text-[11px] font-medium text-slate-700">
-                    {a.name}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {relatedAssets.length > 0 && relatedAssets.every((a) => !a.description) && (
-            <p className="mt-1 text-xs text-amber-600">
-              ⚠ 关联资产尚未生成描述（请返回第三步生成资产信息），提示词可能无法准确引用资产特征
-            </p>
-          )}
-        </div>
-
-        {/* 视频提示词 */}
-        <div>
-          <label className="mb-1 block text-xs font-medium text-slate-500">视频提示词</label>
-          {hasPrompt ? (
-            <EditableCell
-              value={shot.finalPrompt}
-              onChange={onUpdatePrompt}
-              placeholder="视频提示词…"
-              multiline
-              minWidth="100%"
-              renderTags
-              atMentionOptions={atMentionOptions}
-              onAtMentionSelect={handleMentionSelect}
-            />
-          ) : (
-            <div className="rounded-md border border-dashed border-slate-200 bg-slate-50/50 px-3 py-3 text-center">
-              <p className="text-xs text-slate-400">
-                {isGeneratingPrompt ? "正在生成…" : "点击下方按钮生成视频提示词"}
+                ))}
+              </div>
+            )}
+            {relatedAssets.length > 0 && relatedAssets.every((a) => !a.description) && (
+              <p className="mt-1 text-xs text-amber-600">
+                ⚠ 关联资产尚未生成描述（请返回第三步生成资产信息），提示词可能无法准确引用资产特征
               </p>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        ) : (config.mode === "first-frame" || config.mode === "first-last-frame") ? (
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-black">🔗 关联资产（参考图）</label>
+            <p className="text-xs text-amber-600">⚠ 首帧或首尾帧模式不可与多模态混用</p>
+          </div>
+        ) : null}
+
+        {/* 输入素材（按生成模式动态显示：首帧/首尾帧/多模态参考各显其上传，文生视频整块隐藏） */}
+        {config.mode !== "text2video" && (
+          <div className="rounded-md border border-slate-200 bg-slate-50/40">
+            <button
+              type="button"
+              onClick={() => setShowInputMaterials(!showInputMaterials)}
+              className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-black"
+            >
+              <span className="flex items-center gap-1.5">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={`transition-transform ${showInputMaterials ? "rotate-90" : ""}`}>
+                  <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                🖼️ 输入素材
+              </span>
+              <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
+                {config.mode === "first-frame" && (config.firstFrameImageUrl ? "已上传首帧" : "未上传")}
+                {config.mode === "first-last-frame" && (
+                  `${config.firstFrameImageUrl ? "首✓" : "首✗"} ${config.lastFrameImageUrl ? "尾✓" : "尾✗"}`
+                )}
+                {config.mode === "multimodal-ref" && (
+                  `${config.referenceVideoUrls?.length ?? 0}视频 · ${config.referenceAudioUrls?.length ?? 0}音频`
+                )}
+              </span>
+            </button>
+            {showInputMaterials && (
+              <div className="space-y-2.5 border-t border-slate-200 px-3 py-3">
+                {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
+
+                {config.mode === "first-frame" && (
+                  <FrameImageUpload
+                    label="首帧图片"
+                    url={config.firstFrameImageUrl}
+                    uploading={uploadingKind === "firstFrame"}
+                    onUpload={() => handleUploadRef("firstFrame")}
+                    onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
+                  />
+                )}
+                {config.mode === "first-last-frame" && (
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <FrameImageUpload
+                      label="首帧图片"
+                      url={config.firstFrameImageUrl}
+                      uploading={uploadingKind === "firstFrame"}
+                      onUpload={() => handleUploadRef("firstFrame")}
+                      onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
+                    />
+                    <FrameImageUpload
+                      label="尾帧图片"
+                      url={config.lastFrameImageUrl}
+                      uploading={uploadingKind === "lastFrame"}
+                      onUpload={() => handleUploadRef("lastFrame")}
+                      onRemove={() => onUpdateVideoConfig({ lastFrameImageUrl: undefined })}
+                    />
+                  </div>
+                )}
+                {config.mode === "multimodal-ref" && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] text-slate-400">
+                      参考图取全部关联资产。
+                    </p>
+
+                    {/* 参考图：关联资产 + asset:// 素材 */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-[11px] text-slate-500">参考图：关联资产 {relatedAssets.filter((a) => a.imageUrl).length} 张</span>
+                      {/* 添加素材ID功能暂时隐藏
+                      <Button size="sm" variant="ghost" onClick={() => { setAssetInputKind("image"); setAssetInputValue(""); }}>
+                        + 添加素材ID
+                      </Button>
+                      */}
+                    </div>
+                    {(config.referenceImageAssetUrls?.length ?? 0) > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {config.referenceImageAssetUrls!.map((u, i) => (
+                          <span key={u} className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700">
+                            参考图素材{i + 1}
+                            <button onClick={() => onUpdateVideoConfig({ referenceImageAssetUrls: config.referenceImageAssetUrls!.filter((_, j) => j !== i) })} className="text-amber-400 hover:text-red-500">×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* 参考视频：虚线框上传 + asset:// 素材 */}
+                    <MediaUploadArea
+                      label="参考视频"
+                      icon="📹"
+                      mediaType="video"
+                      items={config.referenceVideoUrls ?? []}
+                      uploading={uploadingKind === "video"}
+                      max={3}
+                      onUpload={() => handleUploadRef("video")}
+                      onRemove={(i) => onUpdateVideoConfig({ referenceVideoUrls: (config.referenceVideoUrls ?? []).filter((_, j) => j !== i) })}
+                      // onAddAsset={() => { setAssetInputKind("video"); setAssetInputValue(""); }} // 添加素材ID功能暂时隐藏
+                    />
+
+                    {/* 参考音频：虚线框上传 + asset:// 素材 */}
+                    <MediaUploadArea
+                      label="参考音频"
+                      icon="🎵"
+                      mediaType="audio"
+                      items={config.referenceAudioUrls ?? []}
+                      uploading={uploadingKind === "audio"}
+                      max={3}
+                      onUpload={() => handleUploadRef("audio")}
+                      onRemove={(i) => onUpdateVideoConfig({ referenceAudioUrls: (config.referenceAudioUrls ?? []).filter((_, j) => j !== i) })}
+                      // onAddAsset={() => { setAssetInputKind("audio"); setAssetInputValue(""); }} // 添加素材ID功能暂时隐藏
+                    />
+
+                    {/* 添加素材ID功能暂时隐藏
+                    {assetInputKind && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-slate-500">{assetInputKind === "image" ? "参考图" : assetInputKind === "video" ? "视频" : "音频"}素材</span>
+                        <input
+                          value={assetInputValue}
+                          onChange={(e) => setAssetInputValue(e.target.value)}
+                          placeholder="素材 ID（如 asset-2026xxxx-xxxx），可带 asset:// 前缀"
+                          className="min-w-0 flex-1 rounded border border-slate-300 px-2 py-1 text-[11px] focus:border-brand-400 focus:outline-none"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); handleAddAsset(assetInputKind); }
+                            if (e.key === "Escape") { setAssetInputKind(null); setAssetInputValue(""); }
+                          }}
+                        />
+                        <Button size="sm" variant="primary" onClick={() => handleAddAsset(assetInputKind)}>添加</Button>
+                        <Button size="sm" variant="ghost" onClick={() => { setAssetInputKind(null); setAssetInputValue(""); }}>取消</Button>
+                      </div>
+                    )}
+                    */}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* 视频参数（卡片级，按模型能力动态渲染） */}
         <div className="rounded-md border border-slate-200 bg-slate-50/40">
           <button
             type="button"
             onClick={() => setShowVideoConfig(!showVideoConfig)}
-            className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-slate-600"
+            className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-black"
           >
             <span className="flex items-center gap-1.5">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={`transition-transform ${showVideoConfig ? "rotate-90" : ""}`}>
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              视频参数
+              ⚙️ 视频参数
             </span>
             <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
               <span className="truncate max-w-[140px]">{videoModels.find((m) => m.value === config.model)?.label ?? config.model}</span>
@@ -824,7 +1159,6 @@ function VideoCard({
           </button>
           {showVideoConfig && (
             <div className="space-y-2.5 border-t border-slate-200 px-3 py-3">
-              {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
               <div className="grid grid-cols-2 gap-2.5">
                 <label className="block">
                   <span className="mb-1 block text-[11px] text-slate-500">模型</span>
@@ -885,7 +1219,7 @@ function VideoCard({
                 </label>
               </div>
 
-              <div className="flex items-center gap-4 pt-0.5">
+              <div className="flex flex-wrap items-center gap-4 pt-0.5">
                 <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
                   <input type="checkbox" checked={config.watermark} onChange={(e) => onUpdateVideoConfig({ watermark: e.target.checked })} className="h-3.5 w-3.5" />
                   水印
@@ -901,82 +1235,94 @@ function VideoCard({
                 )}
               </div>
 
-              {/* 按 mode 的条件区块 */}
-              {config.mode === "first-frame" && (
-                <FrameImageUpload
-                  label="首帧图片"
-                  url={config.firstFrameImageUrl}
-                  uploading={uploadingKind === "firstFrame"}
-                  onUpload={() => handleUploadRef("firstFrame")}
-                  onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
-                />
-              )}
-              {config.mode === "first-last-frame" && (
-                <div className="grid grid-cols-2 gap-2.5">
-                  <FrameImageUpload
-                    label="首帧图片"
-                    url={config.firstFrameImageUrl}
-                    uploading={uploadingKind === "firstFrame"}
-                    onUpload={() => handleUploadRef("firstFrame")}
-                    onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
-                  />
-                  <FrameImageUpload
-                    label="尾帧图片"
-                    url={config.lastFrameImageUrl}
-                    uploading={uploadingKind === "lastFrame"}
-                    onUpload={() => handleUploadRef("lastFrame")}
-                    onRemove={() => onUpdateVideoConfig({ lastFrameImageUrl: undefined })}
-                  />
-                </div>
-              )}
-              {config.mode === "multimodal-ref" && (
-                <div className="space-y-2">
-                  <p className="text-[11px] text-slate-400">参考图取全部关联资产；可额外上传参考视频/音频。</p>
-                  <div className="flex flex-wrap gap-2">
-                    <Button size="sm" variant="ghost" onClick={() => handleUploadRef("video")} loading={uploadingKind === "video"} disabled={(config.referenceVideoUrls?.length ?? 0) >= 3}>
-                      参考视频（{config.referenceVideoUrls?.length ?? 0}/3）
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => handleUploadRef("audio")} loading={uploadingKind === "audio"} disabled={(config.referenceAudioUrls?.length ?? 0) >= 3}>
-                      参考音频（{config.referenceAudioUrls?.length ?? 0}/3）
-                    </Button>
-                  </div>
-                  {(config.referenceVideoUrls?.length ?? 0) > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {config.referenceVideoUrls!.map((u, i) => (
-                        <span key={u} className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
-                          视频{i + 1}
-                          <button onClick={() => onUpdateVideoConfig({ referenceVideoUrls: config.referenceVideoUrls!.filter((_, j) => j !== i) })} className="text-slate-400 hover:text-red-500">×</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {(config.referenceAudioUrls?.length ?? 0) > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {config.referenceAudioUrls!.map((u, i) => (
-                        <span key={u} className="inline-flex items-center gap-1 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
-                          音频{i + 1}
-                          <button onClick={() => onUpdateVideoConfig({ referenceAudioUrls: config.referenceAudioUrls!.filter((_, j) => j !== i) })} className="text-slate-400 hover:text-red-500">×</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+              {/* 高级参数（种子/固定镜头/返回尾帧/联网搜索/优先级/样片） */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-0.5">
+                {cap.seed && (
+                  <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                    <span>种子</span>
+                    <input
+                      type="number"
+                      value={config.seed < 0 ? "" : config.seed}
+                      onChange={(e) => onUpdateVideoConfig({ seed: e.target.value === "" ? -1 : Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                      placeholder="随机"
+                      className="w-16 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+                    />
+                  </label>
+                )}
+                {cap.cameraFixed && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                    <input type="checkbox" checked={config.cameraFixed} onChange={(e) => onUpdateVideoConfig({ cameraFixed: e.target.checked })} className="h-3.5 w-3.5" />
+                    固定镜头
+                  </label>
+                )}
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                  <input type="checkbox" checked={config.returnLastFrame} onChange={(e) => onUpdateVideoConfig({ returnLastFrame: e.target.checked })} className="h-3.5 w-3.5" />
+                  返回尾帧
+                </label>
+                {cap.webSearch && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                    <input type="checkbox" checked={config.webSearch} onChange={(e) => onUpdateVideoConfig({ webSearch: e.target.checked })} className="h-3.5 w-3.5" />
+                    联网搜索
+                  </label>
+                )}
+                {cap.priority && (
+                  <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                    <span>优先级</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={9}
+                      value={config.priority}
+                      onChange={(e) => onUpdateVideoConfig({ priority: Math.max(0, Math.min(9, parseInt(e.target.value, 10) || 0)) })}
+                      className="w-12 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+                    />
+                  </label>
+                )}
+                {cap.draft && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                    <input type="checkbox" checked={config.draft} onChange={(e) => onUpdateVideoConfig({ draft: e.target.checked })} className="h-3.5 w-3.5" />
+                    样片模式
+                  </label>
+                )}
+              </div>
             </div>
           )}
         </div>
 
+        {/* 视频提示词 */}
+        <div>
+          <div className="mb-1 flex items-center justify-between text-xs font-semibold text-black">
+            <span>📝 视频提示词</span>
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant={hasPrompt ? "ghost" : "secondary"}
+                onClick={onGeneratePrompt}
+                loading={isGeneratingPrompt}
+                disabled={isGeneratingPrompt}
+              >
+                {hasPrompt ? "重新生成" : "生成提示词"}
+              </Button>
+              <AiOptimizeButton
+                text={shot.finalPrompt}
+                onOptimized={onUpdatePrompt}
+              />
+            </div>
+          </div>
+          <EditableCell
+            value={shot.finalPrompt}
+            onChange={onUpdatePrompt}
+            placeholder="输入视频提示词，或点击上方按钮生成…"
+            multiline
+            minWidth="100%"
+            renderTags
+            atMentionOptions={cardMentionOptions}
+            onAtMentionSelect={handleMentionSelect}
+          />
+        </div>
+
         {/* 操作 */}
         <div className="mt-auto flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
-          <Button
-            size="sm"
-            variant={hasPrompt ? "ghost" : "secondary"}
-            onClick={onGeneratePrompt}
-            loading={isGeneratingPrompt}
-            disabled={isGeneratingPrompt}
-          >
-            {hasPrompt ? "重新生成提示词" : "生成提示词"}
-          </Button>
           <Button
             size="sm"
             variant="primary"

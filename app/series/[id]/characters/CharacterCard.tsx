@@ -137,23 +137,19 @@ export function CharacterCard({
       {/* 卡片内容 */}
       <div className="px-4 py-3">
         <div className="flex items-center gap-2">
+          <span className="w-20 shrink-0 text-xs font-semibold text-black">📝 名称</span>
           <input type="text" value={character.name}
             onChange={(e) => onUpdate("name", e.target.value)} placeholder="人物姓名"
             className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm font-medium text-slate-800 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20" />
-          {character.role.trim() && (
-            <span className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
-              {character.role.trim()}
-            </span>
-          )}
         </div>
 
         {/* 版本标签编辑 */}
         <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs text-slate-400">版本标签</span>
+          <span className="w-20 shrink-0 text-xs font-semibold text-black">🏷️ 版本标签</span>
           <input type="text" value={character.versionLabel}
             onChange={(e) => onUpdate("versionLabel", e.target.value)}
             placeholder="如：少年期、觉醒后…"
-            className="flex-1 rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 focus:border-brand-400 focus:outline-none" />
+            className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm text-slate-600 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20" />
         </div>
 
         {character.genderAge.trim() && !expanded && (
@@ -172,36 +168,36 @@ export function CharacterCard({
         {expanded && (
           <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
             <div className="grid grid-cols-2 gap-2">
-              <Field label="角色定位">
+              <Field label="🎭 角色定位">
                 <input type="text" value={character.role}
                   onChange={(e) => onUpdate("role", e.target.value)}
                   placeholder="主角、配角…" className="char-input" />
               </Field>
-              <Field label="性别年龄">
+              <Field label="👤 性别年龄">
                 <input type="text" value={character.genderAge}
                   onChange={(e) => onUpdate("genderAge", e.target.value)}
                   placeholder="男，25岁" className="char-input" />
               </Field>
             </div>
-            <Field label="外貌" hint="外貌特征、穿着打扮">
+            <Field label="🎨 外貌" hint="外貌特征、穿着打扮">
               <textarea value={character.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
                 placeholder="如：短发，戴黑框眼镜，常穿深色风衣…"
                 className="char-input resize-y" rows={3} />
             </Field>
-            <Field label="性格" hint="性格特点、行为方式">
+            <Field label="💭 性格" hint="性格特点、行为方式">
               <textarea value={character.personality}
                 onChange={(e) => onUpdate("personality", e.target.value)}
                 placeholder="如：冷静内敛，不善言辞但观察力敏锐…"
                 className="char-input resize-y" rows={2} />
             </Field>
-            <Field label="背景故事">
+            <Field label="📖 背景故事">
               <textarea value={character.background}
                 onChange={(e) => onUpdate("background", e.target.value)}
                 placeholder="如：曾是一名记者，因报道失误转行…"
                 className="char-input resize-y" rows={3} />
             </Field>
-            <Field label="人物关系" hint="与其他人物的关系">
+            <Field label="🔗 人物关系" hint="与其他人物的关系">
               <textarea value={character.relationships}
                 onChange={(e) => onUpdate("relationships", e.target.value)}
                 placeholder="如：小红的丈夫，老张的下属…"
@@ -229,7 +225,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <label className="text-xs font-semibold text-black">{label}</label>
         {hint && <span className="text-xs text-slate-400">{hint}</span>}
       </div>
       {children}

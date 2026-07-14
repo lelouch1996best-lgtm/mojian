@@ -229,11 +229,46 @@ export function extractAllTags(shots: Shot[]): string[] {
 export function removeTagPrefix(text: string, tagName: string): string {
   if (!text || !tagName) return text ?? "";
   const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // 标签边界字符集（与 extractTags 一致）+ @
-  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…—·@]";
+  // 标签边界字符集（与 extractTags 一致）+ @；- 转义为字面量避免被当作范围符
+  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
   // @tagName + lookahead(边界|$) 确保完整匹配，再消耗一个可选尾随空格
   const re = new RegExp(`@${escaped}(?=${boundary}|$) ?`, "g");
   return text.replace(re, tagName);
+}
+
+/**
+ * 解析提示词中的 @资产名称（发送给 Seedance API 前的确定性替换，不依赖 LLM）。
+ * - 有参考图的资产：@资产名称 -> 图片N（N 与参考图上传顺序一致）
+ * - 无参考图的资产：@资产名称 -> 资产名称（去掉 @ 和尾随空格）
+ * 与 removeTagPrefix 使用相同的边界匹配逻辑。
+ * 按名称长度降序替换，避免短名称是长名称子串时误匹配（如「李」vs「李华」）。
+ * @param text 原始提示词
+ * @param assetImageNo 资产名称 -> 图片编号映射；值为 null 表示该资产无参考图，仅去掉 @
+ */
+export function replaceAssetTagsWithImageNos(
+  text: string,
+  assetImageNo: Map<string, number | null>
+): string {
+  if (!text || assetImageNo.size === 0) return text ?? "";
+  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
+  let result = text;
+  const entries = Array.from(assetImageNo.entries()).sort(
+    (a, b) => b[0].length - a[0].length
+  );
+  for (const [name, no] of entries) {
+    if (!name) continue;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (no == null) {
+      // 无参考图：去掉 @ 并吸收前后的空格（中文文本中多余，名称应与上下文相连）
+      const re = new RegExp(` ?@${escaped}(?=${boundary}|$) ?`, "g");
+      result = result.replace(re, name);
+    } else {
+      // 有参考图：替换为 图片N，仅吸收尾随空格（图片N 是独立标记，前面留空格更清晰）
+      const re = new RegExp(`@${escaped}(?=${boundary}|$) ?`, "g");
+      result = result.replace(re, `图片${no}`);
+    }
+  }
+  return result;
 }
 
 /** 兼容旧 Episode 数据：补全缺失字段（assets / shot 视频字段 等） */
@@ -310,7 +345,6 @@ export interface RawAsset {
   name?: string;
   type?: string;
   description?: string;
-  imagePrompt?: string;
 }
 
 export function extractAssets(text: string): RawAsset[] {

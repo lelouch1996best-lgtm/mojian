@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
 import { getSeries, saveSeries } from "@/lib/storage";
 import { emptySceneProfile } from "@/lib/scene-settings";
-import { uuid } from "@/lib/utils";
-import { generateImage, getImageSettings } from "@/lib/image-client";
+import { debounce, uuid } from "@/lib/utils";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG } from "@/lib/image-client";
+import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
 import { getAssetTemplate } from "@/lib/style-settings";
-import { getCosSettings, isCosConfigured } from "@/lib/cos-client";
-import type { SceneProfile, Series } from "@/lib/types";
+import { getCosSettings, isCosConfigured, uploadRefBase64 } from "@/lib/cos-client";
+import { ImageGenerationDialog } from "@/components/ImageGenerationDialog";
+import type { AssetImageConfig, ImageGenSettings, SceneProfile, Series } from "@/lib/types";
 import { SceneCard } from "./SceneCard";
 
 export default function SceneSettingsPage() {
@@ -20,8 +22,6 @@ export default function SceneSettingsPage() {
   const [series, setSeries] = useState<Series | null>(null);
   const [scenes, setScenes] = useState<SceneProfile[]>([]);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [savedHint, setSavedHint] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
@@ -29,9 +29,27 @@ export default function SceneSettingsPage() {
   const [imageConfigured, setImageConfigured] = useState(false);
   const [cosConfigured, setCosConfigured] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [imageConfig, setImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
+  const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  const [genTargetId, setGenTargetId] = useState<string | null>(null);
+  const [configOpen, setConfigOpen] = useState(false);
+  const [genInitialPrompt, setGenInitialPrompt] = useState("");
+  const [styleTemplate, setStyleTemplate] = useState<string | null>(null);
+  const [refImages, setRefImages] = useState<string[]>([]);
 
   useEffect(() => {
-    getImageSettings().then((s) => setImageConfigured(!!s?.apiKey));
+    getImageSettings().then(async (s) => {
+      setImageConfigured(!!s?.apiKey);
+      const provider = s?.provider ?? "ark";
+      if (s?.provider) setImageProvider(s.provider);
+      const models = await getImageModels(provider);
+      setImageModels(models);
+      const defaultModel = getDefaultModelValue(models);
+      if (defaultModel) {
+        setImageConfig((prev) => ({ ...prev, model: defaultModel }));
+      }
+    });
     isCosConfigured().then(setCosConfigured);
   }, []);
 
@@ -44,6 +62,33 @@ export default function SceneSettingsPage() {
   }, [seriesId]);
 
   useEffect(() => { refresh(); }, [refresh]);
+
+  // 自动保存：防抖持久化 scenes 变化
+  const seriesRef = useRef<Series | null>(null);
+  seriesRef.current = series;
+  const skipPersistRef = useRef(true);
+
+  const persist = useCallback(
+    debounce(async (scs: SceneProfile[]) => {
+      const s = seriesRef.current;
+      if (!s) return;
+      const valid = scs.filter((o) => o.name.trim());
+      const updated: Series = { ...s, sceneSettings: valid };
+      await saveSeries(updated);
+      seriesRef.current = updated;
+      setSavedHint(true);
+      setTimeout(() => setSavedHint(false), 1500);
+    }, 500),
+    []
+  );
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      if (scenes.length > 0 || seriesRef.current) skipPersistRef.current = false;
+      return;
+    }
+    persist(scenes);
+  }, [scenes, persist]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, SceneProfile[]>();
@@ -60,7 +105,6 @@ export default function SceneSettingsPage() {
 
   function updateField(id: string, field: keyof SceneProfile, value: string) {
     setScenes((prev) => prev.map((o) => (o.id === id ? { ...o, [field]: value } : o)));
-    setDirty(true);
   }
 
   function handleAdd() {
@@ -69,7 +113,6 @@ export default function SceneSettingsPage() {
     };
     setScenes((prev) => [...prev, newObj]);
     setExpandedIds((prev) => new Set(prev).add(newObj.id));
-    setDirty(true);
   }
 
   function handleAddVersion(sceneId: string) {
@@ -83,34 +126,73 @@ export default function SceneSettingsPage() {
     };
     setScenes((prev) => [...prev, newVersion]);
     setExpandedIds((prev) => new Set(prev).add(newVersion.id));
-    setDirty(true);
   }
 
   function handleDelete(id: string) {
     if (!confirm("确定删除该场景版本？")) return;
     setScenes((prev) => prev.filter((o) => o.id !== id));
     setExpandedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
-    setDirty(true);
   }
 
-  /** 为场景生成图片（外观描述 + 漫剧风格模板） */
-  async function handleGenerateImage(sc: SceneProfile) {
-    if (!sc.appearance.trim()) {
-      setError(`场景「${sc.name}」还没有外观描述，请先填写`);
-      return;
-    }
+  /** 打开图片生成弹框（先做必要校验） */
+  async function openGenerateImageDialog(sc: SceneProfile) {
     if (!imageConfigured) {
       setError("未配置图片生成 API，请先在「设置」中配置");
       return;
     }
     setError(null);
+    const template = await getAssetTemplate("scene", series?.styleSettings ?? null);
+    setStyleTemplate(template);
+    const prompt = sc.appearance.trim() || sc.name.trim();
+    setGenInitialPrompt(prompt);
+    setGenTargetId(sc.id);
+    setRefImages(sc.referenceImages ?? []);
+    setConfigOpen(true);
+  }
+
+  /** 上传参考图文件到 COS，返回 URL 列表（COS 未配置时回退 base64） */
+  async function handleUploadRefFiles(files: File[]): Promise<string[]> {
+    if (!cosConfigured) {
+      return Promise.all(files.map((f) => new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("读取文件失败"));
+        reader.readAsDataURL(f);
+      })));
+    }
+    const urls: string[] = [];
+    for (const f of files) {
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("读取文件失败"));
+        reader.readAsDataURL(f);
+      });
+      const url = await uploadRefBase64(base64, `ref-scene-${genTargetId ?? "asset"}-${Date.now()}`);
+      urls.push(url);
+    }
+    return urls;
+  }
+
+  /** 参考图变更：更新 refImages 状态并同步到场景设定数据（触发自动保存） */
+  function handleRefImagesChange(newImages: string[]) {
+    setRefImages(newImages);
+    if (genTargetId) {
+      setScenes((prev) => prev.map((o) =>
+        o.id === genTargetId ? { ...o, referenceImages: newImages } : o
+      ));
+    }
+  }
+
+  /** 为场景生成图片（提示词 + 可选参考图，由弹框确认传入） */
+  async function handleGenerateImage(
+    sc: SceneProfile,
+    params: { prompt: string; images: string[]; config: AssetImageConfig }
+  ) {
     setGeneratingImageIds((prev) => new Set(prev).add(sc.id));
     try {
-      const template = await getAssetTemplate("scene", series?.styleSettings ?? null);
-      const finalPrompt = template
-        ? `${sc.appearance.trim()}，${template}`
-        : sc.appearance.trim();
-      const result = await generateImage(finalPrompt);
+      const { prompt, images, config } = params;
+      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, imageModels);
       let imageUrl = result.imageUrl;
 
       // 自动转存到 COS（Seedream URL 24h 过期）
@@ -139,11 +221,10 @@ export default function SceneSettingsPage() {
 
       const updated = scenes.map((o) => (o.id === sc.id ? { ...o, imageUrl } : o));
       setScenes(updated);
-      // 自动保存到本地存储，避免刷新后丢失
       if (series) {
-        await saveSeries({ ...series, sceneSettings: updated });
-        setSeries({ ...series, sceneSettings: updated });
-        setDirty(false);
+        const updatedSeries = { ...series, sceneSettings: updated };
+        await saveSeries(updatedSeries);
+        seriesRef.current = updatedSeries;
         setSavedHint(true);
         setTimeout(() => setSavedHint(false), 1500);
       }
@@ -201,11 +282,10 @@ export default function SceneSettingsPage() {
       }
       const updated = scenes.map((o) => (o.id === sc.id ? { ...o, imageUrl: data.url } : o));
       setScenes(updated);
-      // 自动保存到本地存储，避免刷新后丢失
       if (series) {
-        await saveSeries({ ...series, sceneSettings: updated });
-        setSeries({ ...series, sceneSettings: updated });
-        setDirty(false);
+        const updatedSeries = { ...series, sceneSettings: updated };
+        await saveSeries(updatedSeries);
+        seriesRef.current = updatedSeries;
         setSavedHint(true);
         setTimeout(() => setSavedHint(false), 1500);
       }
@@ -216,21 +296,7 @@ export default function SceneSettingsPage() {
     }
   }
 
-  async function handleSave() {
-    if (!series) return;
-    setSaving(true);
-    const valid = scenes.filter((o) => o.name.trim());
-    const updated: Series = { ...series, sceneSettings: valid };
-    await saveSeries(updated);
-    setSeries(updated);
-    setScenes(valid.map((o) => ({ ...o })));
-    setDirty(false); setSaving(false);
-    setSavedHint(true);
-    setTimeout(() => setSavedHint(false), 1500);
-  }
-
   function handleBack() {
-    if (dirty && !confirm("有未保存的修改，确定离开？")) return;
     router.push(`/series/${seriesId}`);
   }
 
@@ -265,7 +331,6 @@ export default function SceneSettingsPage() {
         </div>
         <div className="flex items-center gap-2">
           {savedHint && <span className="text-xs text-emerald-600">已保存 ✓</span>}
-          <Button size="sm" onClick={handleSave} loading={saving} disabled={!dirty}>保存</Button>
         </div>
       </header>
 
@@ -275,7 +340,7 @@ export default function SceneSettingsPage() {
 
       {!imageConfigured && (
         <div className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          图片生成 API 尚未配置。请返回首页，打开右上角「设置」弹窗，点击底部「图片生成 API」配置。
+          图片生成 API 尚未配置。请前往「设置」页面配置图片生成 API。
         </div>
       )}
 
@@ -289,7 +354,6 @@ export default function SceneSettingsPage() {
         <div className="mb-4 flex items-center justify-between">
           <span className="text-xs text-slate-400">
             共 {groupCount} 个场景 · {validCount} 条记录
-            {dirty && <span className="ml-2 text-amber-600">● 有未保存的修改</span>}
           </span>
           <div className="flex gap-2">
             <button onClick={expandAll} className="text-xs text-slate-500 hover:text-brand-500">全部展开</button>
@@ -331,7 +395,7 @@ export default function SceneSettingsPage() {
                       expanded={expandedIds.has(sc.id)} onToggle={() => toggleExpand(sc.id)}
                       onUpdate={(field, value) => updateField(sc.id, field, value)}
                       onDelete={() => handleDelete(sc.id)}
-                      onGenerateImage={() => handleGenerateImage(sc)}
+                      onGenerateImage={() => openGenerateImageDialog(sc)}
                       isGenerating={generatingImageIds.has(sc.id)}
                       onUploadImage={(file) => handleUploadImage(sc, file)}
                       isUploading={uploadingImageIds.has(sc.id)} />
@@ -352,6 +416,26 @@ export default function SceneSettingsPage() {
           添加场景
         </button>
       )}
+
+      <ImageGenerationDialog
+        open={configOpen}
+        onClose={() => setConfigOpen(false)}
+        initialPrompt={genInitialPrompt}
+        styleTemplate={styleTemplate ?? undefined}
+        initialConfig={imageConfig}
+        images={refImages}
+        onImagesChange={handleRefImagesChange}
+        onUploadFiles={handleUploadRefFiles}
+        provider={imageProvider}
+        imageModels={imageModels}
+        loading={genTargetId ? generatingImageIds.has(genTargetId) : false}
+        onConfirm={(params) => {
+          setImageConfig(params.config);
+          setConfigOpen(false);
+          const target = scenes.find((o) => o.id === genTargetId);
+          if (target) void handleGenerateImage(target, params);
+        }}
+      />
     </main>
   );
 }

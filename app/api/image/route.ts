@@ -1,4 +1,5 @@
 import type { ImageProxyRequest, ImageProxyResponse } from "@/lib/types";
+import { getImageModelCapability } from "@/lib/model-presets";
 
 export const runtime = "nodejs";
 
@@ -20,16 +21,35 @@ export async function POST(req: Request) {
   const base = body.baseURL.replace(/\/+$/, "");
   const url = `${base}/images/generations`;
 
+  // 按模型能力条件性构造上游请求体（参照 docs/image.md 参数支持矩阵）
+  const cap = getImageModelCapability(body.model);
   const upstreamBody: Record<string, unknown> = {
     model: body.model,
     prompt: body.prompt,
-    response_format: body.responseFormat ?? "url",
-    watermark: body.watermark ?? false,
+    response_format: cap.responseFormat ? (body.responseFormat ?? "url") : "url",
   };
+
+  // 参考图（单图/多图生图）：1 张传 string，多张传 array
+  if (body.images && body.images.length > 0) {
+    upstreamBody.image = body.images.length === 1 ? body.images[0] : body.images;
+  }
+
   if (body.size) upstreamBody.size = body.size;
-  if (body.outputFormat) upstreamBody.output_format = body.outputFormat;
-  // 默认非组图模式
-  upstreamBody.sequential_image_generation = "disabled";
+  if (cap.watermark && typeof body.watermark === "boolean") {
+    upstreamBody.watermark = body.watermark;
+  }
+  if (cap.outputFormat && body.outputFormat) {
+    upstreamBody.output_format = body.outputFormat;
+  }
+  if (cap.sequentialImageGen) {
+    upstreamBody.sequential_image_generation = "disabled";
+  }
+  if (cap.webSearch && body.webSearch) {
+    upstreamBody.tools = [{ type: "web_search" }];
+  }
+  if (cap.optimizePrompt && body.optimizePromptMode) {
+    upstreamBody.optimize_prompt_options = { mode: body.optimizePromptMode };
+  }
 
   let upstream: Response;
   try {

@@ -1,4 +1,4 @@
-import type { LLMSettings, LLMMessage, LLMProxyRequest } from "./types";
+import type { LLMSettings, LLMMessage, LLMProxyRequest, LLMUpstreamPayload } from "./types";
 import { apiClient } from "./api-client";
 
 /** 预设 provider 默认值 */
@@ -46,6 +46,20 @@ export const PROVIDER_PRESETS: Record<LLMSettings["provider"], ProviderPreset> =
     hint:
       "固定订阅费、按套餐限量调用。需先在 platform.xiaomimimo.com 订阅后获取专属 Base URL 和 tp- 开头的 Key。默认中国节点，新加坡/欧洲用户请改 Base URL 为 token-plan-sgp / token-plan-ams。",
   },
+  ark: {
+    baseURL: "https://ark.cn-beijing.volces.com/api/v3",
+    model: "doubao-seed-2-1-pro-260628",
+    label: "火山方舟（豆包）",
+    keyPrefix: "ark-",
+    hint: "火山引擎方舟大模型服务平台，兼容 OpenAI 格式。前往 console.volcengine.com/ark 获取 API Key 并开通对应模型。可复用图片/视频 API 的同一 Key。",
+  },
+  "ark-agent-plan": {
+    baseURL: "https://ark.cn-beijing.volces.com/api/plan/v3",
+    model: "doubao-seed-2.0-pro",
+    label: "火山方舟 Agent Plan",
+    keyPrefix: "ark-",
+    hint: "Agent Plan 订阅套餐，使用专属 Base URL 和专属 API Key（与标准方舟 Key 不同）。前往 console.volcengine.com/ark 订阅 Agent Plan 后获取专属 Key。兼容 OpenAI 格式，按套餐额度消费。",
+  },
   custom: { baseURL: "", model: "", label: "自定义" },
 };
 
@@ -56,6 +70,22 @@ export async function getSettings(): Promise<LLMSettings | null> {
 export async function saveSettings(s: LLMSettings): Promise<void> {
   const normalized: LLMSettings = { ...s, baseURL: s.baseURL.replace(/\/+$/, "") };
   await apiClient.saveSetting("llm", normalized);
+}
+
+/** 获取各 provider 缓存的 API Key（切换供应商时自动恢复） */
+export async function getProviderKeys(): Promise<Record<string, string>> {
+  try {
+    return (await apiClient.getSetting<Record<string, string>>("llm_provider_keys")) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** 缓存某个 provider 的 API Key */
+export async function saveProviderKey(provider: string, key: string): Promise<void> {
+  const all = await getProviderKeys();
+  all[provider] = key;
+  await apiClient.saveSetting("llm_provider_keys", all);
 }
 
 interface CallOptions {
@@ -71,14 +101,19 @@ async function buildBody(
 ): Promise<LLMProxyRequest> {
   const settings = await getSettings();
   if (!settings) throw new Error("未配置 LLM，请先在右上角设置中填写");
-  return {
-    baseURL: settings.baseURL,
-    apiKey: settings.apiKey,
+  const payload: LLMUpstreamPayload = {
     model: settings.model,
     messages,
     stream,
-    temperature: options?.temperature,
-    responseFormat: options?.responseFormat,
+    temperature: options?.temperature ?? 0.7,
+  };
+  if (options?.responseFormat === "json_object") {
+    payload.response_format = { type: "json_object" };
+  }
+  return {
+    baseURL: settings.baseURL,
+    apiKey: settings.apiKey,
+    payload,
   };
 }
 
@@ -144,9 +179,12 @@ export async function testConnection(s: LLMSettings): Promise<{ ok: boolean; mes
       body: JSON.stringify({
         baseURL: s.baseURL.replace(/\/+$/, ""),
         apiKey: s.apiKey,
-        model: s.model,
-        messages: [{ role: "user", content: "你好" }],
-        stream: false,
+        payload: {
+          model: s.model,
+          messages: [{ role: "user", content: "你好" }],
+          stream: false,
+          temperature: 0.7,
+        },
       } satisfies LLMProxyRequest),
     });
     if (res.ok) return { ok: true, message: "连接成功" };

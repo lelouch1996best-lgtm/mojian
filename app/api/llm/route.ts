@@ -10,23 +10,21 @@ export async function POST(req: Request) {
     return Response.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
 
-  if (!body.baseURL || !body.apiKey || !body.model) {
-    return Response.json({ error: "缺少 LLM 配置（baseURL / apiKey / model）" }, { status: 400 });
+  if (!body.baseURL || !body.apiKey || !body.payload) {
+    return Response.json({ error: "缺少 LLM 配置（baseURL / apiKey / payload）" }, { status: 400 });
+  }
+
+  const { model } = body.payload;
+  if (!model) {
+    return Response.json({ error: "payload 缺少 model 字段" }, { status: 400 });
   }
 
   // 规范化 baseURL：去末尾斜杠
   const base = body.baseURL.replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
 
-  const upstreamBody: Record<string, unknown> = {
-    model: body.model,
-    messages: body.messages,
-    stream: body.stream,
-    temperature: body.temperature ?? 0.7,
-  };
-  if (body.responseFormat === "json_object") {
-    upstreamBody.response_format = { type: "json_object" };
-  }
+  // 纯透传：前端已构造好完整的上游请求体，后端仅负责添加鉴权头并转发
+  const isStream = body.payload.stream;
 
   let upstream: Response;
   try {
@@ -36,7 +34,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${body.apiKey}`,
       },
-      body: JSON.stringify(upstreamBody),
+      body: JSON.stringify(body.payload),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -52,7 +50,7 @@ export async function POST(req: Request) {
   }
 
   // 流式：解析 SSE，提取 delta.content，输出纯文本片段
-  if (body.stream) {
+  if (isStream) {
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         const reader = upstream.body!.getReader();

@@ -78,7 +78,6 @@ export default function StyleSettingsPage() {
     if (editingStyle.characterTemplate !== defaultPreset.characterTemplate) override.characterTemplate = editingStyle.characterTemplate;
     if (editingStyle.sceneTemplate !== defaultPreset.sceneTemplate) override.sceneTemplate = editingStyle.sceneTemplate;
     if (editingStyle.objectTemplate !== defaultPreset.objectTemplate) override.objectTemplate = editingStyle.objectTemplate;
-    if (editingStyle.videoStyleSuffix !== defaultPreset.videoStyleSuffix) override.videoStyleSuffix = editingStyle.videoStyleSuffix;
 
     const newOverrides = { ...settings.overrides };
     if (Object.keys(override).length > 0) {
@@ -269,15 +268,6 @@ export default function StyleSettingsPage() {
             <textarea
               value={editingStyle.objectTemplate}
               onChange={(e) => updateTemplate("objectTemplate", e.target.value)}
-              className="ss-input resize-y"
-              rows={3}
-            />
-          </TemplateField>
-
-          <TemplateField label="视频风格后缀" hint="拼接到视频提示词末尾">
-            <textarea
-              value={editingStyle.videoStyleSuffix}
-              onChange={(e) => updateTemplate("videoStyleSuffix", e.target.value)}
               className="ss-input resize-y"
               rows={3}
             />

@@ -10,87 +10,25 @@ export async function POST(req: Request) {
     return Response.json({ error: "请求体不是合法 JSON" }, { status: 400 });
   }
 
-  if (!body.baseURL || !body.apiKey || !body.model || !body.prompt) {
+  if (!body.baseURL || !body.apiKey || !body.payload) {
     return Response.json(
-      { error: "缺少必要参数（baseURL / apiKey / model / prompt）" },
+      { error: "缺少必要参数（baseURL / apiKey / payload）" },
       { status: 400 }
     );
   }
 
-  // 按 mode 校验必需输入
-  if (body.mode === "first-frame" && !body.firstFrameUrl) {
-    return Response.json({ error: "首帧模式需要提供首帧图片 URL" }, { status: 400 });
-  }
-  if (body.mode === "first-last-frame" && (!body.firstFrameUrl || !body.lastFrameUrl)) {
-    return Response.json({ error: "首尾帧模式需要同时提供首帧与尾帧图片 URL" }, { status: 400 });
-  }
-  if (body.mode === "multimodal-ref") {
-    const imgCount = body.referenceImageUrls?.length ?? 0;
-    const vidCount = body.referenceVideoUrls?.length ?? 0;
-    // 音频不可单独输入，需至少 1 个参考图或视频
-    if (imgCount === 0 && vidCount === 0) {
-      return Response.json(
-        { error: "多模态参考模式需至少提供 1 张参考图或 1 个参考视频" },
-        { status: 400 }
-      );
-    }
+  const { model, content } = body.payload;
+  if (!model || !Array.isArray(content) || content.length === 0) {
+    return Response.json(
+      { error: "payload 缺少必要字段（model / content）" },
+      { status: 400 }
+    );
   }
 
   const base = body.baseURL.replace(/\/+$/, "");
   const url = `${base}/contents/generations/tasks`;
 
-  // 按 mode 构造 content 数组
-  const content: Array<Record<string, unknown>> = [
-    { type: "text", text: body.prompt },
-  ];
-
-  if (body.mode === "first-frame") {
-    content.push({
-      type: "image_url",
-      image_url: { url: body.firstFrameUrl },
-      role: "first_frame",
-    });
-  } else if (body.mode === "first-last-frame") {
-    content.push({
-      type: "image_url",
-      image_url: { url: body.firstFrameUrl },
-      role: "first_frame",
-    });
-    content.push({
-      type: "image_url",
-      image_url: { url: body.lastFrameUrl },
-      role: "last_frame",
-    });
-  } else if (body.mode === "multimodal-ref") {
-    // 参考图（role=reference_image）
-    (body.referenceImageUrls ?? []).forEach((u) => {
-      content.push({
-        type: "image_url",
-        image_url: { url: u },
-        role: "reference_image",
-      });
-    });
-    // 参考视频（仅 2.0）
-    (body.referenceVideoUrls ?? []).forEach((u) => {
-      content.push({ type: "video_url", video_url: { url: u } });
-    });
-    // 参考音频（仅 2.0，不可单独输入）
-    (body.referenceAudioUrls ?? []).forEach((u) => {
-      content.push({ type: "audio_url", audio_url: { url: u } });
-    });
-  }
-  // text2video：不加任何素材
-
-  const upstreamBody: Record<string, unknown> = {
-    model: body.model,
-    content,
-    watermark: body.watermark ?? false,
-  };
-  if (body.resolution) upstreamBody.resolution = body.resolution;
-  if (body.ratio) upstreamBody.ratio = body.ratio;
-  if (typeof body.duration === "number") upstreamBody.duration = body.duration;
-  if (typeof body.generateAudio === "boolean") upstreamBody.generate_audio = body.generateAudio;
-
+  // 纯透传：前端已构造好完整的上游请求体，后端仅负责添加鉴权头并转发
   let upstream: Response;
   try {
     upstream = await fetch(url, {
@@ -99,7 +37,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${body.apiKey}`,
       },
-      body: JSON.stringify(upstreamBody),
+      body: JSON.stringify(body.payload),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

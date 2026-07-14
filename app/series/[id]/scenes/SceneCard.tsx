@@ -108,6 +108,17 @@ export function SceneCard({
             </svg>
           </button>
         )}
+        {/* 上传替换按钮 */}
+        {scene.imageUrl && !isUploading && (
+          <button onClick={() => fileInputRef.current?.click()}
+            className="absolute right-2 top-10 rounded-md bg-white/80 p-1.5 text-slate-500 backdrop-blur transition-colors hover:text-brand-500"
+            title="上传替换图片">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
         {/* 删除按钮 */}
         <button onClick={onDelete}
           className="absolute right-2 top-2 rounded-md bg-white/80 p-1 text-slate-400 backdrop-blur transition-colors hover:text-red-500"
@@ -122,23 +133,19 @@ export function SceneCard({
       {/* 卡片内容 */}
       <div className="px-4 py-3">
         <div className="flex items-center gap-2">
+          <span className="w-20 shrink-0 text-xs font-semibold text-black">📝 名称</span>
           <input type="text" value={scene.name}
             onChange={(e) => onUpdate("name", e.target.value)} placeholder="场景名称"
             className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm font-medium text-slate-800 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20" />
-          {scene.category.trim() && (
-            <span className="shrink-0 rounded bg-emerald-100 px-2 py-0.5 text-xs text-emerald-800">
-              {scene.category.trim()}
-            </span>
-          )}
         </div>
 
         {/* 版本标签编辑 */}
         <div className="mt-2 flex items-center gap-2">
-          <span className="text-xs text-slate-400">版本标签</span>
+          <span className="w-20 shrink-0 text-xs font-semibold text-black">🏷️ 版本标签</span>
           <input type="text" value={scene.versionLabel}
             onChange={(e) => onUpdate("versionLabel", e.target.value)}
             placeholder="如：白天、夜晚、战火后…"
-            className="flex-1 rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-600 focus:border-brand-400 focus:outline-none" />
+            className="flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm text-slate-600 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20" />
         </div>
 
         {scene.category.trim() && !expanded && (
@@ -156,24 +163,24 @@ export function SceneCard({
 
         {expanded && (
           <div className="mt-3 space-y-3 border-t border-slate-100 pt-3">
-            <Field label="分类" hint="室内/室外/特定地点等">
+            <Field label="📦 分类" hint="室内/室外/特定地点等">
               <input type="text" value={scene.category}
                 onChange={(e) => onUpdate("category", e.target.value)}
                 placeholder="如：室内、室外、奇幻地…" className="scene-input" />
             </Field>
-            <Field label="外观描述" hint="视觉特征、布局、建筑风格">
+            <Field label="🎨 外观描述" hint="视觉特征、布局、建筑风格">
               <textarea value={scene.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
                 placeholder="如：古朴的木质茶馆，挂着红灯笼，门前有石阶流水…"
                 className="scene-input resize-y" rows={3} />
             </Field>
-            <Field label="光影氛围" hint="光线、色调、氛围">
+            <Field label="💡 光影氛围" hint="光线、色调、氛围">
               <textarea value={scene.lightingMood}
                 onChange={(e) => onUpdate("lightingMood", e.target.value)}
                 placeholder="如：黄昏暖光、逆光剪影、冷色调月光…"
                 className="scene-input resize-y" rows={2} />
             </Field>
-            <Field label="来源背景">
+            <Field label="📖 来源背景">
               <textarea value={scene.origin}
                 onChange={(e) => onUpdate("origin", e.target.value)}
                 placeholder="如：主角家族传承的老宅，隐藏在深巷百年…"
@@ -201,7 +208,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <label className="text-xs font-medium text-slate-600">{label}</label>
+        <label className="text-xs font-semibold text-black">{label}</label>
         {hint && <span className="text-xs text-slate-400">{hint}</span>}
       </div>
       {children}

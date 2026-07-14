@@ -5,6 +5,8 @@ export interface LLMSettings {
     | "glm"
     | "mimo" // 小米 MiMo 按量付费
     | "mimo-plan" // 小米 MiMo Token Plan 套餐
+    | "ark" // 火山方舟（豆包 Doubao）
+    | "ark-agent-plan" // 火山方舟 Agent Plan（订阅套餐）
     | "custom";
   baseURL: string; // 例: https://api.deepseek.com/v1
   apiKey: string;
@@ -46,9 +48,11 @@ export interface CharacterProfile {
   relationships: string;
   /** 人物形象图 URL（未来扩展） */
   imageUrl?: string;
+  /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
+  referenceImages?: string[];
 }
 
-/** 单个物品设定档案 —— 系列级，跨集共享。同一物品可有多个版本（如不同形态/等级）。 */
+/** 单个物品设定档案 -- 系列级，跨集共享。同一物品可有多个版本（如不同形态/等级）。 */
 export interface ObjectProfile {
   id: string;
   /** 物品组 ID（同一物品的多个版本共享此 ID） */
@@ -69,6 +73,8 @@ export interface ObjectProfile {
   origin: string;
   /** 物品形象图 URL */
   imageUrl?: string;
+  /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
+  referenceImages?: string[];
 }
 
 /** 单个场景设定档案 —— 系列级，跨集共享。同一场景可有多个版本（如白天/夜晚/战火后）。 */
@@ -92,6 +98,8 @@ export interface SceneProfile {
   origin: string;
   /** 场景形象图 URL */
   imageUrl?: string;
+  /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
+  referenceImages?: string[];
 }
 
 /** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、漫剧风格 */
@@ -116,19 +124,17 @@ export interface Series {
   episodeOrder: string[];
 }
 
-/** 漫剧风格预设 —— 每种风格包含各类型资产的图片提示词模板和视频风格后缀 */
+/** 漫剧风格预设 -- 每种风格包含各类型资产的图片提示词模板 */
 export interface StylePreset {
   id: string;
   name: string;
   description: string;
-  /** 人物图片提示词模板（含三视图要求），拼接到 LLM 生成的 imagePrompt 末尾 */
+  /** 人物图片提示词模板（含三视图要求），拼接到 description（用作图片提示词）末尾 */
   characterTemplate: string;
   /** 场景图片提示词模板 */
   sceneTemplate: string;
   /** 物品图片提示词模板 */
   objectTemplate: string;
-  /** 视频提示词风格后缀 */
-  videoStyleSuffix: string;
 }
 
 /** 风格配置（全局，存服务端数据库） */
@@ -169,10 +175,12 @@ export interface Asset {
   id: string;
   name: string; // @标签 内的名字，如 "小明"
   type: AssetType; // 人物/场景/物品
-  description: string; // LLM 生成的资产描述
-  imagePrompt: string; // 图片生成提示词（中文，LLM 生成）
+  description: string; // LLM 生成的资产描述（同时用作图片提示词）
+  imagePrompt: string; // 图片生成提示词，与 description 保持一致
   imageUrl: string; // 生成的图片 URL（暂空，待接入图片 API）
   status: AssetStatus;
+  /** 卡片级图片生成配置；缺省时回退 DEFAULT_ASSET_IMAGE_CONFIG */
+  imageConfig?: AssetImageConfig;
 }
 
 export interface Episode {
@@ -194,14 +202,21 @@ export type LLMMessage = {
 };
 
 /** 前端发给 /api/llm 的请求体 */
-export interface LLMProxyRequest {
-  baseURL: string;
-  apiKey: string;
+/** 发送给 LLM 上游 API（OpenAI 兼容格式）的完整请求体（前端构造，后端透传） */
+export interface LLMUpstreamPayload {
   model: string;
   messages: LLMMessage[];
   stream: boolean;
-  temperature?: number;
-  responseFormat?: "json_object" | "text";
+  temperature: number;
+  response_format?: { type: "json_object" };
+}
+
+/** 前端发给 /api/llm 的请求体（前端已构造好完整上游 payload） */
+export interface LLMProxyRequest {
+  apiKey: string;
+  baseURL: string;
+  /** 完整的上游请求体（前端构造，直接透传给 LLM API） */
+  payload: LLMUpstreamPayload;
 }
 
 /** 从 LLM 返回的原始分镜对象（无 id / finalPrompt） */
@@ -215,19 +230,36 @@ export interface RawShot {
   cameraMovement?: string;
 }
 
-/** 图片生成 API 配置（火山引擎 Seedream / Doubao）— 独立于 LLM 设置 */
+/** 图片生成 API 配置（多供应商，全局仅管理供应商和模型，生成参数在卡片级配置） */
 export interface ImageGenSettings {
-  apiKey: string; // 火山方舟 API Key
-  baseURL: string; // 例: https://ark.cn-beijing.volces.com/api/v3
-  model: string; // 模型 ID，如 doubao-seedream-5-0-260128
-  size: string; // 2K / 3K / 4K 或 2048x2048
+  provider: "ark" | "ark-plan" | "custom";
+  baseURL: string;
+  apiKey: string;
+  model: string;
+}
+
+/** 单个资产的图片生成配置（卡片级，参照 ShotVideoConfig 模式） */
+export interface AssetImageConfig {
+  /** 图片生成模型（卡片级选择，缺省回退 DEFAULT_ASSET_IMAGE_CONFIG.model） */
+  model: string;
+  /** 分辨率档位（方式2）：1K/2K/3K/4K，通过 size 字段传输 */
+  resolution: string;
+  /** 宽高比（方式2）：1:1/4:3/3:4/16:9/9:16/3:2/2:3/21:9，拼接到提示词中 */
+  aspectRatio: string;
   outputFormat: "png" | "jpeg";
   watermark: boolean;
   responseFormat: "url" | "b64_json";
+  /** 是否开启联网搜索（tools.web_search） */
+  webSearch: boolean;
+  /** 提示词优化模式（optimize_prompt_options.mode） */
+  optimizePromptMode: "standard" | "fast";
+  /** 参考图 URL 列表（COS URL，用于持久化） */
+  referenceImages?: string[];
 }
 
 /** 前端发给 /api/image 的请求体 */
 export interface ImageProxyRequest {
+  provider: ImageGenSettings["provider"];
   apiKey: string;
   baseURL: string;
   model: string;
@@ -236,6 +268,12 @@ export interface ImageProxyRequest {
   outputFormat?: "png" | "jpeg";
   watermark?: boolean;
   responseFormat?: "url" | "b64_json";
+  /** 参考图列表（URL 或 base64 data URI），用于单图/多图生图 */
+  images?: string[];
+  /** 是否开启联网搜索 */
+  webSearch?: boolean;
+  /** 提示词优化模式 */
+  optimizePromptMode?: "standard" | "fast";
 }
 
 /** /api/image 非流式响应 */
@@ -272,7 +310,7 @@ export type VideoGenerationMode =
   | "first-last-frame" // 图生视频-首尾帧
   | "multimodal-ref"; // 多模态参考生视频（仅 2.0）
 
-export type VideoResolution = "480p" | "720p" | "1080p";
+export type VideoResolution = "480p" | "720p" | "1080p" | "4k";
 export type VideoRatio = "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive";
 
 /** 单个镜头的视频生成配置（卡片级，覆盖硬编码默认） */
@@ -284,44 +322,70 @@ export interface ShotVideoConfig {
   duration: number; // -1 = 模型自动（仅支持的模型）
   watermark: boolean;
   generateAudio: boolean;
-  /** multimodal-ref 模式：参考视频 URL（仅 2.0） */
+  /** 种子，-1 = 随机（Seedance 2.0 系列不支持） */
+  seed: number;
+  /** 是否固定摄像头（Seedance 2.0 系列、参考图场景不支持） */
+  cameraFixed: boolean;
+  /** 是否返回尾帧图像（用于连续生成多个视频） */
+  returnLastFrame: boolean;
+  /** 是否开启联网搜索（仅 Seedance 2.0 系列） */
+  webSearch: boolean;
+  /** 请求优先级 0-9（仅 Seedance 2.0 系列，越大越优先） */
+  priority: number;
+  /** 是否开启样片模式（仅 Seedance 1.5 Pro） */
+  draft: boolean;
+  /** multimodal-ref 模式：参考视频 URL（仅 2.0，支持 asset:// 素材） */
   referenceVideoUrls?: string[];
-  /** multimodal-ref 模式：参考音频 URL（仅 2.0） */
+  /** multimodal-ref 模式：参考音频 URL（仅 2.0，支持 asset:// 素材） */
   referenceAudioUrls?: string[];
+  /** multimodal-ref 模式：手动添加的参考图 URL（asset:// 素材或公网 URL，与关联资产图合并） */
+  referenceImageAssetUrls?: string[];
   /** first-frame / first-last-frame 模式：首帧图 URL（单独上传） */
   firstFrameImageUrl?: string;
   /** first-last-frame 模式：尾帧图 URL（单独上传） */
   lastFrameImageUrl?: string;
 }
 
-/** 视频生成 API 配置（火山引擎 Seedance / Doubao） */
+/** 视频生成 API 配置（多供应商） */
 export interface VideoGenSettings {
-  apiKey: string; // 火山方舟 API Key（与图片 API 共用同一 Key）
+  provider: "ark" | "ark-plan" | "custom";
+  apiKey: string; // API Key
   baseURL: string; // https://ark.cn-beijing.volces.com/api/v3
 }
 
-/** 前端发给 /api/video/create 的请求体 */
+/** Seedance API content 数组项 */
+export interface VideoContentItem {
+  type: "text" | "image_url" | "video_url" | "audio_url";
+  text?: string;
+  image_url?: { url: string };
+  video_url?: { url: string };
+  audio_url?: { url: string };
+  role?: "first_frame" | "last_frame" | "reference_image" | "reference_video" | "reference_audio";
+}
+
+/** 发送给 Seedance API 的完整请求体（前端构造，后端透传） */
+export interface VideoUpstreamPayload {
+  model: string;
+  content: VideoContentItem[];
+  watermark?: boolean;
+  resolution?: string;
+  ratio?: string;
+  duration?: number;
+  generate_audio?: boolean;
+  seed?: number;
+  camera_fixed?: boolean;
+  return_last_frame?: boolean;
+  draft?: boolean;
+  priority?: number;
+  tools?: Array<{ type: "web_search" }>;
+}
+
+/** 前端发给 /api/video/create 的请求体（前端已构造好完整上游 payload） */
 export interface VideoCreateProxyRequest {
   apiKey: string;
   baseURL: string;
-  model: string;
-  prompt: string;
-  mode: VideoGenerationMode;
-  /** 首帧图片 URL（first-frame / first-last-frame 模式） */
-  firstFrameUrl?: string;
-  /** 尾帧图片 URL（first-last-frame 模式） */
-  lastFrameUrl?: string;
-  /** 参考图片 URL 列表（multimodal-ref 模式，role=reference_image） */
-  referenceImageUrls?: string[];
-  /** 参考视频 URL 列表（multimodal-ref 模式，仅 2.0） */
-  referenceVideoUrls?: string[];
-  /** 参考音频 URL 列表（multimodal-ref 模式，仅 2.0） */
-  referenceAudioUrls?: string[];
-  resolution?: VideoResolution;
-  ratio?: VideoRatio;
-  duration?: number;
-  watermark?: boolean;
-  generateAudio?: boolean;
+  /** 完整的上游请求体（前端构造，直接透传给 Seedance API） */
+  payload: VideoUpstreamPayload;
 }
 
 /** /api/video/create 响应 */

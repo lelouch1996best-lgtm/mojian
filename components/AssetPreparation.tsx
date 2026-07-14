@@ -2,18 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
-import Spinner from "./ui/Spinner";
-import EditableCell from "./EditableCell";
-import TaggedText from "./TaggedText";
 import ImageLightbox from "./ImageLightbox";
 import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
-import { callLLM } from "@/lib/llm-client";
-import { generateImage, getImageSettings } from "@/lib/image-client";
-import { assetMessages } from "@/lib/prompts";
-import { getCosSettings, isCosConfigured } from "@/lib/cos-client";
-import { getActiveStyle, getAssetTemplate, styleToText } from "@/lib/style-settings";
+import { callLLM, streamLLM } from "@/lib/llm-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG } from "@/lib/image-client";
+import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
+import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
+import { assetMessages, regenerateAssetMessages } from "@/lib/prompts";
+import { getCosSettings, isCosConfigured, uploadRefBase64 } from "@/lib/cos-client";
+import { getActiveStyle, getAssetTemplate, styleToText, styleTemplateForType } from "@/lib/style-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
 import { getLatestObjectVersions } from "@/lib/object-settings";
 import { getLatestSceneVersions } from "@/lib/scene-settings";
@@ -24,7 +23,7 @@ import {
   ASSET_TYPE_LABELS,
   uuid,
 } from "@/lib/utils";
-import type { Asset, AssetStatus, AssetType, CharacterProfile, Episode, ObjectProfile, SceneProfile, StyleSettings } from "@/lib/types";
+import type { AssetImageConfig, Asset, AssetStatus, AssetType, CharacterProfile, Episode, ImageGenSettings, ObjectProfile, SceneProfile, StyleSettings } from "@/lib/types";
 
 interface AssetPreparationProps {
   episode: Episode;
@@ -35,6 +34,8 @@ interface AssetPreparationProps {
   seriesStyleSettings?: StyleSettings | null;
   /** 系列级人物设定（优先使用，不传则用全局） */
   characterSettings?: CharacterProfile[] | null;
+  /** 保存人物设定（提取人物资产时调用） */
+  onSaveCharacterSettings?: (characters: CharacterProfile[]) => void;
   /** 系列级物品设定 */
   objectSettings?: ObjectProfile[] | null;
   /** 保存物品设定（提取物品资产时调用） */
@@ -68,6 +69,7 @@ export default function AssetPreparation({
   onBackToStep2,
   seriesStyleSettings,
   characterSettings,
+  onSaveCharacterSettings,
   objectSettings,
   onSaveObjectSettings,
   sceneSettings,
@@ -77,6 +79,7 @@ export default function AssetPreparation({
 }: AssetPreparationProps) {
   const [generating, setGenerating] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
+  const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set());
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
 
@@ -95,9 +98,25 @@ export default function AssetPreparation({
   // 当前所有镜头里的 @标签（去重，按首次出现顺序）
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
 
-  // 图片 API 是否已配置
   const [imageConfigured, setImageConfigured] = useState(false);
-  useEffect(() => { getImageSettings().then((s) => setImageConfigured(!!s?.apiKey)); }, []);
+  const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
+  const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  useEffect(() => {
+    getImageSettings().then(async (s) => {
+      setImageConfigured(!!s?.apiKey);
+      const provider = s?.provider ?? "ark";
+      if (s?.provider) setImageProvider(s.provider);
+      setImageModels(await getImageModels(provider));
+    });
+  }, []);
+
+  // 图片生成弹框状态（单资产生成时使用）
+  const [genTargetAssetId, setGenTargetAssetId] = useState<string | null>(null);
+  const [genConfigOpen, setGenConfigOpen] = useState(false);
+  const [genInitialPrompt, setGenInitialPrompt] = useState("");
+  const [genStyleTemplate, setGenStyleTemplate] = useState<string | null>(null);
+  const [genImageConfig, setGenImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [genInitialRefImages, setGenInitialRefImages] = useState<string[]>([]);
 
   // 人物设定文本（系列级优先，否则回退全局）
   const [globalCharacterText, setGlobalCharacterText] = useState("");
@@ -214,6 +233,26 @@ export default function AssetPreparation({
     return map;
   }, [sceneSettings]);
 
+  /** 把人物资产提取到人物设定（作为 v1 版本保存） */
+  function handleExtractCharacter(asset: Asset) {
+    if (!onSaveCharacterSettings) return;
+    const newChar: CharacterProfile = {
+      id: uuid(),
+      characterId: uuid(),
+      version: 1,
+      versionLabel: "v1",
+      name: asset.name.trim(),
+      role: "",
+      genderAge: "",
+      appearance: asset.description.trim(),
+      personality: "",
+      background: "",
+      relationships: "",
+      imageUrl: asset.imageUrl || "",
+    };
+    onSaveCharacterSettings([...(characterSettings ?? []), newChar]);
+  }
+
   /** 把物品资产提取到物品设定（作为 v1 版本保存） */
   function handleExtractObject(asset: Asset) {
     if (!onSaveObjectSettings) return;
@@ -224,8 +263,8 @@ export default function AssetPreparation({
       versionLabel: "v1",
       name: asset.name.trim(),
       category: "",
-      appearance: asset.imagePrompt.trim(),
-      purpose: asset.description.trim(),
+      appearance: asset.description.trim(),
+      purpose: "",
       origin: "",
       imageUrl: asset.imageUrl || "",
     };
@@ -242,7 +281,7 @@ export default function AssetPreparation({
       versionLabel: "v1",
       name: asset.name.trim(),
       category: "",
-      appearance: asset.imagePrompt.trim(),
+      appearance: asset.description.trim(),
       lightingMood: "",
       origin: "",
       imageUrl: asset.imageUrl || "",
@@ -296,7 +335,7 @@ export default function AssetPreparation({
             name: r.name!,
             type: normalizeAssetType(r.type),
             description: r.description ?? "",
-            imagePrompt: r.imagePrompt ?? "",
+            imagePrompt: r.description ?? "",
             imageUrl,
             status: imageUrl ? "ready" : (prev?.status ?? "pending"),
           };
@@ -309,31 +348,79 @@ export default function AssetPreparation({
     }
   }
 
-  /** 单个资产生成图片（调用火山引擎 Seedream API） */
-  async function handleGenerateImage(asset: Asset) {
-    if (!asset.imagePrompt) {
-      setError(`资产「${asset.name}」还没有图片提示词，请先生成资产信息`);
-      return;
+  /** 重新生成单个资产的外貌/外观描述（流式） */
+  async function handleRegenerateAsset(asset: Asset) {
+    setRegeneratingIds((prev) => new Set(prev).add(asset.id));
+    setError(null);
+    try {
+      const style = await getActiveStyle(seriesStyleSettings);
+      const styleText = styleTemplateForType(style, asset.type);
+      const messages = regenerateAssetMessages(asset.name, asset.type, episode.expandedContent, styleText);
+      let acc = "";
+      for await (const chunk of streamLLM(messages, { temperature: 0.7 })) {
+        acc += chunk;
+        onUpdateAsset(asset.id, "description", acc);
+        onUpdateAsset(asset.id, "imagePrompt", acc);
+      }
+    } catch (e) {
+      setError(`「${asset.name}」重新生成失败：${(e as Error).message}`);
+    } finally {
+      setRegeneratingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(asset.id);
+        return next;
+      });
     }
+  }
+
+  /** 打开图片生成弹框（先做必要校验） */
+  async function openGenerateImageDialog(asset: Asset) {
+    const prompt = asset.imagePrompt.trim() || asset.description.trim() || asset.name.trim();
     if (!imageConfigured) {
       setError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
+    if (asset.description.trim() && asset.imagePrompt.trim() !== asset.description.trim()) {
+      onUpdateAsset(asset.id, "imagePrompt", asset.description.trim());
+    }
     setError(null);
-    await generateImageForAsset(asset);
+    const template = await getAssetTemplate(asset.type, seriesStyleSettings);
+    setGenStyleTemplate(template);
+    setGenInitialPrompt(prompt);
+    setGenImageConfig({
+      ...DEFAULT_ASSET_IMAGE_CONFIG,
+      model: getDefaultModelValue(imageModels) ?? DEFAULT_ASSET_IMAGE_CONFIG.model,
+      ...(asset.imageConfig ?? {}),
+    });
+    setGenInitialRefImages(asset.imageConfig?.referenceImages ?? []);
+    setGenTargetAssetId(asset.id);
+    setGenConfigOpen(true);
   }
 
   /** 单个资产生成图片 + 自动转存 COS */
-  async function generateImageForAsset(asset: Asset) {
+  async function generateImageForAsset(asset: Asset, params?: ImageGenerationParams) {
     setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
     onUpdateAsset(asset.id, "status", "pending");
     try {
-      // 拼接风格模板到图片提示词末尾
-      const template = getAssetTemplate(asset.type, seriesStyleSettings);
-      const finalPrompt = template
-        ? `${asset.imagePrompt}，${template}`
-        : asset.imagePrompt;
-      const result = await generateImage(finalPrompt);
+      let prompt: string;
+      let images: string[] | undefined;
+      let config: AssetImageConfig;
+      if (params) {
+        // 弹框确认：提示词已由弹框处理（含风格模板），直接使用
+        prompt = params.prompt;
+        images = params.images.length > 0 ? params.images : undefined;
+        config = params.config;
+      } else {
+        // 批量模式：用资产存储的提示词 + 配置
+        const template = getAssetTemplate(asset.type, seriesStyleSettings);
+        prompt = template ? `${asset.imagePrompt}，${template}` : asset.imagePrompt;
+        config = {
+          ...DEFAULT_ASSET_IMAGE_CONFIG,
+          model: getDefaultModelValue(imageModels) ?? DEFAULT_ASSET_IMAGE_CONFIG.model,
+          ...(asset.imageConfig ?? {}),
+        };
+      }
+      const result = await generateImage(prompt, config, images, imageModels);
       onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
       onUpdateAsset(asset.id, "status", "ready");
 
@@ -592,11 +679,11 @@ export default function AssetPreparation({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {!imageConfigured ? (
-            <span className="inline-flex cursor-pointer items-center rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs text-amber-700 hover:bg-amber-100" onClick={() => window.history.back()}>
-              图片 API 未配置，请返回首页打开「设置」
+            <span className="inline-flex cursor-pointer items-center rounded-md border border-amber-300 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-200" onClick={() => window.history.back()}>
+              ⚠️ 图片 API 未配置，请返回首页打开「设置」
             </span>
           ) : (
-            <span className="text-xs text-emerald-700">图片 API 已配置 ✓</span>
+            <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 图片 API 已配置</span>
           )}
           <Button
             variant="secondary"
@@ -693,69 +780,46 @@ export default function AssetPreparation({
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {episode.assets.map((asset) => {
-            // 人物资产若匹配到人物设定版本，则用人物资产卡片（可选择版本、复用图片）
-            const charVersions =
-              asset.type === "character" ? characterVersionsByName.get(asset.name.trim()) : undefined;
-            if (charVersions && charVersions.length > 0) {
+            const commonProps = {
+              asset,
+              onUpdate: (field: keyof Asset, value: string) => onUpdateAsset(asset.id, field, value),
+              onDelete: onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined,
+              seriesId: episode.seriesId,
+              isGenerating: generatingImageIds.has(asset.id),
+              onGenerateImage: () => openGenerateImageDialog(asset),
+              isRegenerating: regeneratingIds.has(asset.id),
+              onRegenerate: () => handleRegenerateAsset(asset),
+            };
+
+            if (asset.type === "character") {
+              const versions = characterVersionsByName.get(asset.name.trim()) ?? [];
               return (
                 <CharacterAssetCard
                   key={asset.id}
-                  asset={asset}
-                  versions={charVersions}
-                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
-                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                  {...commonProps}
+                  versions={versions}
+                  onExtract={onSaveCharacterSettings ? () => handleExtractCharacter(asset) : undefined}
                 />
               );
             }
-            // 物品资产若匹配到物品设定版本，则用物品资产卡片（可选择版本、复用图片）
-            const objVersions =
-              asset.type === "object" ? objectVersionsByName.get(asset.name.trim()) : undefined;
-            if (objVersions && objVersions.length > 0) {
+            if (asset.type === "object") {
+              const versions = objectVersionsByName.get(asset.name.trim()) ?? [];
               return (
                 <ObjectAssetCard
                   key={asset.id}
-                  asset={asset}
-                  versions={objVersions}
-                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
-                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                  {...commonProps}
+                  versions={versions}
+                  onExtract={onSaveObjectSettings ? () => handleExtractObject(asset) : undefined}
                 />
               );
             }
-            // 场景资产若匹配到场景设定版本，则用场景资产卡片（可选择版本、复用图片）
-            const sceneVersions =
-              asset.type === "scene" ? sceneVersionsByName.get(asset.name.trim()) : undefined;
-            if (sceneVersions && sceneVersions.length > 0) {
-              return (
-                <SceneAssetCard
-                  key={asset.id}
-                  asset={asset}
-                  versions={sceneVersions}
-                  onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
-                  onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
-                />
-              );
-            }
+            const versions = sceneVersionsByName.get(asset.name.trim()) ?? [];
             return (
-              <AssetCard
+              <SceneAssetCard
                 key={asset.id}
-                asset={asset}
-                isGenerating={generatingImageIds.has(asset.id)}
-                isUploading={uploadingIds.has(asset.id)}
-                cosConfigured={cosConfigured}
-                onUpdate={(field, value) => onUpdateAsset(asset.id, field, value)}
-                onGenerateImage={() => handleGenerateImage(asset)}
-                onUpload={() => handleUploadToCos(asset)}
-                onExtractObject={
-                  asset.type === "object" && onSaveObjectSettings
-                    ? () => handleExtractObject(asset)
-                    : undefined
-                }
-                onExtractScene={
-                  asset.type === "scene" && onSaveSceneSettings
-                    ? () => handleExtractScene(asset)
-                    : undefined
-                }
-                onDelete={onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined}
+                {...commonProps}
+                versions={versions}
+                onExtract={onSaveSceneSettings ? () => handleExtractScene(asset) : undefined}
               />
             );
           })}
@@ -887,192 +951,50 @@ export default function AssetPreparation({
           )}
         </div>
       )}
-    </div>
-  );
-}
 
-/** 单个资产卡片 */
-function AssetCard({
-  asset,
-  isGenerating,
-  isUploading,
-  cosConfigured,
-  onUpdate,
-  onGenerateImage,
-  onUpload,
-  onExtractObject,
-  onExtractScene,
-  onDelete,
-}: {
-  asset: Asset;
-  isGenerating: boolean;
-  isUploading: boolean;
-  cosConfigured: boolean;
-  onUpdate: (field: keyof Asset, value: string) => void;
-  onGenerateImage: () => void;
-  onUpload: () => void;
-  onExtractObject?: () => void;
-  onExtractScene?: () => void;
-  onDelete?: () => void;
-}) {
-  return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      {/* 图片区 */}
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-slate-50">
-        {asset.imageUrl ? (
-          <ImageLightbox src={asset.imageUrl} alt={asset.name} className="h-full w-full">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={asset.imageUrl}
-              alt={asset.name}
-              className="h-full w-full object-cover"
-            />
-          </ImageLightbox>
-        ) : isGenerating ? (
-          <div className="flex flex-col items-center gap-2 text-slate-400">
-            <Spinner size={28} />
-            <span className="text-xs">生成中…</span>
-          </div>
-        ) : isUploading ? (
-          <div className="flex flex-col items-center gap-2 text-slate-400">
-            <Spinner size={28} />
-            <span className="text-xs">上传中…</span>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center gap-1 text-slate-300">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
-              <rect
-                x="3"
-                y="4"
-                width="18"
-                height="16"
-                rx="2"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-              <circle cx="9" cy="10" r="2" stroke="currentColor" strokeWidth="1.5" />
-              <path
-                d="M3 17l5-5 4 4 3-3 6 6"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-              />
-            </svg>
-            <span className="text-xs">图片待生成</span>
-          </div>
-        )}
-        {/* 删除按钮 */}
-        {onDelete && (
-          <button
-            type="button"
-            onClick={onDelete}
-            className="absolute right-2 top-2 flex h-6 w-6 items-center justify-center rounded-full bg-black/30 text-white backdrop-blur transition-colors hover:bg-red-500"
-            title="删除该资产"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
-      </div>
+      <ImageGenerationDialog
+        open={genConfigOpen}
+        onClose={() => setGenConfigOpen(false)}
+        initialPrompt={genInitialPrompt}
+        styleTemplate={genStyleTemplate ?? undefined}
+        initialConfig={genImageConfig}
+        images={genInitialRefImages}
+        onImagesChange={setGenInitialRefImages}
+        provider={imageProvider}
+        imageModels={imageModels}
+        loading={genTargetAssetId ? generatingImageIds.has(genTargetAssetId) : false}
+        onConfirm={async (params) => {
+          setGenConfigOpen(false);
+          setGenImageConfig(params.config);
 
-      {/* 内容区 */}
-      <div className="flex flex-1 flex-col gap-2 p-3">
-        <div className="flex items-center gap-2">
-          <TaggedText
-            text={`@${asset.name}`}
-            className="text-sm font-semibold text-slate-800"
-          />
-          <select
-            value={asset.type}
-            onChange={(e) => onUpdate("type", e.target.value as AssetType)}
-            className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-              TYPE_BADGE_CLASS[asset.type]
-            } border-0 focus:outline-none`}
-          >
-            {TYPE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {ASSET_TYPE_LABELS[o.value]}
-              </option>
-            ))}
-          </select>
-        </div>
+          const targetAsset = episode.assets.find((a) => a.id === genTargetAssetId);
 
-        <div>
-          <label className="mb-0.5 block text-xs text-slate-400">描述</label>
-          <EditableCell
-            value={asset.description}
-            onChange={(v) => onUpdate("description", v)}
-            placeholder="资产描述…"
-            multiline
-            minWidth="100%"
-          />
-        </div>
+          // 上传 base64 参考图到 COS，获取 URL 用于持久化
+          let refUrls: string[] = [];
+          if (params.images.length > 0) {
+            if (cosConfigured) {
+              refUrls = await Promise.all(
+                params.images.map(async (img, i) => {
+                  if (img.startsWith("http")) return img;
+                  try {
+                    return await uploadRefBase64(img, `ref-${targetAsset?.name ?? "asset"}-${i + 1}`);
+                  } catch {
+                    return img;
+                  }
+                })
+              );
+            } else {
+              refUrls = params.images;
+            }
+          }
 
-        <div>
-          <label className="mb-0.5 block text-xs text-slate-400">图片提示词</label>
-          <EditableCell
-            value={asset.imagePrompt}
-            onChange={(v) => onUpdate("imagePrompt", v)}
-            placeholder="用于图片生成的提示词…"
-            multiline
-            minWidth="100%"
-          />
-        </div>
-
-        <div className="mt-auto flex items-center gap-2 pt-1">
-          <Button
-            size="sm"
-            variant={asset.imageUrl ? "ghost" : "secondary"}
-            className="flex-1"
-            onClick={onGenerateImage}
-            loading={isGenerating}
-            disabled={!asset.imagePrompt || isGenerating}
-          >
-            {asset.imageUrl ? "重新生成" : "生成图片"}
-          </Button>
-          {cosConfigured && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onUpload}
-              loading={isUploading}
-              disabled={isUploading || isGenerating}
-              title="上传本地图片到 COS 存储"
-            >
-              上传
-            </Button>
-          )}
-          {onExtractObject && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onExtractObject}
-              disabled={isGenerating || isUploading}
-              title="提取到物品设定，可关联多版本图片"
-            >
-              提取到物品设定
-            </Button>
-          )}
-          {onExtractScene && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onExtractScene}
-              disabled={isGenerating || isUploading}
-              title="提取到场景设定，可关联多版本图片"
-            >
-              提取到场景设定
-            </Button>
-          )}
-          {asset.status === "failed" && (
-            <span className="text-xs text-red-500">失败</span>
-          )}
-          {asset.status === "ready" && asset.imageUrl && (
-            <span className="text-xs text-emerald-700">✓</span>
-          )}
-        </div>
-      </div>
+          if (genTargetAssetId) {
+            const configWithRefs = { ...params.config, referenceImages: refUrls };
+            onUpdateAsset(genTargetAssetId, "imageConfig" as keyof Asset, configWithRefs as unknown as string);
+          }
+          if (targetAsset) void generateImageForAsset(targetAsset, params);
+        }}
+      />
     </div>
   );
 }

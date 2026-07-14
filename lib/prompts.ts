@@ -1,4 +1,4 @@
-import type { Asset, LLMMessage, Shot } from "./types";
+import type { Asset, AssetType, LLMMessage, Shot } from "./types";
 
 /** 世界设定前缀模板 */
 function worldContext(text: string): string {
@@ -150,8 +150,8 @@ export function taggingMessages(shots: Shot[]): LLMMessage[] {
   ];
 }
 
-// (e) Step3 资产准备：根据标签列表 + 扩写内容，分类并生成图片提示词
-// 输出：JSON {"assets":[{"name":"小明","type":"character","description":"...","imagePrompt":"..."}]}
+// (e) Step3 资产准备：根据标签列表 + 扩写内容，分类并生成外观描述
+// 输出：JSON {"assets":[{"name":"小明","type":"character","description":"..."}]}
 export function assetMessages(
   tags: string[],
   expandedContent: string,
@@ -160,7 +160,7 @@ export function assetMessages(
 ): LLMMessage[] {
   const tagList = tags.map((t, i) => `${i + 1}. ${t}`).join("\n");
   const styleCtx = styleText
-    ? `\n\n【漫剧风格 —— 生成图片提示词时请遵循以下风格要求】\n${styleText}\n\n重要：生成 imagePrompt 时，请确保提示词内容与上述风格匹配。风格模板会在图片生成时自动拼接到提示词末尾，因此你生成的 imagePrompt 只需关注实体本身的具体外观描述即可。`
+    ? `\n\n【漫剧风格 -- 生成描述时请遵循以下风格要求】\n${styleText}\n\n重要：生成 description 时，请确保描述内容与上述风格匹配。风格模板会在图片生成时自动拼接到描述末尾，因此你的 description 只需关注实体本身的具体外观描述即可。`
     : "";
   const charCtx = characterContext(characterText);
 
@@ -171,11 +171,14 @@ export function assetMessages(
 
 对每个实体，你需要：
 1. 判断类型（type）：character（人物）/ scene（场景）/ object（物品）
-2. 生成描述（description）：结合剧本背景，用 1-2 句中文描述该实体的外观、特征、风格
-3. 生成图片提示词（imagePrompt）：一段详细的中文提示词，用于 AI 图片生成模型（如可灵、即梦、Midjourney）生成该实体的参考图。提示词应包含：主体外观、服饰/材质、色彩、光影、构图等信息，适合图片生成模型理解
+2. 生成描述（description）：结合剧本背景，用中文详细描述该实体的外观特征：
+   - 人物（character）：外貌特征，包括面部、发型、体型、服饰、配饰等
+   - 物品（object）：外观特征，包括形状、材质、颜色、尺寸、细节等
+   - 场景（scene）：外观特征，包括环境布局、建筑/自然元素、光影氛围等
+   该描述同时用于卡片展示和图片生成，应详细且具画面感
 
 必须返回一个合法的 JSON 对象，格式为：
-{"assets":[{"name":"小明","type":"character","description":"...","imagePrompt":"..."}]}
+{"assets":[{"name":"小明","type":"character","description":"..."}]}
 
 不要包含任何其他文字、不要使用 markdown 代码块。${styleCtx}${charCtx}`,
     },
@@ -192,8 +195,49 @@ ${tagList}
   ];
 }
 
-// (f) Step4 视频提示词生成：根据镜头信息 + 全部资产，生成视频生成提示词
-// 把全部资产都传给 LLM，让它根据画面描述自行判断哪些资产出现在本镜头中
+// (e2) Step3 重新生成单个资产的外貌/外观描述（流式）
+export function regenerateAssetMessages(
+  name: string,
+  type: AssetType,
+  expandedContent: string,
+  styleText = ""
+): LLMMessage[] {
+  const typeLabel = type === "character" ? "人物" : type === "scene" ? "场景" : "物品";
+  const fieldLabel = type === "character" ? "外貌" : "外观";
+  const detailHint =
+    type === "character"
+      ? "面部特征、发型、体型、服饰、配饰等"
+      : type === "object"
+      ? "形状、材质、颜色、尺寸、细节等"
+      : "环境布局、建筑/自然元素、光影氛围等";
+  const styleCtx = styleText
+    ? `\n\n【漫剧风格 -- 生成描述时请遵循以下风格要求】\n${styleText}`
+    : "";
+
+  return [
+    {
+      role: "system",
+      content: `你是一位 AI 视频制作的资产准备专家。请根据剧本背景，为指定的${typeLabel}生成${fieldLabel}描述。
+
+要求：
+1. 用中文详细描述该${typeLabel}的${fieldLabel}特征，包括${detailHint}
+2. 描述应详细且具画面感，同时用于卡片展示和图片生成
+3. 只返回${fieldLabel}描述文本本身，不要任何额外说明、前缀或 markdown 格式${styleCtx}`,
+    },
+    {
+      role: "user",
+      content: `剧本背景：
+${expandedContent.slice(0, 1500)}
+
+${typeLabel}名称：${name}
+
+请为该${typeLabel}生成${fieldLabel}描述。`,
+    },
+  ];
+}
+
+// (f) Step4 视频提示词生成：根据镜头信息 + 当前镜头关联资产，生成视频生成提示词
+// 仅传入当前镜头关联到的资产，让 LLM 聚焦于本镜头画面进行描述
 export function videoPromptMessages(
   shot: Pick<
     Shot,
@@ -205,12 +249,8 @@ export function videoPromptMessages(
     | "soundEffects"
     | "cameraMovement"
   >,
-  /** 本镜头直接关联的资产（由 @标签 / 子串匹配得出） */
+  /** 本镜头关联的资产（由 @标签 / 子串匹配得出） */
   relatedAssets: Pick<Asset, "name" | "type" | "description">[],
-  /** 全部资产（兜底，确保 LLM 能引用到所有可能出现的实体） */
-  allAssets: Pick<Asset, "name" | "type" | "description">[],
-  /** 视频风格后缀（可选） */
-  videoStyleSuffix = ""
 ): LLMMessage[] {
   const fields = [
     shot.duration && `- 时长：${shot.duration}`,
@@ -224,47 +264,55 @@ export function videoPromptMessages(
     .filter(Boolean)
     .join("\n");
 
-  const formatAsset = (a: Pick<Asset, "name" | "type" | "description">) =>
-    `- ${a.name}（${a.type === "character" ? "人物" : a.type === "scene" ? "场景" : "物品"}）：${a.description || "（无描述）"}`;
+  const typeLabel = (a: Pick<Asset, "type">) =>
+    a.type === "character" ? "人物" : a.type === "scene" ? "场景" : "物品";
+
+  const formatRelated = (a: Pick<Asset, "name" | "type" | "description">) =>
+    `- ${a.name}（${typeLabel(a)}）：${a.description || "（无描述）"}`;
 
   const relatedList = relatedAssets.length
-    ? relatedAssets.map(formatAsset).join("\n")
-    : "（无直接匹配，请从全部资产中判断哪些出现在本镜头）";
-
-  const allList = allAssets.length
-    ? allAssets.map(formatAsset).join("\n")
-    : "（无资产）";
-
-  const styleNote = videoStyleSuffix
-    ? `\n\n【视频风格要求】生成的提示词应遵循以下风格：${videoStyleSuffix}`
-    : "";
+    ? relatedAssets.map(formatRelated).join("\n")
+    : "（本镜头无关联资产）";
 
   return [
     {
       role: "system",
-      content: `你是一位 AI 视频生成提示词专家。根据提供的镜头信息和资产列表，生成一段用于 AI 视频生成模型（如可灵、即梦、Sora、Seedance）的中文提示词。
+      content: `你是一位 AI 视频生成提示词专家。根据提供的镜头信息和本镜头关联的资产，生成一段用于 Seedance 视频生成模型的中文提示词。
 
 核心要求：
-1. 仔细阅读画面描述，判断其中出现了哪些资产（人物、场景、物品）
-2. **对于每个出现在画面中的资产，必须使用 @资产名称 的格式标注**，例如 "@小明 穿着 @红色长袍，站在 @古镇老街 上"。标注后紧接着写该资产的外观细节（服饰、材质、色彩、环境风格等），确保提示词中的资产与资产描述一致
-3. 如果画面描述中出现了某个资产名称但不在"直接关联"列表中，请从"全部资产"列表中查找并引用
-4. 生成的提示词应是一段详细、连贯的中文，描述画面主体、镜头运动、光影效果、氛围与风格
-5. 如果镜头信息某些字段为空，根据已有信息合理推断补充，不要留空
-6. 只返回提示词本身，不要任何额外说明或前缀${styleNote}`,
+1. 仅围绕当前镜头的画面信息进行描述，不要引入其他镜头或无关资产
+2. **对于关联资产，在提示词中使用"@资产名称"格式指代**，例如"@李华 缓步走向 @古镇老街"
+3. 生成的提示词应是一段详细、连贯的中文，包含：主体、动作细节、场景环境、光影色调、镜头运镜、视觉风格
+4. 如果镜头信息某些字段为空，根据已有信息合理推断补充，不要留空
+5. 只返回提示词本身，不要任何额外说明或前缀`,
     },
     {
       role: "user",
-      content: `请根据以下镜头信息和资产生成视频提示词：
+      content: `请根据以下镜头信息和关联资产生成视频提示词：
 
 【镜头信息】
 ${fields}
 
-【直接关联资产（画面描述中 @标签 匹配到的）】
-${relatedList}
-
-【全部资产（如果画面描述中出现了这些资产的名称，也必须引用）】
-${allList}`,
+【本镜头关联资产】
+${relatedList}`,
     },
+  ];
+}
+
+// (h) 文本润色优化：对用户输入的描述性文字进行润色，使其更流畅生动
+export function optimizeTextMessages(
+  content: string,
+  context?: string
+): LLMMessage[] {
+  const contextHint = context
+    ? `\n\n【上下文提示】${context}`
+    : "";
+  return [
+    {
+      role: "system",
+      content: `你是一位专业的文字编辑。请润色优化以下文本，修正语法错误，优化表达流畅度和文采，使其更生动自然。保持原意不变，不要添加新的情节或信息。直接输出润色后的文本，不要任何额外说明。${contextHint}`,
+    },
+    { role: "user", content },
   ];
 }
 

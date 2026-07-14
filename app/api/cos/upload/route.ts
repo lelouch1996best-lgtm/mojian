@@ -113,7 +113,7 @@ export async function POST(req: Request) {
   }
 
   // ====== 根据文件名推断 ContentType ======
-  const ext = fileName.split(".").pop()?.toLowerCase() ?? "png";
+  const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
   const contentTypeMap: Record<string, string> = {
     png: "image/png",
     jpg: "image/jpeg",
@@ -129,7 +129,7 @@ export async function POST(req: Request) {
     m4a: "audio/mp4",
     aac: "audio/aac",
   };
-  const contentType = contentTypeMap[ext] ?? "image/png";
+  const contentType = contentTypeMap[ext] ?? "application/octet-stream";
 
   // ====== 按素材类型分目录生成唯一 key ======
   const dirByExt: Record<string, string> = {

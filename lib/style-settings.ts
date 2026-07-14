@@ -13,7 +13,6 @@ const DEFAULT_PRESETS: StylePreset[] = [
       "真人风格，电影级场景，自然光影，8K高清，广角构图，写实摄影，细节丰富",
     objectTemplate:
       "真人风格，电影级道具，自然光影，8K高清，特写构图，写实摄影，细节丰富",
-    videoStyleSuffix: "真人电影风格，自然光影，写实色彩，电影级质感",
   },
   {
     id: "anime2d",
@@ -25,19 +24,17 @@ const DEFAULT_PRESETS: StylePreset[] = [
       "日系2D动漫风格，赛璐璐上色，鲜艳色彩，广角构图，高画质，精致线稿",
     objectTemplate:
       "日系2D动漫风格，赛璐璐上色，鲜艳色彩，特写构图，高画质，精致线稿",
-    videoStyleSuffix: "2D动漫风格，赛璐璐上色，鲜艳色彩，锐利线条",
   },
   {
     id: "cn-drama",
     name: "国漫修仙风格",
     description: "凡人修仙传同款，写实3D国漫，修仙玄幻",
     characterTemplate:
-      "国漫3D修仙角色设定图，风格参考《凡人修仙传》，写实偏半写实CG质感，角色全身三视图（正面全身+侧面全身+背面全身），并列排布，深灰色渐变背景，统一冷光源。包含面部特写（正视、侧视、3/4视角），五官清秀俊朗，肤质细腻真实，眼神英气内敛。发型细节（束发道髻、发冠、玉簪），道袍法衣穿着，衣袂飘逸，服饰纹理特写（云纹刺绣、仙鹤纹样、腰封玉带、法器配饰），鞋靴细节。仙风道骨气质，修仙问道风范，8K超高清，细节丰富，光影层次分明，3D渲染质感",
+      "完整角色设定稿，同画布分四格排版：第一格超精细面部特写，第二格完整全身立绘，第三格角色标准三视图（正面 / 侧面 / 背面同框）。写实偏半写实CG质感。8K超高清，细节丰富，光影层次分明，3D渲染质感。",
     sceneTemplate:
-      "国漫3D修仙场景，风格参考《凡人修仙传》，写实偏半写实CG质感，仙山云海、洞府灵脉、古风建筑，灵气氤氲，冷色调光影，大气磅礴，8K超高清，3D渲染质感",
+      "写实偏半写实CG质感，8K超高清，3D渲染质感",
     objectTemplate:
-      "国漫3D修仙道具，风格参考《凡人修仙传》，写实偏半写实CG质感，法器法宝、丹药玉瓶、灵剑符箓，金属木质质感，雕纹细节，冷色光泽，8K超高清，3D渲染质感",
-    videoStyleSuffix: "国漫修仙风格，凡人修仙传同款，写实3D渲染，修仙玄幻，冷色光影，仙风道骨",
+      "完整物品多视图平铺展示，包含正面、侧面、背面、俯视三视图，写实偏半写实 CG 影视质感，细腻材质纹理，金属 / 玉石 / 符文材质层次分明，柔光专业打光，无多余杂物纯白背景，8K 超高清，Octane 高精度 3D 渲染，细节拉满，边缘清晰，无畸变，构图规整",
   },
   {
     id: "ink-wash",
@@ -49,7 +46,6 @@ const DEFAULT_PRESETS: StylePreset[] = [
       "中国水墨画风格，写意笔触，留白意境，宣纸纹理，传统国画质感",
     objectTemplate:
       "中国水墨画风格，写意笔触，水墨渲染，宣纸纹理，传统国画质感",
-    videoStyleSuffix: "中国水墨画风格，写意笔触，留白意境，宣纸质感",
   },
 ];
 
@@ -117,19 +113,20 @@ export async function getAssetTemplate(type: AssetType, seriesSettings?: StyleSe
   }
 }
 
-/** 获取视频风格后缀。可传入 seriesStyleSettings */
-export async function getVideoStyleSuffix(seriesSettings?: StyleSettings | null): Promise<string> {
-  const style = await getActiveStyle(seriesSettings);
-  return style.videoStyleSuffix;
-}
-
 /** 生成用于 LLM 上下文的风格文本（同步，pure function） */
 export function styleToText(s: StylePreset): string {
   return `当前漫剧风格：${s.name}
 【人物图片提示词模板】${s.characterTemplate}
 【场景图片提示词模板】${s.sceneTemplate}
-【物品图片提示词模板】${s.objectTemplate}
-【视频风格要求】${s.videoStyleSuffix}`;
+【物品图片提示词模板】${s.objectTemplate}`;
+}
+
+/** 按资产类型生成对应的风格文本（只包含该类型的模板） */
+export function styleTemplateForType(s: StylePreset, type: AssetType): string {
+  const typeLabel = type === "character" ? "人物" : type === "scene" ? "场景" : "物品";
+  const template = type === "character" ? s.characterTemplate : type === "scene" ? s.sceneTemplate : s.objectTemplate;
+  return `当前漫剧风格：${s.name}
+【${typeLabel}图片提示词模板】${template}`;
 }
 
 /** 重置某风格为默认值 */
