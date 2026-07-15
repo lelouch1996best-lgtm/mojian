@@ -3,6 +3,8 @@ import type {
   ImageGenSettings,
   ImageProxyRequest,
   ImageProxyResponse,
+  ProviderCache,
+  ProviderCacheEntry,
 } from "./types";
 import { apiClient } from "./api-client";
 import { getImageModelCapability, type ModelEntry } from "./model-presets";
@@ -58,6 +60,16 @@ export const IMAGE_PROVIDER_PRESETS: Record<ImageGenSettings["provider"], ImageP
     supportsOutputFormat: true,
     supportsWatermark: true,
   },
+  openai: {
+    baseURL: "https://api.openai.com/v1",
+    model: "gpt-image-2",
+    label: "OpenAI（GPT-Image）",
+    keyPrefix: "sk-",
+    hint: "OpenAI 官方 API。前往 platform.openai.com 获取 API Key 并开通 gpt-image-2 模型。支持 1024x1024 / 1024x1536 / 1536x1024 / 3840x2160 / auto 尺寸，low/medium/high/auto 画质。第三方中转平台兼容此格式，仅需修改 baseURL。",
+    sizes: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
+    supportsOutputFormat: false,
+    supportsWatermark: false,
+  },
   custom: {
     baseURL: "",
     model: "",
@@ -85,6 +97,7 @@ export const DEFAULT_ASSET_IMAGE_CONFIG: AssetImageConfig = {
   responseFormat: "url",
   webSearch: false,
   optimizePromptMode: "standard",
+  quality: "auto",
 };
 
 export async function getImageSettings(): Promise<ImageGenSettings | null> {
@@ -105,19 +118,27 @@ export async function saveImageSettings(s: ImageGenSettings): Promise<void> {
   await apiClient.saveSetting("image", normalized);
 }
 
-/** 获取各图片 provider 缓存的 API Key（切换供应商时自动恢复） */
-export async function getImageProviderKeys(): Promise<Record<string, string>> {
+/** 获取各图片 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model） */
+export async function getImageProviderKeys(): Promise<ProviderCache> {
   try {
-    return (await apiClient.getSetting<Record<string, string>>("image_provider_keys")) ?? {};
+    const raw = await apiClient.getSetting<Record<string, unknown>>("image_provider_keys");
+    if (!raw) return {};
+    const result: ProviderCache = {};
+    for (const [k, v] of Object.entries(raw)) {
+      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
+      if (typeof v === "string") result[k] = { apiKey: v };
+      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
+    }
+    return result;
   } catch {
     return {};
   }
 }
 
-/** 缓存某个图片 provider 的 API Key */
-export async function saveImageProviderKey(provider: string, key: string): Promise<void> {
+/** 缓存某个图片 provider 的配置（合并写入，不覆盖未传入字段） */
+export async function saveImageProviderKey(provider: string, entry: ProviderCacheEntry): Promise<void> {
   const all = await getImageProviderKeys();
-  all[provider] = key;
+  all[provider] = { ...all[provider], ...entry };
   await apiClient.saveSetting("image_provider_keys", all);
 }
 
@@ -154,6 +175,7 @@ export async function generateImage(
   if (cap.outputFormat) body.outputFormat = cfg.outputFormat;
   if (cap.webSearch) body.webSearch = cfg.webSearch;
   if (cap.optimizePrompt) body.optimizePromptMode = cfg.optimizePromptMode;
+  if (cap.quality) body.quality = cfg.quality;
   if (images && images.length > 0) {
     body.images = images;
   }

@@ -13,6 +13,16 @@ export interface LLMSettings {
   model: string; // 例: deepseek-chat, glm-4-plus, mimo-v2.5-pro
 }
 
+/** 单个服务商缓存的配置（切换服务商时保存，切回时恢复，避免自定义配置丢失） */
+export interface ProviderCacheEntry {
+  apiKey?: string;
+  baseURL?: string;
+  model?: string;
+}
+
+/** 各服务商缓存配置表：provider -> 缓存条目 */
+export type ProviderCache = Record<string, ProviderCacheEntry>;
+
 /** 世界设定（全局，存服务端数据库），用于故事续写和分镜生成的上下文 */
 export interface WorldSettings {
   /** 故事背景 */
@@ -232,7 +242,7 @@ export interface RawShot {
 
 /** 图片生成 API 配置（多供应商，全局仅管理供应商和模型，生成参数在卡片级配置） */
 export interface ImageGenSettings {
-  provider: "ark" | "ark-plan" | "custom";
+  provider: "ark" | "ark-plan" | "openai" | "custom";
   baseURL: string;
   apiKey: string;
   model: string;
@@ -253,6 +263,8 @@ export interface AssetImageConfig {
   webSearch: boolean;
   /** 提示词优化模式（optimize_prompt_options.mode） */
   optimizePromptMode: "standard" | "fast";
+  /** 画质（quality，仅 gpt-image-2）：low/medium/high/auto */
+  quality?: "low" | "medium" | "high" | "auto";
   /** 参考图 URL 列表（COS URL，用于持久化） */
   referenceImages?: string[];
 }
@@ -274,6 +286,8 @@ export interface ImageProxyRequest {
   webSearch?: boolean;
   /** 提示词优化模式 */
   optimizePromptMode?: "standard" | "fast";
+  /** 画质（quality，仅 gpt-image-2） */
+  quality?: string;
 }
 
 /** /api/image 非流式响应 */
@@ -405,4 +419,26 @@ export interface VideoQueryProxyResponse {
   status: VideoStatus;
   videoUrl?: string;
   error?: string;
+}
+
+/** 资产库聚合项 -- 由后端从 series/episodes 聚合而来，供全局资产库展示 */
+export interface AssetLibraryItem {
+  /** 唯一键，由来源派生（如 `asset-{epId}-{assetId}`） */
+  id: string;
+  mediaType: "image" | "video";
+  /** 图片/视频 URL（COS 持久 URL） */
+  url: string;
+  seriesId: string;
+  seriesTitle: string;
+  /** 剧集级媒体才有 */
+  episodeId?: string;
+  episodeTitle?: string;
+  entityType: "character" | "scene" | "object" | "shot";
+  /** 人物/物品/场景名，或分镜画面描述 */
+  entityName: string;
+  source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene";
+  /** imagePrompt / finalPrompt */
+  prompt?: string;
+  /** 排序用，取所在 episode/series 的 updatedAt */
+  createdAt: number;
 }

@@ -53,7 +53,7 @@ import {
   getCosSettings,
   saveCosSettings,
 } from "@/lib/cos-client";
-import type { CosSettings, ImageGenSettings, LLMSettings, VideoGenSettings } from "@/lib/types";
+import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings } from "@/lib/types";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -67,8 +67,8 @@ export default function SettingsPage() {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [llmPanelOpen, setLlmPanelOpen] = useState(true);
 
-  // 各 provider 缓存的 API Key（切换供应商时自动恢复）
-  const [providerKeys, setProviderKeys] = useState<Record<string, string>>({});
+  // 各 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model）
+  const [providerKeys, setProviderKeys] = useState<ProviderCache>({});
 
   // ---- LLM 模型管理 ----
   const [llmModels, setLLMModels] = useState<ModelEntry[]>([]);
@@ -86,8 +86,8 @@ export default function SettingsPage() {
     imageUrl?: string;
   } | null>(null);
 
-  // 各图片 provider 缓存的 API Key（切换供应商时自动恢复）
-  const [imageProviderKeys, setImageProviderKeys] = useState<Record<string, string>>({});
+  // 各图片 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model）
+  const [imageProviderKeys, setImageProviderKeys] = useState<ProviderCache>({});
 
   // ---- 图片模型管理 ----
   const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
@@ -99,8 +99,8 @@ export default function SettingsPage() {
   const [vidSettings, setVidSettings] = useState<VideoGenSettings>(DEFAULT_VIDEO_SETTINGS);
   const [videoPanelOpen, setVideoPanelOpen] = useState(false);
 
-  // 各视频 provider 缓存的 API Key（切换供应商时自动恢复）
-  const [videoProviderKeys, setVideoProviderKeys] = useState<Record<string, string>>({});
+  // 各视频 provider 缓存的配置（切换供应商时自动恢复，含 baseURL）
+  const [videoProviderKeys, setVideoProviderKeys] = useState<ProviderCache>({});
 
   // ---- 视频模型管理 ----
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
@@ -211,17 +211,23 @@ export default function SettingsPage() {
   async function handleProviderChange(p: LLMSettings["provider"]) {
     if (p === provider) return;
     // 同步计算更新后的缓存，避免闭包陈旧值导致 Key 闪烁
-    const updatedKeys = { ...providerKeys, [provider]: apiKey };
+    const updatedKeys: ProviderCache = {
+      ...providerKeys,
+      [provider]: { apiKey, baseURL, model },
+    };
     setProviderKeys(updatedKeys);
+    // 落盘当前 provider 的完整配置，刷新后仍可恢复
+    await saveProviderKey(provider, { apiKey, baseURL, model });
 
     setProvider(p);
     const preset = PROVIDER_PRESETS[p];
-    if (p !== "custom") {
-      setBaseURL(preset.baseURL);
-      setModel(preset.model);
-    }
-    // 恢复目标 provider 缓存的 Key
-    setApiKey(updatedKeys[p] ?? "");
+    const cached = updatedKeys[p];
+    const fallbackBaseURL = p !== "custom" ? preset.baseURL : "";
+    const fallbackModel = p !== "custom" ? preset.model : "";
+    // 优先恢复缓存（保留用户编辑过的 baseURL/model），无缓存时回退到预设/空
+    setBaseURL(cached?.baseURL ?? fallbackBaseURL);
+    setModel(cached?.model ?? fallbackModel);
+    setApiKey(cached?.apiKey ?? "");
     setTestResult(null);
     // 切换 provider 时重新加载模型列表
     setLLMModels(await getLLMModels(p));
@@ -276,14 +282,20 @@ export default function SettingsPage() {
   async function handleImageProviderChange(p: ImageGenSettings["provider"]) {
     if (p === imgSettings.provider) return;
     // 同步计算更新后的缓存，避免闭包陈旧值导致 Key 闪烁
-    const updatedKeys = { ...imageProviderKeys, [imgSettings.provider]: imgSettings.apiKey };
+    const updatedKeys: ProviderCache = {
+      ...imageProviderKeys,
+      [imgSettings.provider]: { apiKey: imgSettings.apiKey, baseURL: imgSettings.baseURL, model: imgSettings.model },
+    };
     setImageProviderKeys(updatedKeys);
+    // 落盘当前 provider 的完整配置，刷新后仍可恢复
+    await saveImageProviderKey(imgSettings.provider, { apiKey: imgSettings.apiKey, baseURL: imgSettings.baseURL, model: imgSettings.model });
 
     const preset = IMAGE_PROVIDER_PRESETS[p];
-    // 一次性设置新 provider + 恢复的 Key，避免两次 setImgSettings 间的中间态
-    const newSettings = p !== "custom"
-      ? { ...imgSettings, provider: p, baseURL: preset.baseURL, model: preset.model, apiKey: updatedKeys[p] ?? "" }
-      : { ...imgSettings, provider: p, apiKey: updatedKeys[p] ?? "" };
+    const cached = updatedKeys[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    const fbModel = p !== "custom" ? preset.model : "";
+    // 一次性设置新 provider + 恢复的配置，优先用缓存保留用户编辑，无缓存回退到预设/空
+    const newSettings = { ...imgSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, model: cached?.model ?? fbModel, apiKey: cached?.apiKey ?? "" };
     setImgSettings(newSettings);
     setImgTestResult(null);
     // 切换 provider 时重新加载模型列表
@@ -358,14 +370,19 @@ export default function SettingsPage() {
   async function handleVideoProviderChange(p: VideoGenSettings["provider"]) {
     if (p === vidSettings.provider) return;
     // 同步计算更新后的缓存，避免闭包陈旧值导致 Key 闪烁
-    const updatedKeys = { ...videoProviderKeys, [vidSettings.provider]: vidSettings.apiKey };
+    const updatedKeys: ProviderCache = {
+      ...videoProviderKeys,
+      [vidSettings.provider]: { apiKey: vidSettings.apiKey, baseURL: vidSettings.baseURL },
+    };
     setVideoProviderKeys(updatedKeys);
+    // 落盘当前 provider 的完整配置，刷新后仍可恢复
+    await saveVideoProviderKey(vidSettings.provider, { apiKey: vidSettings.apiKey, baseURL: vidSettings.baseURL });
 
     const preset = VIDEO_PROVIDER_PRESETS[p];
-    // 一次性设置新 provider + 恢复的 Key，避免两次 setVidSettings 间的中间态
-    const newSettings = p !== "custom"
-      ? { ...vidSettings, provider: p, baseURL: preset.baseURL, apiKey: updatedKeys[p] ?? "" }
-      : { ...vidSettings, provider: p, apiKey: updatedKeys[p] ?? "" };
+    const cached = updatedKeys[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    // 一次性设置新 provider + 恢复的配置，优先用缓存保留用户编辑，无缓存回退到预设/空
+    const newSettings = { ...vidSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "" };
     setVidSettings(newSettings);
     // 切换 provider 时重新加载模型列表
     setVideoModels(await getVideoModels(p));
@@ -460,8 +477,8 @@ export default function SettingsPage() {
       if (!b || !k || !m) return;
       await saveSettings({ provider: p, baseURL: b, apiKey: k, model: m });
       await saveLLMModels(p, models);
-      await saveProviderKey(p, k);
-      setProviderKeys((prev) => ({ ...prev, [p]: k }));
+      await saveProviderKey(p, { apiKey: k, baseURL: b, model: m });
+      setProviderKeys((prev) => ({ ...prev, [p]: { apiKey: k, baseURL: b, model: m } }));
       showSavedHint();
     }, 500),
     []
@@ -472,8 +489,8 @@ export default function SettingsPage() {
       if (!s.apiKey) return;
       await saveImageSettings(s);
       await saveImageModels(s.provider, models);
-      await saveImageProviderKey(s.provider, s.apiKey);
-      setImageProviderKeys((prev) => ({ ...prev, [s.provider]: s.apiKey }));
+      await saveImageProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model });
+      setImageProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model } }));
       showSavedHint();
     }, 500),
     []
@@ -484,8 +501,8 @@ export default function SettingsPage() {
       if (!s.apiKey && !s.baseURL) return;
       await saveVideoSettings(s);
       await saveVideoModels(s.provider, models);
-      await saveVideoProviderKey(s.provider, s.apiKey);
-      setVideoProviderKeys((prev) => ({ ...prev, [s.provider]: s.apiKey }));
+      await saveVideoProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
+      setVideoProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
     }, 500),
     []
@@ -1046,7 +1063,7 @@ export default function SettingsPage() {
 
 // ==================== 模型管理面板（内联组件） ====================
 
-const ALL_RESOLUTIONS = ["1K", "2K", "3K", "4K"];
+const ALL_RESOLUTIONS = ["1K", "2K", "3K", "4K", "auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"];
 
 function ModelManagerPanel({
   models,
@@ -1301,6 +1318,7 @@ function ImageCapabilityEditor({
     { key: "sequentialImageGen", label: "组图功能" },
     { key: "watermark", label: "水印" },
     { key: "responseFormat", label: "返回格式" },
+    { key: "quality", label: "画质" },
   ];
 
   return (

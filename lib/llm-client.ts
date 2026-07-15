@@ -1,4 +1,4 @@
-import type { LLMSettings, LLMMessage, LLMProxyRequest, LLMUpstreamPayload } from "./types";
+import type { LLMSettings, LLMMessage, LLMProxyRequest, LLMUpstreamPayload, ProviderCache, ProviderCacheEntry } from "./types";
 import { apiClient } from "./api-client";
 
 /** 预设 provider 默认值 */
@@ -72,19 +72,27 @@ export async function saveSettings(s: LLMSettings): Promise<void> {
   await apiClient.saveSetting("llm", normalized);
 }
 
-/** 获取各 provider 缓存的 API Key（切换供应商时自动恢复） */
-export async function getProviderKeys(): Promise<Record<string, string>> {
+/** 获取各 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model，避免自定义配置丢失） */
+export async function getProviderKeys(): Promise<ProviderCache> {
   try {
-    return (await apiClient.getSetting<Record<string, string>>("llm_provider_keys")) ?? {};
+    const raw = await apiClient.getSetting<Record<string, unknown>>("llm_provider_keys");
+    if (!raw) return {};
+    const result: ProviderCache = {};
+    for (const [k, v] of Object.entries(raw)) {
+      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
+      if (typeof v === "string") result[k] = { apiKey: v };
+      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
+    }
+    return result;
   } catch {
     return {};
   }
 }
 
-/** 缓存某个 provider 的 API Key */
-export async function saveProviderKey(provider: string, key: string): Promise<void> {
+/** 缓存某个 provider 的配置（合并写入，不覆盖未传入字段） */
+export async function saveProviderKey(provider: string, entry: ProviderCacheEntry): Promise<void> {
   const all = await getProviderKeys();
-  all[provider] = key;
+  all[provider] = { ...all[provider], ...entry };
   await apiClient.saveSetting("llm_provider_keys", all);
 }
 

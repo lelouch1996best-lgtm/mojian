@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Modal from "./ui/Modal";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
+import AssetPicker from "./AssetPicker";
 import { ImageConfigFields } from "./ImageConfigFields";
 import { getImageModelCapability } from "@/lib/model-presets";
 import type { AssetImageConfig, ImageGenSettings } from "@/lib/types";
@@ -65,6 +66,7 @@ export function ImageGenerationDialog({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // @ 提及状态
@@ -420,6 +422,22 @@ export function ImageGenerationDialog({
                 )}
               </button>
             )}
+            {images.length < maxRefImages && (
+              <button
+                type="button"
+                onClick={() => setPickerOpen(true)}
+                className="flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-md border border-dashed border-brand-300 text-brand-500 transition-colors hover:border-brand-400 hover:bg-brand-50"
+                title="从资产库选择已生成的图片"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                  <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                  <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+                </svg>
+                <span className="text-[10px]">资产库</span>
+              </button>
+            )}
           </div>
           {imgError && <p className="mt-1 text-xs text-red-500">{imgError}</p>}
           <input
@@ -470,6 +488,21 @@ export function ImageGenerationDialog({
           )}
         </div>
       </div>
+
+      <AssetPicker
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        mediaType="image"
+        multiple
+        selectedUrls={images}
+        max={maxRefImages}
+        onConfirm={(urls) => {
+          if (urls.length > 0) {
+            onImagesChange([...images, ...urls]);
+          }
+          setPickerOpen(false);
+        }}
+      />
     </Modal>
   );
 }

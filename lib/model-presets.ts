@@ -173,6 +173,19 @@ export const DEFAULT_IMAGE_MODELS: Record<ImageGenSettings["provider"], ModelEnt
       },
     },
   ],
+  openai: [
+    {
+      value: "gpt-image-2", label: "GPT-Image-2",
+      hint: "OpenAI 最新图像生成模型，超强文字渲染，最高4K，支持 low/medium/high/auto 画质",
+      isDefault: true,
+      capability: {
+        resolutions: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
+        outputFormat: false, webSearch: false,
+        optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
+        watermark: false, responseFormat: true, quality: true, maxRefImages: 4,
+      },
+    },
+  ],
   custom: [],
 };
 
@@ -339,6 +352,8 @@ export interface ImageModelCapability {
   watermark: boolean;
   /** 支持返回格式选择（所有模型） */
   responseFormat: boolean;
+  /** 支持画质选择（quality，仅 gpt-image-2） */
+  quality?: boolean;
   /** 最大参考图数量 */
   maxRefImages: number;
 }
@@ -408,6 +423,18 @@ export const IMAGE_MODEL_CAPABILITIES: Record<string, ImageModelCapability> = {
     responseFormat: true,
     maxRefImages: 14,
   },
+  "gpt-image-2": {
+    resolutions: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
+    outputFormat: false,
+    webSearch: false,
+    optimizePrompt: false,
+    optimizePromptFast: false,
+    sequentialImageGen: false,
+    watermark: false,
+    responseFormat: true,
+    quality: true,
+    maxRefImages: 4,
+  },
 };
 
 /** 未知/用户自定义模型的保守回退（启用所有功能，由上游 API 决定是否报错） */
@@ -423,12 +450,19 @@ const FALLBACK_IMAGE_CAPABILITY: ImageModelCapability = {
   maxRefImages: 14,
 };
 
-/** 查询图片模型能力，未注册模型回退保守能力。传入 models 时优先合并用户自定义能力 */
+/**
+ * 查询图片模型能力。
+ * - 内置模型（在 IMAGE_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源，忽略数据库中的旧值
+ *   （避免代码更新能力矩阵后数据库残留旧值导致能力不生效）
+ * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
+ */
 export function getImageModelCapability(
   modelValue: string,
   models?: ModelEntry[]
 ): ImageModelCapability {
-  const base = IMAGE_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_IMAGE_CAPABILITY;
+  const registry = IMAGE_MODEL_CAPABILITIES[modelValue];
+  if (registry) return registry;
+  const base = FALLBACK_IMAGE_CAPABILITY;
   if (!models) return base;
   const entry = models.find((m) => m.value === modelValue);
   if (!entry?.capability) return base;
@@ -567,12 +601,18 @@ const FALLBACK_CAPABILITY: VideoModelCapability = {
   returnLastFrame: true,
 };
 
-/** 查询模型能力，未注册模型回退保守能力。传入 models 时优先合并用户自定义能力 */
+/**
+ * 查询视频模型能力。
+ * - 内置模型（在 VIDEO_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源
+ * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
+ */
 export function getVideoModelCapability(
   modelValue: string,
   models?: ModelEntry[]
 ): VideoModelCapability {
-  const base = VIDEO_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_CAPABILITY;
+  const registry = VIDEO_MODEL_CAPABILITIES[modelValue];
+  if (registry) return registry;
+  const base = FALLBACK_CAPABILITY;
   if (!models) return base;
   const entry = models.find((m) => m.value === modelValue);
   if (!entry?.videoCapability) return base;

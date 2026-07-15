@@ -1,0 +1,25 @@
+# Checklist
+
+- [x] `next.config.mjs` 已启用 `output: 'standalone'` 且 `next build` 产出 standalone 服务器
+- [x] Electron 主进程能启动 Next.js standalone 服务并在 BrowserWindow 中加载应用（main.ts 编译通过；standalone server.js 实测启动并 200 返回 / 与 /activate）
+- [ ] 现有服务端 API 路由（LLM / 图片 / 视频 / COS / 数据 CRUD）在 Electron 内运行正常（需 GUI 运行实测；路由已随 standalone 构建）
+- [ ] better-sqlite3 已针对 Electron ABI 重编译并在打包后可加载（沙箱限制 ~/.electron-gyp 写入与外网下载，需在开发者本机 `npm run electron:build` 实测）
+- [x] 机器指纹跨平台生成且稳定（同机多次取值一致）
+- [x] Ed25519 公钥已内嵌，私钥未入库（.gitignore 已排除 *.pem）
+- [x] 合法序列号验签通过并激活成功
+- [x] 伪造 / 篡改序列号验签失败
+- [x] 过期序列号被拒绝并提示已过期
+- [x] 永久序列号（过期时间为 0）不进行过期校验，长期可用
+- [x] 序列号 payload 含适用主版本号，App 读取自身主版本号参与比对
+- [x] 同主版本小版本升级（如 1.2.0 -> 1.2.3）无需重新激活（主版本号比对逻辑已验证）
+- [x] 跨主版本升级（如 1.x -> 2.0.0）激活记录失效，要求换新序列号
+- [x] 旧主版本序列号在新主版本 App 上激活失败并提示版本不匹配
+- [ ] 激活记录使用 safeStorage 加密存储，文件为密文（需 Electron 运行时实测；代码使用 safeStorage.encryptString）
+- [x] 拷贝激活记录到其他机器会被识别为指纹不符并要求重新激活（isActivated 失败即清除记录逻辑已验证）
+- [x] 未激活时仅显示激活页，无法进入主应用（createWindow 依 isActivated 选择初始 URL；/activate 实测可渲染）
+- [x] 已激活启动时自动校验记录并加载主应用（isActivated -> mainUrl 逻辑已验证）
+- [x] 激活记录失效（过期 / 换机 / 主版本不匹配）时自动清除并回到激活页（isActivated 失败清记录逻辑已验证）
+- [x] 激活页 UI 复用暖色设计系统，展示机器码与序列号输入框
+- [x] 序列号生成工具可用私钥签发可在 App 验证的序列号，支持指定主版本号与永久/限时有效期
+- [ ] electron-builder 产出 macOS / Windows / Linux 安装包（沙箱限制 ~/.cache 写入与外网下载，需在开发者本机 `npm run electron:build` 实测）
+- [ ] 安装包安装后可完成激活并正常使用主应用全部功能（需打包后在真实环境实测）

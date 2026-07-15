@@ -1,0 +1,41 @@
+appId: com.mojian.desktop
+productName: 墨间
+directories:
+  output: dist-installer
+files:
+  - dist-electron/**/*
+  - electron/keys/public.pem
+  - package.json
+extraResources:
+  - from: .next/standalone
+    to: app
+    filter:
+      - "**/*"
+  - from: .next/static
+    to: app/.next/static
+    filter:
+      - "**/*"
+  - from: electron/keys/public.pem
+    to: keys/public.pem
+asar: true
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+  # 应用签名与公证配置。未填写 identity / 未提供证书时，electron-builder 会自动
+  # 回退为 ad-hoc 签名（本地可用，分发到其他机器会被 Gatekeeper 拦截提示「已损坏」）。
+  # 正式分发需在环境变量提供开发者证书与 Apple ID（见 docs 说明），打包时自动签名+公证。
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize:
+    teamId: ${NOTARIZE_TEAM_ID}
+win:
+  target:
+    - nsis
+linux:
+  target:
+    - AppImage
+publish: null

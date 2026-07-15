@@ -7,6 +7,8 @@ import type {
   VideoQueryProxyRequest,
   VideoQueryProxyResponse,
   VideoUpstreamPayload,
+  ProviderCache,
+  ProviderCacheEntry,
 } from "./types";
 import { getImageSettings } from "./image-client";
 import { apiClient } from "./api-client";
@@ -74,19 +76,27 @@ export async function isVideoConfigured(): Promise<boolean> {
   return !!(await getVideoSettings())?.apiKey;
 }
 
-/** 获取各视频 provider 缓存的 API Key（切换供应商时自动恢复） */
-export async function getVideoProviderKeys(): Promise<Record<string, string>> {
+/** 获取各视频 provider 缓存的配置（切换供应商时自动恢复，含 baseURL） */
+export async function getVideoProviderKeys(): Promise<ProviderCache> {
   try {
-    return (await apiClient.getSetting<Record<string, string>>("video_provider_keys")) ?? {};
+    const raw = await apiClient.getSetting<Record<string, unknown>>("video_provider_keys");
+    if (!raw) return {};
+    const result: ProviderCache = {};
+    for (const [k, v] of Object.entries(raw)) {
+      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
+      if (typeof v === "string") result[k] = { apiKey: v };
+      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
+    }
+    return result;
   } catch {
     return {};
   }
 }
 
-/** 缓存某个视频 provider 的 API Key */
-export async function saveVideoProviderKey(provider: string, key: string): Promise<void> {
+/** 缓存某个视频 provider 的配置（合并写入，不覆盖未传入字段） */
+export async function saveVideoProviderKey(provider: string, entry: ProviderCacheEntry): Promise<void> {
   const all = await getVideoProviderKeys();
-  all[provider] = key;
+  all[provider] = { ...all[provider], ...entry };
   await apiClient.saveSetting("video_provider_keys", all);
 }
 

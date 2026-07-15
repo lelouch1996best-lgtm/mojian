@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   reactStrictMode: false,
   // cos-nodejs-sdk-v5 含服务端依赖，标记为外部包避免被打包进客户端 bundle
   experimental: {

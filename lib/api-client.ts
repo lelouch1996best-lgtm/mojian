@@ -1,5 +1,7 @@
 /** 服务端 API 客户端 */
 
+import type { AssetLibraryItem } from "@/lib/types";
+
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -44,4 +46,7 @@ export const apiClient = {
       method: "PUT",
       body: JSON.stringify({ value }),
     }),
+
+  // Asset Library
+  listAssetLibrary: () => request<AssetLibraryItem[]>("/data/assets"),
 };

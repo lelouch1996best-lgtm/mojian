@@ -88,6 +88,15 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="ghost" size="md" onClick={() => router.push("/assets")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+              <rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+              <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
+            </svg>
+            资产库
+          </Button>
           <Button variant="ghost" size="md" onClick={() => router.push("/settings")}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
               <path

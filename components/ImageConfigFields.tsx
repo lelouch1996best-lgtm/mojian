@@ -182,6 +182,29 @@ export function ImageConfigFields({
           </div>
         </div>
       )}
+      {/* 画质（仅 gpt-image-2 支持） */}
+      {cap.quality && (
+        <div>
+          <label className="mb-0.5 block text-xs text-slate-400">画质</label>
+          <div className="flex flex-wrap gap-1.5">
+            {(["auto", "low", "medium", "high"] as const).map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => onChange({ quality: q })}
+                className={`rounded border px-2 py-0.5 text-xs transition-colors ${
+                  (value.quality ?? "auto") === q
+                    ? "border-brand-500 bg-brand-50 text-brand-700"
+                    : "border-slate-300 bg-white text-slate-500 hover:bg-slate-50"
+                }`}
+              >
+                {q === "auto" ? "自动" : q}
+              </button>
+            ))}
+          </div>
+          <p className="mt-0.5 text-[10px] text-slate-400">画质越高，生成质量越好，消耗 token 越多</p>
+        </div>
+      )}
       {/* 返回格式 */}
       {cap.responseFormat && (
         <div>

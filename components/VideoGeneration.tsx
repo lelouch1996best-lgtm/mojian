@@ -6,6 +6,7 @@ import AiOptimizeButton from "./ui/AiOptimizeButton";
 import Spinner from "./ui/Spinner";
 import EditableCell from "./EditableCell";
 import ImageLightbox from "./ImageLightbox";
+import AssetPicker from "./AssetPicker";
 import { callLLM } from "@/lib/llm-client";
 import {
   createVideoTask,
@@ -402,8 +403,8 @@ export default function VideoGeneration({
 
   /** 将 Seedance 生成的视频转存到 COS（24h 过期保护） */
   async function transferVideoToCos(shot: Shot, sourceUrl: string) {
-    if (!isCosConfigured()) return;
-    const cosSettings = getCosSettings();
+    if (!(await isCosConfigured())) return;
+    const cosSettings = await getCosSettings();
     if (!cosSettings) return;
 
     try {
@@ -419,9 +420,11 @@ export default function VideoGeneration({
       const data = await res.json();
       if (res.ok && data.url) {
         onUpdateShot(shot.id, "videoUrl", data.url);
+      } else {
+        console.error("视频转存 COS 失败：", data.error ?? res.status);
       }
-    } catch {
-      // 转存失败不阻断流程，保留原始 URL（24h 内仍可访问）
+    } catch (e) {
+      console.error("视频转存 COS 失败：", (e as Error).message);
     }
   }
 
@@ -768,6 +771,7 @@ function VideoCard({
   const [showInputMaterials, setShowInputMaterials] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"video" | "audio" | "firstFrame" | "lastFrame" | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [pickerTarget, setPickerTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | "refVideo" | null>(null);
   // 添加素材ID功能暂时隐藏
   // const [assetInputKind, setAssetInputKind] = useState<"image" | "video" | "audio" | null>(null);
   // const [assetInputValue, setAssetInputValue] = useState("");
@@ -1033,16 +1037,7 @@ function VideoCard({
                 {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
 
                 {config.mode === "first-frame" && (
-                  <FrameImageUpload
-                    label="首帧图片"
-                    url={config.firstFrameImageUrl}
-                    uploading={uploadingKind === "firstFrame"}
-                    onUpload={() => handleUploadRef("firstFrame")}
-                    onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
-                  />
-                )}
-                {config.mode === "first-last-frame" && (
-                  <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-2">
                     <FrameImageUpload
                       label="首帧图片"
                       url={config.firstFrameImageUrl}
@@ -1050,13 +1045,39 @@ function VideoCard({
                       onUpload={() => handleUploadRef("firstFrame")}
                       onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
                     />
-                    <FrameImageUpload
-                      label="尾帧图片"
-                      url={config.lastFrameImageUrl}
-                      uploading={uploadingKind === "lastFrame"}
-                      onUpload={() => handleUploadRef("lastFrame")}
-                      onRemove={() => onUpdateVideoConfig({ lastFrameImageUrl: undefined })}
-                    />
+                    <div className="flex items-center justify-center">
+                      <Button size="sm" variant="ghost" onClick={() => setPickerTarget("firstFrame")}>
+                        从资产库选
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                {config.mode === "first-last-frame" && (
+                  <div className="space-y-2">
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <FrameImageUpload
+                        label="首帧图片"
+                        url={config.firstFrameImageUrl}
+                        uploading={uploadingKind === "firstFrame"}
+                        onUpload={() => handleUploadRef("firstFrame")}
+                        onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
+                      />
+                      <FrameImageUpload
+                        label="尾帧图片"
+                        url={config.lastFrameImageUrl}
+                        uploading={uploadingKind === "lastFrame"}
+                        onUpload={() => handleUploadRef("lastFrame")}
+                        onRemove={() => onUpdateVideoConfig({ lastFrameImageUrl: undefined })}
+                      />
+                    </div>
+                    <div className="flex items-center justify-center gap-2">
+                      <Button size="sm" variant="ghost" onClick={() => setPickerTarget("firstFrame")}>
+                        首帧：从资产库选
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => setPickerTarget("lastFrame")}>
+                        尾帧：从资产库选
+                      </Button>
+                    </div>
                   </div>
                 )}
                 {config.mode === "multimodal-ref" && (
@@ -1068,11 +1089,9 @@ function VideoCard({
                     {/* 参考图：关联资产 + asset:// 素材 */}
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-[11px] text-slate-500">参考图：关联资产 {relatedAssets.filter((a) => a.imageUrl).length} 张</span>
-                      {/* 添加素材ID功能暂时隐藏
-                      <Button size="sm" variant="ghost" onClick={() => { setAssetInputKind("image"); setAssetInputValue(""); }}>
-                        + 添加素材ID
+                      <Button size="sm" variant="ghost" onClick={() => setPickerTarget("refImage")}>
+                        + 从资产库选
                       </Button>
-                      */}
                     </div>
                     {(config.referenceImageAssetUrls?.length ?? 0) > 0 && (
                       <div className="flex flex-wrap gap-1.5">
@@ -1097,6 +1116,13 @@ function VideoCard({
                       onRemove={(i) => onUpdateVideoConfig({ referenceVideoUrls: (config.referenceVideoUrls ?? []).filter((_, j) => j !== i) })}
                       // onAddAsset={() => { setAssetInputKind("video"); setAssetInputValue(""); }} // 添加素材ID功能暂时隐藏
                     />
+                    {(config.referenceVideoUrls?.length ?? 0) < 3 && (
+                      <div className="flex justify-center">
+                        <Button size="sm" variant="ghost" onClick={() => setPickerTarget("refVideo")}>
+                          从资产库选视频
+                        </Button>
+                      </div>
+                    )}
 
                     {/* 参考音频：虚线框上传 + asset:// 素材 */}
                     <MediaUploadArea
@@ -1345,6 +1371,51 @@ function VideoCard({
           )}
         </div>
       </div>
+
+      {pickerTarget && (
+        <AssetPicker
+          open={!!pickerTarget}
+          onClose={() => setPickerTarget(null)}
+          mediaType={pickerTarget === "refVideo" ? "video" : "image"}
+          multiple={pickerTarget === "refImage" || pickerTarget === "refVideo"}
+          max={
+            pickerTarget === "refVideo" ? 3 : pickerTarget === "refImage" ? 10 : 1
+          }
+          selectedUrls={
+            pickerTarget === "firstFrame"
+              ? config.firstFrameImageUrl ? [config.firstFrameImageUrl] : []
+              : pickerTarget === "lastFrame"
+                ? config.lastFrameImageUrl ? [config.lastFrameImageUrl] : []
+                : pickerTarget === "refImage"
+                  ? config.referenceImageAssetUrls ?? []
+                  : config.referenceVideoUrls ?? []
+          }
+          onConfirm={(urls) => {
+            if (urls.length === 0) {
+              setPickerTarget(null);
+              return;
+            }
+            if (pickerTarget === "firstFrame") {
+              onUpdateVideoConfig({ firstFrameImageUrl: urls[0] });
+            } else if (pickerTarget === "lastFrame") {
+              onUpdateVideoConfig({ lastFrameImageUrl: urls[0] });
+            } else if (pickerTarget === "refImage") {
+              onUpdateVideoConfig({
+                referenceImageAssetUrls: [
+                  ...(config.referenceImageAssetUrls ?? []),
+                  ...urls,
+                ],
+              });
+            } else if (pickerTarget === "refVideo") {
+              const existing = config.referenceVideoUrls ?? [];
+              onUpdateVideoConfig({
+                referenceVideoUrls: [...existing, ...urls].slice(0, 3),
+              });
+            }
+            setPickerTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
