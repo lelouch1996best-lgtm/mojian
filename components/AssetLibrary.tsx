@@ -7,13 +7,14 @@ import { apiClient } from "@/lib/api-client";
 import { ASSET_TYPE_LABELS, formatTime } from "@/lib/utils";
 import type { AssetLibraryItem } from "@/lib/types";
 
-type MediaTypeFilter = "all" | "image" | "video";
-type EntityTypeFilter = "all" | "character" | "scene" | "object";
+type MediaTypeFilter = "all" | "image" | "video" | "audio";
+type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard";
 
 const MEDIA_TYPE_OPTIONS: { value: MediaTypeFilter; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "image", label: "图片" },
   { value: "video", label: "视频" },
+  { value: "audio", label: "音色" },
 ];
 
 const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
@@ -21,6 +22,8 @@ const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "character", label: "人物" },
   { value: "object", label: "物品" },
   { value: "scene", label: "场景" },
+  { value: "screenshot", label: "截屏" },
+  { value: "storyboard", label: "故事板" },
 ];
 
 function entityTypeLabel(t: AssetLibraryItem["entityType"]): string {
@@ -33,6 +36,13 @@ function sourceLabel(item: AssetLibraryItem): string {
     return item.episodeTitle || "未命名剧集";
   }
   return "企划设定";
+}
+
+function mediaEmptyText(mediaType: MediaTypeFilter): string {
+  if (mediaType === "image") return "暂无图片资产";
+  if (mediaType === "video") return "暂无视频资产";
+  if (mediaType === "audio") return "暂无音色资产";
+  return "暂无生成的资产";
 }
 
 /** 下载媒体文件：优先 fetch blob 触发下载，失败则新窗口打开 */
@@ -118,6 +128,7 @@ export default function AssetLibrary() {
       if (seriesId && item.seriesId !== seriesId) return false;
       if (mediaType === "image" && item.mediaType !== "image") return false;
       if (mediaType === "video" && item.mediaType !== "video") return false;
+      if (mediaType === "audio" && item.mediaType !== "audio") return false;
       if (entityType !== "all" && item.entityType !== entityType) return false;
       return true;
     });
@@ -191,10 +202,10 @@ export default function AssetLibrary() {
           <span>加载中…</span>
         </div>
       ) : items.length === 0 ? (
-        <div className="py-20 text-center text-slate-400">暂无生成的资产</div>
+        <div className="py-20 text-center text-slate-400">{mediaEmptyText(mediaType)}</div>
       ) : filtered.length === 0 ? (
         <div className="py-20 text-center text-slate-400">
-          没有匹配的资产，试试调整筛选条件
+          {mediaType === "all" ? "没有匹配的资产，试试调整筛选条件" : mediaEmptyText(mediaType)}
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
@@ -205,7 +216,10 @@ export default function AssetLibrary() {
               copied={copiedId === item.id}
               onPreviewVideo={() => setVideoPreview(item)}
               onDownload={() =>
-                downloadMedia(item.url, `${item.entityName}.${item.mediaType === "video" ? "mp4" : "png"}`)
+                downloadMedia(
+                  item.url,
+                  `${item.entityName}.${item.mediaType === "video" ? "mp4" : item.mediaType === "audio" ? "mp3" : "png"}`
+                )
               }
               onCopy={() => handleCopy(item)}
             />
@@ -309,6 +323,7 @@ function AssetCard({
   onCopy: () => void;
 }) {
   const isVideo = item.mediaType === "video";
+  const isAudio = item.mediaType === "audio";
 
   const thumbnail = (
     <div className="group relative aspect-square w-full overflow-hidden bg-slate-100">
@@ -329,6 +344,10 @@ function AssetCard({
             </div>
           </div>
         </>
+      ) : isAudio ? (
+        <div className="flex h-full w-full items-center justify-center bg-slate-50 p-3">
+          <audio controls src={item.url} className="w-full" />
+        </div>
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -340,7 +359,7 @@ function AssetCard({
 
       {/* 媒体类型角标 */}
       <span className="absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-        {isVideo ? "视频" : "图片"}
+        {isVideo ? "视频" : isAudio ? "音色" : "图片"}
       </span>
 
       {/* 悬停操作按钮 */}
@@ -405,6 +424,8 @@ function AssetCard({
         <div onClick={onPreviewVideo} title="点击播放">
           {thumbnail}
         </div>
+      ) : isAudio ? (
+        thumbnail
       ) : (
         <ImageLightbox src={item.url} alt={item.entityName}>
           {thumbnail}

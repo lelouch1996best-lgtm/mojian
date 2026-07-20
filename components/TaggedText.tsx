@@ -19,7 +19,7 @@ export default function TaggedText({ text, className = "", onRemoveTag }: Tagged
   const re = /(@[^\s@，。、,\.！？!?\n：:；;）)、】"'`（）\[\]{}]+)/g;
   const parts = text.split(re);
   return (
-    <span className={className}>
+    <span className={`${className} whitespace-pre-wrap break-words`}>
       {parts.map((part, i) => {
         if (part.startsWith("@")) {
           const tagName = part.slice(1);

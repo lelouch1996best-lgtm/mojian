@@ -15,8 +15,37 @@ import CharacterConflictModal, {
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings } from "@/lib/llm-client";
 import { emptyShot, debounce, removeTagPrefix } from "@/lib/utils";
+import { getLatestVersions } from "@/lib/character-settings";
+import { getLatestObjectVersions } from "@/lib/object-settings";
+import { getLatestSceneVersions } from "@/lib/scene-settings";
 import type { Asset, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
 import { DEFAULT_SHOT_VIDEO_CONFIG } from "@/lib/model-presets";
+import type { ReactNode } from "react";
+
+function HoverMenu({ trigger, children }: { trigger: ReactNode; children: ReactNode }) {
+  return (
+    <div className="group relative flex items-center">
+      {trigger}
+      <div className="absolute right-0 top-full z-50 hidden min-w-[8rem] pt-1 group-hover:block">
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MenuItem({ children, onClick }: { children: ReactNode; onClick?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900"
+    >
+      {children}
+    </button>
+  );
+}
 
 export default function EpisodePage() {
   const router = useRouter();
@@ -134,11 +163,45 @@ export default function EpisodePage() {
     })();
   }, [id]);
 
+  // 设定图片同步：系列级人物/物品/场景设定的 imageUrl 更新后，按 名称+类型 同步到 episode.assets 对应资产。
+  // 放在常驻的 page 层（early return 之前），无论用户在第三步还是第四步（甚至跳过第三步直进第四步）都生效，
+  // 保证 VideoGeneration 读取的 episode.assets 图片与最新设定一致。
+  useEffect(() => {
+    if (!episode || episode.assets.length === 0) return;
+    const latestImageByKey = new Map<string, string>();
+    for (const c of getLatestVersions(seriesCharacterSettings)) {
+      if (c.imageUrl && c.name.trim()) latestImageByKey.set(`${c.name.trim().toLowerCase()}|character`, c.imageUrl);
+    }
+    for (const o of getLatestObjectVersions(seriesObjectSettings)) {
+      if (o.imageUrl && o.name.trim()) latestImageByKey.set(`${o.name.trim().toLowerCase()}|object`, o.imageUrl);
+    }
+    for (const s of getLatestSceneVersions(seriesSceneSettings)) {
+      if (s.imageUrl && s.name.trim()) latestImageByKey.set(`${s.name.trim().toLowerCase()}|scene`, s.imageUrl);
+    }
+    if (latestImageByKey.size === 0) return;
+    const pending: { id: string; imageUrl: string }[] = [];
+    for (const a of episode.assets) {
+      if (a.type !== "character" && a.type !== "object" && a.type !== "scene") continue;
+      const key = `${a.name.toLowerCase()}|${a.type}`;
+      const latest = latestImageByKey.get(key);
+      if (latest && latest !== a.imageUrl) pending.push({ id: a.id, imageUrl: latest });
+    }
+    if (pending.length > 0) {
+      update((ep) => ({
+        ...ep,
+        assets: ep.assets.map((a) => {
+          const p = pending.find((x) => x.id === a.id);
+          return p ? { ...a, imageUrl: p.imageUrl, status: "ready" as const } : a;
+        }),
+      }));
+    }
+  }, [seriesCharacterSettings, seriesObjectSettings, seriesSceneSettings, episode]);
+
   if (notFound) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 text-slate-500">
         <p>未找到该剧集</p>
-        <Button onClick={() => router.push("/home")}>返回首页</Button>
+        <Button onClick={() => router.push("/")}>返回首页</Button>
       </main>
     );
   }
@@ -295,6 +358,10 @@ export default function EpisodePage() {
   }
 
   // ---- Step2 handlers ----
+  /** 重新生成分镜：替换现有 shots（保留 assets，但新镜头的资产关联、@标注会重置） */
+  function handleReplaceShots(shots: Shot[]) {
+    update((ep) => ({ ...ep, shots }));
+  }
   function handleUpdateShot(shotId: string, field: keyof Shot, value: string) {
     update((ep) => ({
       ...ep,
@@ -405,6 +472,9 @@ export default function EpisodePage() {
       ),
     }));
   }
+  function handleAddScreenshot(asset: Asset) {
+    update((ep) => ({ ...ep, assets: [...ep.assets, asset] }));
+  }
 
   function gotoStep(step: 1 | 2 | 3 | 4) {
     if (step === 2 && !step1Done) return;
@@ -416,10 +486,10 @@ export default function EpisodePage() {
 
   return (
     <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-6 sm:px-6">
-      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
+      <header className="mb-5 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.push(episode.seriesId ? `/series/${episode.seriesId}` : "/home")}
+            onClick={() => router.push(episode.seriesId ? `/series/${episode.seriesId}` : "/")}
             className="text-slate-400 hover:text-slate-600"
             title="返回企划"
           >
@@ -462,14 +532,54 @@ export default function EpisodePage() {
             {savedHint ? "已保存 ✓" : saveError ? saveError : ""}
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <Stepper
-            currentStep={currentStep}
-            onStepClick={gotoStep}
-            step1Done={step1Done}
-            step2Done={step2Done}
-            step3Done={step3Done}
-          />
+        <Stepper
+          currentStep={currentStep}
+          onStepClick={gotoStep}
+          step1Done={step1Done}
+          step2Done={step2Done}
+          step3Done={step3Done}
+        />
+        <div className="flex items-center justify-end gap-1">
+          <HoverMenu
+            trigger={
+              <button
+                type="button"
+                className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                title="全局"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M2 12h20" />
+                  <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+                </svg>
+              </button>
+            }
+          >
+            <MenuItem onClick={() => router.push("/settings")}>设置</MenuItem>
+            <MenuItem onClick={() => router.push("/assets")}>资产库</MenuItem>
+          </HoverMenu>
+
+          <HoverMenu
+            trigger={
+              <button
+                type="button"
+                className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                title="设定"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12.52 3.621a1 1 0 0 0-1.04 0L2.68 8.998c-.343.205-.558.578-.558.986v5.032c0 .408.215.781.558.986l8.8 5.377a1 1 0 0 0 1.04 0l8.8-5.377c.343-.205.558-.578.558-.986V9.984c0-.408-.215-.781-.558-.986l-8.8-5.377Z" />
+                  <path d="M3 9h18" />
+                  <path d="M12 21V9" />
+                </svg>
+              </button>
+            }
+          >
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/world-settings`)}>世界设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/characters`)}>人物设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/objects`)}>物品设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/scenes`)}>场景设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/style-settings`)}>风格设定</MenuItem>
+          </HoverMenu>
         </div>
       </header>
 
@@ -503,6 +613,7 @@ export default function EpisodePage() {
           onBackToStep1={() => gotoStep(1)}
           onEnterStep3={() => gotoStep(3)}
           onRemoveTag={handleRemoveTag}
+          onReplaceShots={handleReplaceShots}
         />
       ) : currentStep === 3 ? (
         <div className="mx-auto max-w-6xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -531,7 +642,9 @@ export default function EpisodePage() {
           onBackToStep3={() => gotoStep(3)}
           onLinkAsset={handleLinkAsset}
           onUnlinkAsset={handleUnlinkAsset}
+          onAddScreenshot={handleAddScreenshot}
           seriesStyleSettings={seriesStyleSettings}
+          characterSettings={seriesCharacterSettings}
         />
       )}
 

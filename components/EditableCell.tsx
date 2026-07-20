@@ -48,11 +48,12 @@ export default function EditableCell({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
 
   // @ 下拉状态
   const [mentionQuery, setMentionQuery] = useState<string | null>(null); // null = 未触发，"" 或字符串 = 触发后关键词
   const [mentionIndex, setMentionIndex] = useState(0);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; bottom: number; left: number }>({ top: 0, bottom: 0, left: 0 });
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -80,12 +81,13 @@ export default function EditableCell({
     setMentionQuery(null);
   }
 
-  /** 计算下拉框位置（固定定位，紧贴 textarea 下方） */
+  /** 计算下拉框位置（固定定位，记录 textarea rect，渲染时按剩余空间决定向上/向下弹出） */
   function updateDropdownPos() {
     if (!inputRef.current) return;
     const rect = inputRef.current.getBoundingClientRect();
     setDropdownPos({
-      top: rect.bottom + 4,
+      top: rect.top,
+      bottom: rect.bottom,
       left: rect.left,
     });
   }
@@ -121,6 +123,27 @@ export default function EditableCell({
       : [];
 
   const showDropdown = mentionQuery !== null && filteredOptions.length > 0;
+
+  // 弹框打开时监听所有可滚动容器，滚动时实时跟随
+  useEffect(() => {
+    if (!showDropdown) return;
+
+    function handleScroll() {
+      updateDropdownPos();
+    }
+
+    // 捕获阶段监听，捕获所有祖先滚动容器的 scroll 事件
+    window.addEventListener("scroll", handleScroll, true);
+    return () => window.removeEventListener("scroll", handleScroll, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDropdown]);
+
+  // 键盘上下移动时，高亮项自动滚入弹框视口
+  useEffect(() => {
+    if (showDropdown && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [mentionIndex, showDropdown]);
 
   /** 选中某个选项，将 @query 替换为 @value + 空格 */
   function selectMention(opt: AtMentionOption) {
@@ -215,27 +238,39 @@ export default function EditableCell({
             className="w-full resize-y rounded border border-brand-400 bg-white px-2 py-1 text-xs leading-relaxed text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30"
             style={{ minWidth }}
           />
-          {showDropdown && (
-            <div
-              style={{ top: dropdownPos.top, left: dropdownPos.left }}
-              className="fixed z-50 min-w-[160px] max-w-[260px] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg"
-            >
-              {filteredOptions.map((opt, i) => (
-                <div
-                  key={opt.value}
-                  onMouseDown={(e) => handleDropdownMouseDown(e, opt)}
-                  className={`cursor-pointer px-3 py-2 text-xs ${
-                    i === mentionIndex
-                      ? "bg-brand-50 text-brand-700"
-                      : "text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  <span className="font-medium text-amber-600">@</span>
-                  {opt.label}
-                </div>
-              ))}
-            </div>
-          )}
+          {showDropdown && (() => {
+            // 下方/上方剩余空间，估算菜单高度（每项约 36px，上限 200px）
+            const estHeight = Math.min(200, Math.max(1, filteredOptions.length) * 36);
+            const margin = 4;
+            const belowSpace = window.innerHeight - dropdownPos.bottom;
+            const aboveSpace = dropdownPos.top;
+            const placeAbove = belowSpace < estHeight + margin && aboveSpace > belowSpace;
+            const top = placeAbove
+              ? Math.max(0, dropdownPos.top - margin - estHeight)
+              : dropdownPos.bottom + margin;
+            return (
+              <div
+                style={{ top, left: dropdownPos.left, maxHeight: "200px" }}
+                className="fixed z-50 min-w-[160px] max-w-[260px] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
+              >
+                {filteredOptions.map((opt, i) => (
+                  <div
+                    key={opt.value}
+                    ref={i === mentionIndex ? highlightRef : null}
+                    onMouseDown={(e) => handleDropdownMouseDown(e, opt)}
+                    className={`cursor-pointer px-3 py-2 text-xs ${
+                      i === mentionIndex
+                        ? "bg-brand-50 text-brand-700"
+                        : "text-slate-700 hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="font-medium text-amber-600">@</span>
+                    {opt.label}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       );
     }
@@ -265,7 +300,7 @@ export default function EditableCell({
   return (
     <div
       onClick={() => setEditing(true)}
-      className="min-h-[24px] cursor-text rounded px-2 py-1 text-xs leading-relaxed text-slate-700 hover:bg-brand-50/60"
+      className="min-h-[24px] cursor-text whitespace-pre-wrap break-words rounded px-2 py-1 text-xs leading-relaxed text-slate-700 hover:bg-brand-50/60"
       style={{ minWidth }}
       title="点击编辑"
     >

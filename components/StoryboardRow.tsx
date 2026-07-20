@@ -38,7 +38,7 @@ export default function StoryboardRow({
         <EditableCell
           value={shot.duration}
           onChange={(v) => onUpdate("duration", v)}
-          placeholder="3-5秒"
+          placeholder="10-15秒"
           minWidth="70px"
         />
       </td>
@@ -143,7 +143,7 @@ export default function StoryboardRow({
             title="下移"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 19l-7-7h14l7 7z" fill="currentColor" />
+              <path d="M12 19l7-7H5l7 7z" fill="currentColor" />
             </svg>
           </button>
           <button

@@ -8,11 +8,13 @@ import { getSeries, saveSeries, deleteEpisode, getEpisodesBySeries, saveEpisode 
 import { emptyEpisode } from "@/lib/utils";
 import { getSettings } from "@/lib/llm-client";
 import type { Episode, Series } from "@/lib/types";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 
 export default function SeriesPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const id = params.id;
+  const confirm = useConfirm();
 
   const [series, setSeries] = useState<Series | null>(null);
   const [episodes, setEpisodes] = useState<Episode[]>([]);
@@ -66,7 +68,10 @@ export default function SeriesPage() {
 
   async function handleDeleteEpisode(epId: string) {
     if (!series) return;
-    if (!confirm("确定删除该剧集？此操作不可撤销。")) return;
+    if (!await confirm({
+      message: "确定删除该剧集？此操作不可撤销。",
+      confirmText: "删除",
+    })) return;
     await deleteEpisode(epId);
     const updated: Series = {
       ...series,
@@ -81,7 +86,7 @@ export default function SeriesPage() {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 text-slate-500">
         <p>未找到该企划</p>
-        <Button onClick={() => router.push("/home")}>返回首页</Button>
+        <Button onClick={() => router.push("/")}>返回首页</Button>
       </main>
     );
   }
@@ -99,7 +104,7 @@ export default function SeriesPage() {
       <header className="mb-8 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.push("/home")}
+            onClick={() => router.push("/")}
             className="text-slate-400 hover:text-slate-600"
             title="返回首页"
           >
@@ -201,7 +206,7 @@ export default function SeriesPage() {
               <circle cx="15" cy="8" r="1.2" fill="currentColor" />
               <circle cx="17.5" cy="12" r="1.2" fill="currentColor" />
             </svg>
-            漫剧风格
+            风格设定
           </Button>
         </div>
       </header>

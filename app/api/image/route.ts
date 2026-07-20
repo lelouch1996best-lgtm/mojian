@@ -1,4 +1,8 @@
-import type { ImageProxyRequest, ImageProxyResponse } from "@/lib/types";
+import type {
+  ImageProxyRequest,
+  ImageProxyResponse,
+  ImageAsyncCreateResponse,
+} from "@/lib/types";
 import { getImageModelCapability } from "@/lib/model-presets";
 
 export const runtime = "nodejs";
@@ -22,6 +26,7 @@ export async function POST(req: Request) {
 
   // 按模型能力条件性构造上游请求体（参照 docs/gpt2.md、docs/image.md 参数支持矩阵）
   const cap = getImageModelCapability(body.model);
+  const asyncMode = !!body.asyncMode;
 
   // gpt-image-2 有参考图时走 /images/edits 端点（multipart/form-data，image 为文件字段）
   // 其余场景（gpt-image-2 文生图、Seedream 系列文/图生图）走 /images/generations（JSON body）
@@ -59,9 +64,12 @@ export async function POST(req: Request) {
         formData.append("image[]", imageBlob, `image.${ext}`);
       }
 
+      const headers: Record<string, string> = { Authorization: `Bearer ${body.apiKey}` };
+      if (asyncMode) headers["X-Async-Mode"] = "true";
+
       upstream = await fetch(url, {
         method: "POST",
-        headers: { Authorization: `Bearer ${body.apiKey}` },
+        headers,
         body: formData,
       });
     } else {
@@ -100,12 +108,15 @@ export async function POST(req: Request) {
         upstreamBody.quality = body.quality;
       }
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${body.apiKey}`,
+      };
+      if (asyncMode) headers["X-Async-Mode"] = "true";
+
       upstream = await fetch(url, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${body.apiKey}`,
-        },
+        headers,
         body: JSON.stringify(upstreamBody),
       });
     }
@@ -144,7 +155,23 @@ export async function POST(req: Request) {
     );
   }
 
-  // 响应结构：{ model, created, data: [{ url | b64_json, size }], usage }
+  // 异步模式：上游返回 202 { job_id, status, status_url, created }
+  if (asyncMode) {
+    const jobId = (data as { job_id?: string })?.job_id;
+    if (!jobId) {
+      return Response.json(
+        { error: "异步模式上游未返回 job_id" },
+        { status: 502 }
+      );
+    }
+    const result: ImageAsyncCreateResponse = {
+      jobId,
+      status: (data as { status?: string })?.status ?? "pending",
+    };
+    return Response.json(result);
+  }
+
+  // 同步模式：响应结构 { model, created, data: [{ url | b64_json, size }], usage }
   const first = (data as { data?: Array<Record<string, unknown>> })?.data?.[0];
   if (!first) {
     return Response.json(

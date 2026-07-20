@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import Modal from "@/components/ui/Modal";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Spinner from "@/components/ui/Spinner";
 import Button from "@/components/ui/Button";
 import ImageLightbox from "@/components/ImageLightbox";
@@ -9,28 +9,36 @@ import { apiClient } from "@/lib/api-client";
 import { ASSET_TYPE_LABELS } from "@/lib/utils";
 import type { AssetLibraryItem } from "@/lib/types";
 
+/** 资产库选中项（含 URL 与名称，用于 @ 提及保留原始资产名） */
+export interface PickedAssetItem {
+  url: string;
+  name: string;
+}
+
 interface AssetPickerProps {
   open: boolean;
   onClose: () => void;
   /** 可选媒体类型约束 */
-  mediaType: "image" | "video";
+  mediaType: "image" | "video" | "audio";
   /** 多选模式（参考图/参考视频）；false 为单选（首尾帧） */
   multiple?: boolean;
   /** 已选 URL 列表，用于去重与回显 */
   selectedUrls: string[];
-  /** 确认回调，返回本次新选中的 URL 列表（不含已选） */
-  onConfirm: (urls: string[]) => void;
+  /** 确认回调，返回本次新选中的资产项（不含已选） */
+  onConfirm: (items: PickedAssetItem[]) => void;
   /** 最大数量上限（含已选） */
   max?: number;
 }
 
-type EntityTypeFilter = "all" | "character" | "scene" | "object";
+type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard";
 
 const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "character", label: "人物" },
   { value: "object", label: "物品" },
   { value: "scene", label: "场景" },
+  { value: "screenshot", label: "截屏" },
+  { value: "storyboard", label: "故事板" },
 ];
 
 function entityTypeLabel(t: AssetLibraryItem["entityType"]): string {
@@ -51,8 +59,103 @@ export default function AssetPicker({
   const [loading, setLoading] = useState(false);
   const [seriesId, setSeriesId] = useState("");
   const [entityType, setEntityType] = useState<EntityTypeFilter>("all");
-  const [picked, setPicked] = useState<string[]>([]);
+  const [pickedIds, setPickedIds] = useState<string[]>([]);
   const [videoPreview, setVideoPreview] = useState<AssetLibraryItem | null>(null);
+
+  // ===== 弹窗 Portal / 拖拽 / 缩放 =====
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [size, setSize] = useState<{ width: number; height: number }>({ width: 896, height: 720 });
+  const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const resizeState = useRef<{ startX: number; startY: number; origW: number; origH: number } | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const w = Math.min(896, window.innerWidth - 32);
+    const h = Math.min(720, window.innerHeight - 32);
+    setSize({ width: w, height: h });
+    setPos({
+      x: Math.max(16, Math.round((window.innerWidth - w) / 2)),
+      y: Math.max(16, Math.round((window.innerHeight - h) / 2)),
+    });
+  }, [open]);
+
+  // ESC 关闭（视频预览打开时优先关闭预览）+ 锁定 body 滚动
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !videoPreview) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    if (!videoPreview) document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (!videoPreview) document.body.style.overflow = "";
+    };
+  }, [open, onClose, videoPreview]);
+
+  const handleDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest("button, input, textarea, select")) return;
+      e.preventDefault();
+      dragState.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+      const onMove = (ev: MouseEvent) => {
+        const st = dragState.current;
+        if (!st) return;
+        const dx = ev.clientX - st.startX;
+        const dy = ev.clientY - st.startY;
+        const minX = -size.width + 120;
+        const maxX = window.innerWidth - 120;
+        const minY = 0;
+        const maxY = window.innerHeight - 48;
+        setPos({
+          x: Math.min(Math.max(minX, st.origX + dx), maxX),
+          y: Math.min(Math.max(minY, st.origY + dy), maxY),
+        });
+      };
+      const onUp = () => {
+        dragState.current = null;
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.userSelect = "none";
+    },
+    [pos.x, pos.y, size.width]
+  );
+
+  const handleResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      resizeState.current = { startX: e.clientX, startY: e.clientY, origW: size.width, origH: size.height };
+      const onMove = (ev: MouseEvent) => {
+        const st = resizeState.current;
+        if (!st) return;
+        const dx = ev.clientX - st.startX;
+        const dy = ev.clientY - st.startY;
+        const newW = Math.min(Math.max(480, st.origW + dx), window.innerWidth - 16);
+        const newH = Math.min(Math.max(360, st.origH + dy), window.innerHeight - 16);
+        setSize({ width: newW, height: newH });
+      };
+      const onUp = () => {
+        resizeState.current = null;
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.userSelect = "none";
+    },
+    [size.width, size.height]
+  );
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -68,7 +171,7 @@ export default function AssetPicker({
 
   useEffect(() => {
     if (open) {
-      setPicked([]);
+      setPickedIds([]);
       loadData();
     }
   }, [open, loadData]);
@@ -108,61 +211,84 @@ export default function AssetPicker({
     });
   }, [items, seriesId, entityType]);
 
-  const allSelected = useMemo(() => new Set(selectedUrls), [selectedUrls]);
-  const pickedSet = useMemo(() => new Set(picked), [picked]);
+  const allSelectedUrls = useMemo(() => new Set(selectedUrls), [selectedUrls]);
+  const pickedIdSet = useMemo(() => new Set(pickedIds), [pickedIds]);
+  const itemMap = useMemo(() => new Map(items.map((it) => [it.id, it])), [items]);
 
   const effectiveMax = max ?? (multiple ? 99 : 1);
-  const totalSelected = selectedUrls.length + picked.length;
+  const totalSelected = selectedUrls.length + pickedIds.length;
   const remaining = Math.max(0, effectiveMax - totalSelected);
 
-  function togglePick(url: string) {
-    if (pickedSet.has(url)) {
-      setPicked(picked.filter((u) => u !== url));
+  function togglePick(item: AssetLibraryItem) {
+    if (pickedIdSet.has(item.id)) {
+      setPickedIds(pickedIds.filter((id) => id !== item.id));
       return;
     }
-    if (allSelected.has(url)) return;
+    if (allSelectedUrls.has(item.url)) return;
     if (!multiple) {
-      setPicked([url]);
+      setPickedIds([item.id]);
       return;
     }
     if (remaining <= 0) return;
-    setPicked([...picked, url]);
+    setPickedIds([...pickedIds, item.id]);
   }
 
   function handleConfirm() {
-    if (picked.length === 0) {
+    if (pickedIds.length === 0) {
       onClose();
       return;
     }
-    onConfirm(picked);
-    setPicked([]);
+    const pickedItems: PickedAssetItem[] = pickedIds
+      .map((id) => {
+        const it = itemMap.get(id);
+        return it ? { url: it.url, name: it.entityName } : null;
+      })
+      .filter((x): x is PickedAssetItem => !!x);
+    onConfirm(pickedItems);
+    setPickedIds([]);
   }
 
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={`从资产库选择${mediaType === "image" ? "图片" : "视频"}`}
-      width="max-w-4xl"
-      footer={
-        <>
-          <span className="mr-auto text-sm text-slate-500">
-            {multiple ? `已选 ${picked.length} 项` : picked.length > 0 ? "已选 1 项" : "未选择"}
-          </span>
-          <Button variant="ghost" size="md" onClick={onClose}>
-            取消
-          </Button>
-          <Button
-            variant="primary"
-            size="md"
-            disabled={picked.length === 0}
-            onClick={handleConfirm}
+  if (!open || !mounted) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-50">
+      <div
+        className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: pos.x,
+          top: pos.y,
+          width: size.width,
+          height: size.height,
+        }}
+        className="flex flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
+      >
+        <div
+          onMouseDown={handleDragStart}
+          className="flex cursor-move items-center justify-between border-b border-slate-200 px-5 py-3.5"
+        >
+          <h3 className="select-none text-base font-semibold text-slate-800">
+            {`从资产库选择${mediaType === "image" ? "图片" : mediaType === "audio" ? "音色" : "视频"}`}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-slate-400 hover:text-slate-600 transition-colors"
+            aria-label="关闭"
           >
-            确认{picked.length > 0 ? `（${picked.length}）` : ""}
-          </Button>
-        </>
-      }
-    >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M6 6l12 12M18 6L6 18"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4">
       {/* 过滤栏 */}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
@@ -210,14 +336,16 @@ export default function AssetPicker({
           <span>加载中…</span>
         </div>
       ) : items.length === 0 ? (
-        <div className="py-20 text-center text-slate-400">暂无生成的{mediaType === "image" ? "图片" : "视频"}</div>
+        <div className="py-20 text-center text-slate-400">
+          {mediaType === "audio" ? "暂无音色资产" : `暂无生成的${mediaType === "image" ? "图片" : "视频"}`}
+        </div>
       ) : filtered.length === 0 ? (
         <div className="py-20 text-center text-slate-400">没有匹配的资产</div>
       ) : (
         <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5">
           {filtered.map((item) => {
-            const isPicked = pickedSet.has(item.url);
-            const isAlready = allSelected.has(item.url);
+            const isPicked = pickedIdSet.has(item.id);
+            const isAlready = allSelectedUrls.has(item.url);
             const disabled = isAlready || (!isPicked && remaining <= 0);
             return (
               <AssetPickCard
@@ -226,13 +354,41 @@ export default function AssetPicker({
                 picked={isPicked}
                 alreadySelected={isAlready}
                 disabled={disabled}
-                onToggle={() => togglePick(item.url)}
+                onToggle={() => togglePick(item)}
                 onPreviewVideo={() => setVideoPreview(item)}
               />
             );
           })}
         </div>
       )}
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-5 py-3">
+          <span className="mr-auto text-sm text-slate-500">
+            {multiple ? `已选 ${pickedIds.length} 项` : pickedIds.length > 0 ? "已选 1 项" : "未选择"}
+          </span>
+          <Button variant="ghost" size="md" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            size="md"
+            disabled={pickedIds.length === 0}
+            onClick={handleConfirm}
+          >
+            确认{pickedIds.length > 0 ? `（${pickedIds.length}）` : ""}
+          </Button>
+        </div>
+        {/* 右下角缩放手柄 */}
+        <div
+          onMouseDown={handleResizeStart}
+          className="absolute bottom-0 right-0 flex h-4 w-4 cursor-nwse-resize items-end justify-end text-slate-300 hover:text-slate-500"
+          title="拖动缩放"
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <path d="M9 1L1 9M9 5L5 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+        </div>
+      </div>
 
       {/* 视频预览模态 */}
       {videoPreview && (
@@ -258,7 +414,8 @@ export default function AssetPicker({
           />
         </div>
       )}
-    </Modal>
+    </div>,
+    document.body
   );
 }
 
@@ -301,6 +458,7 @@ function AssetPickCard({
   onPreviewVideo: () => void;
 }) {
   const isVideo = item.mediaType === "video";
+  const isAudio = item.mediaType === "audio";
 
   const previewIcon = (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
@@ -332,6 +490,13 @@ function AssetPickCard({
               </svg>
             </div>
           </>
+        ) : isAudio ? (
+          <div
+            className="flex h-full w-full items-center justify-center bg-slate-50 p-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <audio controls src={item.url} className="w-full" />
+          </div>
         ) : (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={item.url} alt={item.entityName} className="h-full w-full object-cover" />
@@ -368,7 +533,7 @@ function AssetPickCard({
             >
               {previewIcon}
             </button>
-          ) : (
+          ) : isAudio ? null : (
             <ImageLightbox src={item.url} alt={item.entityName}>
               <button
                 type="button"

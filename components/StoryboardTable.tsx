@@ -4,9 +4,10 @@ import { useMemo, useState } from "react";
 import StoryboardRow from "./StoryboardRow";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
+import { useConfirm } from "./ui/ConfirmDialog";
 import { callLLM } from "@/lib/llm-client";
-import { taggingMessages } from "@/lib/prompts";
-import { downloadJSON, extractTagItems, extractAllTags } from "@/lib/utils";
+import { taggingMessages, storyboardMessages } from "@/lib/prompts";
+import { downloadJSON, extractTagItems, extractAllTags, extractShots, toShot } from "@/lib/utils";
 import type { Episode, Shot } from "@/lib/types";
 
 interface StoryboardTableProps {
@@ -21,6 +22,8 @@ interface StoryboardTableProps {
   onEnterStep3: () => void;
   /** 从所有分镜画面描述中移除某个标签的 @ 前缀（删除标注） */
   onRemoveTag?: (tagName: string) => void;
+  /** 重新生成分镜：用全新 shots 替换现有分镜 */
+  onReplaceShots?: (shots: Shot[]) => void;
 }
 
 const COLUMNS = [
@@ -43,9 +46,12 @@ export default function StoryboardTable({
   onBackToStep1,
   onEnterStep3,
   onRemoveTag,
+  onReplaceShots,
 }: StoryboardTableProps) {
   const [tagging, setTagging] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   // 当前已有标签（去重，按首次出现顺序）
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
@@ -86,6 +92,42 @@ export default function StoryboardTable({
     }
   }
 
+  /** 重新生成分镜：基于当前扩写内容重新拆分镜头，覆盖现有分镜 */
+  async function handleRegenerate() {
+    if (!onReplaceShots) return;
+    const content = episode.expandedContent.trim() || episode.originalContent.trim();
+    if (!content) {
+      setError("缺少扩写内容，无法重新生成分镜，请返回第一步补充内容");
+      return;
+    }
+    if (episode.shots.length > 0) {
+      const ok = await confirm({
+        message: "重新生成分镜将覆盖当前所有镜头（含已编辑内容、@标注与资产关联），且无法撤销。确定继续吗？",
+        confirmText: "重新生成",
+      });
+      if (!ok) return;
+    }
+    setRegenerating(true);
+    setError(null);
+    try {
+      const raw = await callLLM(storyboardMessages(content), {
+        responseFormat: "json_object",
+        temperature: 0.5,
+      });
+      const rawShots = extractShots(raw);
+      if (rawShots.length === 0) {
+        setError("未能解析出分镜，请重试或调整扩写内容");
+        return;
+      }
+      const shots = rawShots.map(toShot);
+      onReplaceShots(shots);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRegenerating(false);
+    }
+  }
+
   function handleExport() {
     const exportData = {
       title: episode.title,
@@ -123,6 +165,16 @@ export default function StoryboardTable({
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRegenerate}
+            loading={regenerating}
+            disabled={!onReplaceShots || (!episode.expandedContent.trim() && !episode.originalContent.trim())}
+            title="基于当前扩写内容重新拆分镜头"
+          >
+            {regenerating ? "重新生成中…" : "↻ 重新生成分镜"}
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -232,6 +284,11 @@ export default function StoryboardTable({
         {tagging && (
           <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
             <Spinner size={12} /> 正在标注…
+          </span>
+        )}
+        {regenerating && (
+          <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
+            <Spinner size={12} /> 正在重新生成分镜…
           </span>
         )}
       </div>

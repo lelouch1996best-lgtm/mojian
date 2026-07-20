@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import ImageLightbox from "@/components/ImageLightbox";
 import { debounce } from "@/lib/utils";
 import {
@@ -13,6 +14,7 @@ import {
   PROVIDER_PRESETS,
   getProviderKeys,
   saveProviderKey,
+  clearProviderKey,
 } from "@/lib/llm-client";
 import {
   getImageSettings,
@@ -22,6 +24,7 @@ import {
   DEFAULT_IMAGE_SETTINGS,
   getImageProviderKeys,
   saveImageProviderKey,
+  clearImageProviderKey,
 } from "@/lib/image-client";
 import {
   getVideoSettings,
@@ -30,7 +33,17 @@ import {
   VIDEO_PROVIDER_PRESETS,
   getVideoProviderKeys,
   saveVideoProviderKey,
+  clearVideoProviderKey,
 } from "@/lib/video-client";
+import {
+  getAudioSettings,
+  saveAudioSettings,
+  DEFAULT_AUDIO_SETTINGS,
+  AUDIO_PROVIDER_PRESETS,
+  getAudioProviderKeys,
+  saveAudioProviderKey,
+  clearAudioProviderKey,
+} from "@/lib/audio-client";
 import {
   getLLMModels,
   saveLLMModels,
@@ -41,10 +54,14 @@ import {
   getVideoModels,
   saveVideoModels,
   resetVideoModels,
+  getAudioModels,
+  saveAudioModels,
+  resetAudioModels,
   initAllModels,
   DEFAULT_LLM_MODELS,
   DEFAULT_IMAGE_MODELS,
   DEFAULT_VIDEO_MODELS,
+  DEFAULT_AUDIO_MODELS,
   type ModelEntry,
   type ImageModelCapability,
   type VideoModelCapability,
@@ -53,10 +70,16 @@ import {
   getCosSettings,
   saveCosSettings,
 } from "@/lib/cos-client";
-import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings } from "@/lib/types";
+import {
+  getStorageProvider,
+  saveStorageProvider,
+  type StorageProvider,
+} from "@/lib/storage-provider";
+import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings } from "@/lib/types";
 
 export default function SettingsPage() {
   const router = useRouter();
+  const confirm = useConfirm();
 
   // ---- LLM 状态 ----
   const [provider, setProvider] = useState<LLMSettings["provider"]>("deepseek");
@@ -108,6 +131,17 @@ export default function SettingsPage() {
   const [newVideoValue, setNewVideoValue] = useState("");
   const [newVideoLabel, setNewVideoLabel] = useState("");
 
+  // ---- 音频 API 状态 ----
+  const [audSettings, setAudSettings] = useState<AudioGenSettings>(DEFAULT_AUDIO_SETTINGS);
+  const [audioPanelOpen, setAudioPanelOpen] = useState(false);
+  const [audioProviderKeys, setAudioProviderKeys] = useState<ProviderCache>({});
+
+  // ---- 音频模型管理 ----
+  const [audioModels, setAudioModels] = useState<ModelEntry[]>([]);
+  const [showAudioManager, setShowAudioManager] = useState(false);
+  const [newAudioValue, setNewAudioValue] = useState("");
+  const [newAudioLabel, setNewAudioLabel] = useState("");
+
   // ---- COS 存储状态 ----
   const [cosSettings, setCosSettings] = useState<CosSettings>({
     secretId: "",
@@ -121,6 +155,15 @@ export default function SettingsPage() {
   const [cosTesting, setCosTesting] = useState(false);
   const [cosTestResult, setCosTestResult] = useState<{
     ok: boolean;
+    message: string;
+  } | null>(null);
+
+  // ---- 存储方式状态 ----
+  const [storageProvider, setStorageProvider] = useState<StorageProvider>("cos");
+  const [localTesting, setLocalTesting] = useState(false);
+  const [localTestResult, setLocalTestResult] = useState<{
+    ok: boolean;
+    dir: string;
     message: string;
   } | null>(null);
 
@@ -195,6 +238,21 @@ export default function SettingsPage() {
     setNewVideoValue("");
     setNewVideoLabel("");
 
+    // 音频
+    const aus = await getAudioSettings();
+    const audProvider = aus?.provider ?? "mimo";
+    setAudSettings(aus ?? { ...DEFAULT_AUDIO_SETTINGS });
+    setAudioPanelOpen(!!aus?.apiKey);
+
+    // 加载各音频 provider 缓存的 API Key
+    setAudioProviderKeys(await getAudioProviderKeys());
+
+    // 音频模型列表
+    setAudioModels(await getAudioModels(audProvider));
+    setShowAudioManager(false);
+    setNewAudioValue("");
+    setNewAudioLabel("");
+
     // COS
     const cos = await getCosSettings();
     const cosCfg = !!(cos?.secretId && cos?.secretKey && cos?.bucket && cos?.region);
@@ -202,6 +260,10 @@ export default function SettingsPage() {
     setCosPanelOpen(cosCfg);
     setCosConfigured(cosCfg);
     setCosTestResult(null);
+
+    // 存储方式
+    const sp = await getStorageProvider();
+    setStorageProvider(sp);
     })();
     // 初始化完成后启用自动保存
     setTimeout(() => { skipAutoSave.current = false; }, 0);
@@ -276,6 +338,32 @@ export default function SettingsPage() {
     if (!defaults.some((m) => m.value === model) && defaults.length > 0) {
       setModel(defaults[0].value);
     }
+  }
+
+  /** 初始化当前 LLM 供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  async function handleInitLLMProvider() {
+    const p = provider;
+    if (!await confirm({
+      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      confirmText: "初始化",
+    })) return;
+    const preset = PROVIDER_PRESETS[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    const fbModel = p !== "custom" ? preset.model : "";
+    // 更新缓存状态（清除当前 provider 缓存条目）
+    const updatedKeys = { ...providerKeys };
+    delete updatedKeys[p];
+    setProviderKeys(updatedKeys);
+    await clearProviderKey(p);
+    // 重置供应商配置到预设默认
+    setBaseURL(fbBase);
+    setModel(fbModel);
+    setApiKey("");
+    setTestResult(null);
+    // 联动重置模型列表
+    const defaults = await resetLLMModels(p);
+    setLLMModels(defaults);
+    setShowLLMManager(false);
   }
 
   // ---- 图片 API handlers ----
@@ -360,6 +448,30 @@ export default function SettingsPage() {
     }
   }
 
+  /** 初始化当前供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  async function handleInitImageProvider() {
+    const p = imgSettings.provider;
+    if (!await confirm({
+      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      confirmText: "初始化",
+    })) return;
+    const preset = IMAGE_PROVIDER_PRESETS[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    const fbModel = p !== "custom" ? preset.model : "";
+    // 更新缓存状态（清除当前 provider 缓存条目）
+    const updatedKeys = { ...imageProviderKeys };
+    delete updatedKeys[p];
+    setImageProviderKeys(updatedKeys);
+    await clearImageProviderKey(p);
+    // 重置供应商配置到预设默认
+    setImgSettings({ ...imgSettings, provider: p, baseURL: fbBase, model: fbModel, apiKey: "" });
+    setImgTestResult(null);
+    // 联动重置模型列表
+    const defaults = await resetImageModels(p);
+    setImageModels(defaults);
+    setShowImageManager(false);
+  }
+
   async function handleSetDefaultImageModel(value: string) {
     const updated = imageModels.map((m) => ({ ...m, isDefault: m.value === value }));
     setImageModels(updated);
@@ -427,10 +539,109 @@ export default function SettingsPage() {
     setVideoModels(defaults);
   }
 
+  /** 初始化当前视频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  async function handleInitVideoProvider() {
+    const p = vidSettings.provider;
+    if (!await confirm({
+      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      confirmText: "初始化",
+    })) return;
+    const preset = VIDEO_PROVIDER_PRESETS[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    // 更新缓存状态（清除当前 provider 缓存条目）
+    const updatedKeys = { ...videoProviderKeys };
+    delete updatedKeys[p];
+    setVideoProviderKeys(updatedKeys);
+    await clearVideoProviderKey(p);
+    // 重置供应商配置到预设默认
+    setVidSettings({ ...vidSettings, provider: p, baseURL: fbBase, apiKey: "" });
+    // 联动重置模型列表
+    const defaults = await resetVideoModels(p);
+    setVideoModels(defaults);
+    setShowVideoManager(false);
+  }
+
   async function handleSetDefaultVideoModel(value: string) {
     const updated = videoModels.map((m) => ({ ...m, isDefault: m.value === value }));
     setVideoModels(updated);
     await saveVideoModels(vidSettings.provider, updated);
+  }
+
+  // ---- 音频 API ----
+  async function handleAudioProviderChange(p: AudioGenSettings["provider"]) {
+    if (p === audSettings.provider) return;
+    const updatedKeys: ProviderCache = {
+      ...audioProviderKeys,
+      [audSettings.provider]: { apiKey: audSettings.apiKey, baseURL: audSettings.baseURL },
+    };
+    setAudioProviderKeys(updatedKeys);
+    await saveAudioProviderKey(audSettings.provider, { apiKey: audSettings.apiKey, baseURL: audSettings.baseURL });
+
+    const preset = AUDIO_PROVIDER_PRESETS[p];
+    const cached = updatedKeys[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    const newSettings = { ...audSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "" };
+    setAudSettings(newSettings);
+    setAudioModels(await getAudioModels(p));
+    setShowAudioManager(false);
+    setNewAudioValue("");
+    setNewAudioLabel("");
+  }
+
+  function updateAud<K extends keyof AudioGenSettings>(key: K, value: AudioGenSettings[K]) {
+    setAudSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  // ---- 音频模型管理 ----
+  async function handleAddAudioModel() {
+    const v = newAudioValue.trim();
+    if (!v) return;
+    if (audioModels.some((m) => m.value === v)) return;
+    const label = newAudioLabel.trim() || undefined;
+    const updated = [...audioModels, { value: v, label }];
+    setAudioModels(updated);
+    await saveAudioModels(audSettings.provider, updated);
+    setNewAudioValue("");
+    setNewAudioLabel("");
+  }
+
+  async function handleDeleteAudioModel(value: string) {
+    const updated = audioModels.filter((m) => m.value !== value);
+    setAudioModels(updated);
+    await saveAudioModels(audSettings.provider, updated);
+  }
+
+  async function handleResetAudioModels() {
+    const defaults = await resetAudioModels(audSettings.provider);
+    setAudioModels(defaults);
+  }
+
+  /** 初始化当前音频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  async function handleInitAudioProvider() {
+    const p = audSettings.provider;
+    if (!await confirm({
+      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      confirmText: "初始化",
+    })) return;
+    const preset = AUDIO_PROVIDER_PRESETS[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    // 更新缓存状态（清除当前 provider 缓存条目）
+    const updatedKeys = { ...audioProviderKeys };
+    delete updatedKeys[p];
+    setAudioProviderKeys(updatedKeys);
+    await clearAudioProviderKey(p);
+    // 重置供应商配置到预设默认
+    setAudSettings({ ...audSettings, provider: p, baseURL: fbBase, apiKey: "" });
+    // 联动重置模型列表
+    const defaults = await resetAudioModels(p);
+    setAudioModels(defaults);
+    setShowAudioManager(false);
+  }
+
+  async function handleSetDefaultAudioModel(value: string) {
+    const updated = audioModels.map((m) => ({ ...m, isDefault: m.value === value }));
+    setAudioModels(updated);
+    await saveAudioModels(audSettings.provider, updated);
   }
 
   // ---- COS handlers ----
@@ -466,6 +677,28 @@ export default function SettingsPage() {
       setCosTestResult({ ok: false, message: `请求失败：${(e as Error).message}` });
     } finally {
       setCosTesting(false);
+    }
+  }
+
+  async function handleLocalTest() {
+    setLocalTesting(true);
+    setLocalTestResult(null);
+    try {
+      const res = await fetch("/api/local/test", { method: "POST" });
+      const data = await res.json();
+      setLocalTestResult({
+        ok: !!data.ok,
+        dir: data.dir ?? "",
+        message: data.message ?? (data.ok ? "目录可写" : "测试失败"),
+      });
+    } catch (e) {
+      setLocalTestResult({
+        ok: false,
+        dir: "",
+        message: `请求失败：${(e as Error).message}`,
+      });
+    } finally {
+      setLocalTesting(false);
     }
   }
 
@@ -508,6 +741,18 @@ export default function SettingsPage() {
     []
   );
 
+  const persistAud = useCallback(
+    debounce(async (s: AudioGenSettings, models: ModelEntry[]) => {
+      if (!s.apiKey && !s.baseURL) return;
+      await saveAudioSettings(s);
+      await saveAudioModels(s.provider, models);
+      await saveAudioProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
+      setAudioProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
+      showSavedHint();
+    }, 500),
+    []
+  );
+
   const persistCos = useCallback(
     debounce(async (s: CosSettings) => {
       if (!s.secretId || !s.secretKey || !s.bucket) return;
@@ -536,6 +781,12 @@ export default function SettingsPage() {
     persistVid(vidSettings, videoModels);
   }, [vidSettings, videoModels, persistVid]);
 
+  // 音频配置变化时自动保存
+  useEffect(() => {
+    if (skipAutoSave.current) return;
+    persistAud(audSettings, audioModels);
+  }, [audSettings, audioModels, persistAud]);
+
   // COS 配置变化时自动保存
   useEffect(() => {
     if (skipAutoSave.current) return;
@@ -544,14 +795,16 @@ export default function SettingsPage() {
 
   /** 初始化：用代码中的默认模型覆盖数据库 */
   async function handleInitModels() {
-    if (!window.confirm(
-      "确定要用代码中的默认模型配置覆盖数据库中的所有模型列表吗？\n\n" +
-      "将覆盖：\n" +
-      "• 所有 LLM 服务商的模型列表\n" +
-      "• 图片生成模型列表\n" +
-      "• 视频生成模型列表\n\n" +
-      "自定义添加的模型将被清除。"
-    )) {
+    if (!await confirm({
+      message:
+        "确定要用代码中的默认模型配置覆盖数据库中的所有模型列表吗？\n\n" +
+        "将覆盖：\n" +
+        "• 所有 LLM 服务商的模型列表\n" +
+        "• 图片生成模型列表\n" +
+        "• 视频生成模型列表\n\n" +
+        "自定义添加的模型将被清除。",
+      confirmText: "初始化",
+    })) {
       return;
     }
     setInitializing(true);
@@ -734,6 +987,7 @@ export default function SettingsPage() {
               </div>
             )}
             <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={handleInitLLMProvider}>初始化默认配置</Button>
               <Button variant="secondary" size="sm" onClick={handleTest} loading={testing}>测试连接</Button>
             </div>
           </div>
@@ -851,6 +1105,7 @@ export default function SettingsPage() {
               )}
 
               <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={handleInitImageProvider}>初始化默认配置</Button>
                 <Button variant="secondary" size="sm" onClick={handleImgTest} loading={imgTesting}>测试连接</Button>
               </div>
             </div>
@@ -953,6 +1208,111 @@ export default function SettingsPage() {
                 )}
               </div>
 
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={handleInitVideoProvider}>初始化默认配置</Button>
+              </div>
+            </div>
+          )}
+        </fieldset>
+
+        {/* ========= 音频 API 折叠区域 ========= */}
+        <fieldset className={`rounded-xl border transition-colors ${audioPanelOpen ? "border-brand-200" : "border-slate-200"}`}>
+          <legend className="px-2">
+            <button
+              onClick={() => setAudioPanelOpen(!audioPanelOpen)}
+              className="flex items-center gap-1.5 text-sm font-semibold transition-colors"
+              style={{ color: audioPanelOpen ? "#D97706" : "#57534E" }}
+            >
+              <svg
+                width="14" height="14" viewBox="0 0 24 24" fill="none"
+                className={`transition-transform ${audioPanelOpen ? "rotate-90" : ""}`}
+              >
+                <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              音频生成 API
+              {!audSettings.apiKey && audioPanelOpen && (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
+              )}
+              {audSettings.apiKey && !audioPanelOpen && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              )}
+            </button>
+          </legend>
+
+          {audioPanelOpen && (
+            <div className="space-y-3 p-4 pt-0">
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                用于人物设定「生成音色」。接入小米 MiMo 的 mimo-v2.5-tts 系列语音合成模型，生成的音色会转存到 COS 并可在资产库「音色」分类中查看。
+              </div>
+
+              {/* --- 供应商选择 --- */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {(Object.keys(AUDIO_PROVIDER_PRESETS) as AudioGenSettings["provider"][]).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => handleAudioProviderChange(p)}
+                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
+                        audSettings.provider === p
+                          ? "border-brand-500 bg-brand-50 text-brand-700"
+                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {AUDIO_PROVIDER_PRESETS[p].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Field label="Base URL">
+                <input type="text" value={audSettings.baseURL} onChange={(e) => updateAud("baseURL", e.target.value)} placeholder="https://api.xiaomimimo.com/v1" className="input" />
+              </Field>
+
+              <Field label="API Key">
+                <input type="password" value={audSettings.apiKey} onChange={(e) => updateAud("apiKey", e.target.value)} placeholder={AUDIO_PROVIDER_PRESETS[audSettings.provider]?.keyPrefix ? `${AUDIO_PROVIDER_PRESETS[audSettings.provider].keyPrefix}...` : "API Key..."} className="input" autoComplete="off" />
+              </Field>
+
+              {AUDIO_PROVIDER_PRESETS[audSettings.provider]?.hint && (
+                <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
+                  {AUDIO_PROVIDER_PRESETS[audSettings.provider].hint}
+                </div>
+              )}
+
+              {/* --- 音频模型列表管理 --- */}
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <label className="text-sm font-medium text-slate-700">模型列表</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowAudioManager(!showAudioManager)}
+                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                  >
+                    {showAudioManager ? "收起管理" : "管理模型"}
+                  </button>
+                </div>
+                <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在人物设定「生成音色」弹框的「模型」下拉中。</p>
+
+                {showAudioManager && (
+                  <ModelManagerPanel
+                    models={audioModels}
+                    modelType="audio"
+                    builtInValues={new Set((DEFAULT_AUDIO_MODELS[audSettings.provider] ?? []).map((m) => m.value))}
+                    newValue={newAudioValue}
+                    newLabel={newAudioLabel}
+                    onNewValueChange={setNewAudioValue}
+                    onNewLabelChange={setNewAudioLabel}
+                    onAdd={handleAddAudioModel}
+                    onDelete={handleDeleteAudioModel}
+                    onReset={handleResetAudioModels}
+                    onSetDefault={handleSetDefaultAudioModel}
+                  />
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={handleInitAudioProvider}>初始化默认配置</Button>
+              </div>
             </div>
           )}
         </fieldset>
@@ -1082,7 +1442,7 @@ function ModelManagerPanel({
   currentModel,
 }: {
   models: ModelEntry[];
-  modelType?: "llm" | "image" | "video";
+  modelType?: "llm" | "image" | "video" | "audio";
   builtInValues?: Set<string>;
   newValue: string;
   newLabel: string;
@@ -1097,6 +1457,7 @@ function ModelManagerPanel({
   currentModel?: string;
 }) {
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   const isImage = modelType === "image";
   const isVideo = modelType === "video";
@@ -1275,8 +1636,11 @@ function ModelManagerPanel({
       <div className="border-t border-slate-200 pt-2">
         <button
           type="button"
-          onClick={() => {
-            if (window.confirm("确定要恢复为默认模型列表吗？自定义的模型将被清除。")) {
+          onClick={async () => {
+            if (await confirm({
+              message: "确定要恢复为默认模型列表吗？自定义的模型将被清除。",
+              confirmText: "初始化",
+            })) {
               onReset();
             }
           }}
@@ -1319,6 +1683,7 @@ function ImageCapabilityEditor({
     { key: "watermark", label: "水印" },
     { key: "responseFormat", label: "返回格式" },
     { key: "quality", label: "画质" },
+    { key: "supportsPolling", label: "轮询查询" },
   ];
 
   return (

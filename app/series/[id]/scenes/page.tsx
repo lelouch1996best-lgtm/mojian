@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
+import Modal from "@/components/ui/Modal";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { getSeries, saveSeries } from "@/lib/storage";
 import { emptySceneProfile } from "@/lib/scene-settings";
 import { debounce, uuid } from "@/lib/utils";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG } from "@/lib/image-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration } from "@/lib/image-client";
 import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
 import { getAssetTemplate } from "@/lib/style-settings";
 import { getCosSettings, isCosConfigured, uploadRefBase64 } from "@/lib/cos-client";
@@ -18,6 +20,7 @@ export default function SceneSettingsPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const seriesId = params.id;
+  const confirm = useConfirm();
 
   const [series, setSeries] = useState<Series | null>(null);
   const [scenes, setScenes] = useState<SceneProfile[]>([]);
@@ -90,6 +93,132 @@ export default function SceneSettingsPage() {
     persist(scenes);
   }, [scenes, persist]);
 
+  // 组件级 AbortController：卸载（切路由/刷新）时取消所有进行中的图片生成轮询，
+  // 避免孤儿轮询与重新挂载后的恢复轮询产生重复。
+  // 同步初始化（而非在 useEffect 中创建），确保首次渲染即可向 generateImage 传递 signal。
+  const abortRef = useRef<AbortController | null>(null);
+  if (abortRef.current === null) abortRef.current = new AbortController();
+  useEffect(() => {
+    const ac = abortRef.current!;
+    return () => ac.abort();
+  }, []);
+
+  // 始终指向最新 scenes，供恢复轮询的异步回调读取最新状态做去重/已完成判断，
+  // 避免闭包捕获过期数据导致重复处理或漏处理。
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
+
+  // 页面卸载（切路由/刷新/关闭）时兜底保存，防止防抖 persist 未触发导致 imageTaskId 丢失
+  useEffect(() => {
+    const handler = () => {
+      const s = seriesRef.current;
+      const scs = scenesRef.current;
+      if (!s) return;
+      const valid = scs.filter((o) => o.name.trim());
+      const updatedSeries = { ...s, sceneSettings: valid };
+      fetch("/api/data/series", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+        },
+        body: JSON.stringify(updatedSeries),
+        keepalive: true,
+      });
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, []);
+
+  // 切页/刷新回来后，立即根据 imageTaskId 恢复生图中占位（不等待 imageConfigured/imageModels 加载完成）。
+  // 仅以 imageTaskId 为准（重新生成时旧 imageUrl 仍在，但不阻断占位恢复）。
+  const didRestoreLoading = useRef(false);
+  useEffect(() => {
+    if (didRestoreLoading.current) return;
+    didRestoreLoading.current = true;
+    const ids = scenes.filter((o) => o.imageTaskId).map((o) => o.id);
+    if (ids.length > 0) {
+      setGeneratingImageIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scenes]);
+
+  // 进入页面时，恢复未完成的生图轮询（刷新/切页后任务不丢失）。
+  const resumeRef = useRef(false);
+  useEffect(() => {
+    if (resumeRef.current) return;
+    if (!imageConfigured || imageModels.length === 0) return;
+    resumeRef.current = true;
+    const signal = abortRef.current?.signal;
+
+    for (const sc of scenes) {
+      if (!sc.imageTaskId) continue;
+      // 进入恢复时立即显示占位（重新生成场景下旧 imageUrl 仍在，但 imageTaskId 表明有进行中任务）
+      setGeneratingImageIds((prev) => new Set(prev).add(sc.id));
+
+      resumeImageGeneration(sc.imageTaskId, undefined, signal)
+        .then(async (result) => {
+          // 读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成并写入新 imageUrl）
+          const latest = scenesRef.current.find((o) => o.id === sc.id);
+          if (latest && latest.imageTaskId !== sc.imageTaskId) {
+            // taskId 已变化（被新的生成覆盖），不处理这次结果
+            return;
+          }
+          let imageUrl = result.imageUrl;
+          // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
+          try {
+            if (await isCosConfigured()) {
+              const cosSettings = await getCosSettings();
+              if (cosSettings) {
+                const res = await fetch("/api/cos/transfer", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sourceUrl: imageUrl,
+                    settings: cosSettings,
+                    prefix: "ai-script/scenes",
+                  }),
+                });
+                const data = await res.json();
+                if (res.ok && data.url) {
+                  imageUrl = data.url;
+                }
+              }
+            }
+          } catch (e) {
+            console.error("场景转存 COS 失败：", (e as Error).message);
+          }
+          const updated = scenesRef.current.map((o) => (o.id === sc.id ? { ...o, imageUrl, imageTaskId: undefined } : o));
+          setScenes(updated);
+          const s = seriesRef.current;
+          if (s) {
+            const updatedSeries = { ...s, sceneSettings: updated };
+            await saveSeries(updatedSeries);
+            seriesRef.current = updatedSeries;
+            setSavedHint(true);
+            setTimeout(() => setSavedHint(false), 1500);
+          }
+        })
+        .catch((err) => {
+          // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
+          // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误
+          const isAborted = signal?.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
+          if (!isAborted) {
+            setScenes((prev) => prev.map((o) => (o.id === sc.id ? { ...o, imageTaskId: undefined } : o)));
+            setError(`「${sc.name}」图片生成失败：${(err as Error).message}`);
+          }
+        })
+        .finally(() => {
+          setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(sc.id); return n; });
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageConfigured, imageModels]);
+
   const grouped = useMemo(() => {
     const map = new Map<string, SceneProfile[]>();
     for (const o of scenes) {
@@ -123,13 +252,17 @@ export default function SceneSettingsPage() {
     const newVersion: SceneProfile = {
       ...source, id: uuid(), sceneId: source.sceneId || source.id,
       version: maxVersion + 1, versionLabel: `v${maxVersion + 1}`,
+      imageUrl: undefined, referenceImages: [], imageTaskId: undefined,
     };
     setScenes((prev) => [...prev, newVersion]);
     setExpandedIds((prev) => new Set(prev).add(newVersion.id));
   }
 
-  function handleDelete(id: string) {
-    if (!confirm("确定删除该场景版本？")) return;
+  async function handleDelete(id: string) {
+    if (!await confirm({
+      message: "确定删除该场景版本？",
+      confirmText: "删除",
+    })) return;
     setScenes((prev) => prev.filter((o) => o.id !== id));
     setExpandedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
   }
@@ -192,7 +325,26 @@ export default function SceneSettingsPage() {
     setGeneratingImageIds((prev) => new Set(prev).add(sc.id));
     try {
       const { prompt, images, config } = params;
-      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, imageModels);
+      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, imageModels, async (jobId) => {
+        // 异步任务创建后立即持久化 jobId（切页/刷新后可恢复轮询）
+        // 用 keepalive fetch 同步落库，避免 SPA 路由切换取消普通 fetch 导致 jobId 丢失
+        const updated = scenesRef.current.map((o) => (o.id === sc.id ? { ...o, imageTaskId: jobId } : o));
+        setScenes(updated);
+        const s = seriesRef.current;
+        if (s) {
+          const updatedSeries = { ...s, sceneSettings: updated };
+          seriesRef.current = updatedSeries;
+          fetch("/api/data/series", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+            },
+            body: JSON.stringify(updatedSeries),
+            keepalive: true,
+          });
+        }
+      }, abortRef.current?.signal);
       let imageUrl = result.imageUrl;
 
       // 自动转存到 COS（Seedream URL 24h 过期）
@@ -219,7 +371,7 @@ export default function SceneSettingsPage() {
         }
       }
 
-      const updated = scenes.map((o) => (o.id === sc.id ? { ...o, imageUrl } : o));
+      const updated = scenesRef.current.map((o) => (o.id === sc.id ? { ...o, imageUrl, imageTaskId: undefined } : o));
       setScenes(updated);
       if (series) {
         const updatedSeries = { ...series, sceneSettings: updated };
@@ -229,7 +381,13 @@ export default function SceneSettingsPage() {
         setTimeout(() => setSavedHint(false), 1500);
       }
     } catch (e) {
-      setError(`「${sc.name}」图片生成失败：${(e as Error).message}`);
+      // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复；
+      // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误
+      const isAborted = abortRef.current?.signal.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      if (!isAborted) {
+        setScenes((prev) => prev.map((o) => (o.id === sc.id ? { ...o, imageTaskId: undefined } : o)));
+        setError(`「${sc.name}」图片生成失败：${(e as Error).message}`);
+      }
     } finally {
       setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(sc.id); return n; });
     }
@@ -297,14 +455,14 @@ export default function SceneSettingsPage() {
   }
 
   function handleBack() {
-    router.push(`/series/${seriesId}`);
+    router.back();
   }
 
   if (notFound) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 text-slate-500">
         <p>未找到该企划</p>
-        <Button onClick={() => router.push("/home")}>返回首页</Button>
+        <Button onClick={() => router.push("/")}>返回首页</Button>
       </main>
     );
   }
@@ -341,12 +499,6 @@ export default function SceneSettingsPage() {
       {!imageConfigured && (
         <div className="mb-4 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
           图片生成 API 尚未配置。请前往「设置」页面配置图片生成 API。
-        </div>
-      )}
-
-      {error && (
-        <div className="mb-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
-          {error}
         </div>
       )}
 
@@ -436,6 +588,27 @@ export default function SceneSettingsPage() {
           if (target) void handleGenerateImage(target, params);
         }}
       />
+
+      <Modal
+        open={!!error}
+        onClose={() => setError(null)}
+        title="出错了"
+        width="max-w-sm"
+        footer={
+          <Button variant="danger" onClick={() => setError(null)}>
+            我知道了
+          </Button>
+        }
+      >
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{error}</p>
+        </div>
+      </Modal>
     </main>
   );
 }

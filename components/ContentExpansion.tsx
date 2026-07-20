@@ -113,7 +113,7 @@ export default function ContentExpansion({
     setError(null);
     setGeneratingBoard(true);
     try {
-      const raw = await callLLM(storyboardMessages(content, worldText, characterText), {
+      const raw = await callLLM(storyboardMessages(content), {
         responseFormat: "json_object",
         temperature: 0.5,
       });

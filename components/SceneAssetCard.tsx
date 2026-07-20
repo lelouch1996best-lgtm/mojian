@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import ImageLightbox from "./ImageLightbox";
 import TaggedText from "./TaggedText";
 import EditableCell from "./EditableCell";
@@ -37,6 +38,7 @@ export default function SceneAssetCard({
   onExtract,
   seriesId,
 }: SceneAssetCardProps) {
+  const router = useRouter();
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
@@ -71,7 +73,7 @@ export default function SceneAssetCard({
   }
 
   function handleGotoSettings() {
-    if (seriesId) window.open(`/series/${seriesId}/scenes`, "_blank");
+    if (seriesId) router.push(`/series/${seriesId}/scenes`);
   }
 
   if (extracted && !selected) {

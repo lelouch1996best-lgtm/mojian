@@ -96,6 +96,15 @@ export async function saveProviderKey(provider: string, entry: ProviderCacheEntr
   await apiClient.saveSetting("llm_provider_keys", all);
 }
 
+/** 清除某个 LLM provider 的缓存配置（用于「初始化默认配置」时清空旧的缓存） */
+export async function clearProviderKey(provider: string): Promise<void> {
+  const all = await getProviderKeys();
+  if (provider in all) {
+    delete all[provider];
+    await apiClient.saveSetting("llm_provider_keys", all);
+  }
+}
+
 interface CallOptions {
   temperature?: number;
   responseFormat?: "json_object" | "text";

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useCallback, useState } from "react";
+import { createPortal } from "react-dom";
 
 interface ImageLightboxProps {
   /** 图片 URL */
@@ -24,6 +25,11 @@ export default function ImageLightbox({
   className = "",
 }: ImageLightboxProps) {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -82,10 +88,10 @@ export default function ImageLightbox({
         {children}
       </div>
 
-      {/* 全屏灯箱 */}
-      {open && (
+      {/* 全屏灯箱（通过 Portal 插入到 body，避免被父级层叠上下文裁剪） */}
+      {open && mounted && createPortal(
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm animate-fade-in"
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/85 backdrop-blur-sm animate-fade-in"
           onClick={close}
         >
           {/* 关闭按钮 */}
@@ -131,7 +137,8 @@ export default function ImageLightbox({
             className="max-h-[90vh] max-w-[90vw] rounded-lg object-contain shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
-        </div>
+        </div>,
+        document.body
       )}
     </>
   );

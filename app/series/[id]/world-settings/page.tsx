@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
+import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { getSeries, saveSeries } from "@/lib/storage";
 import type { Series, WorldSettings } from "@/lib/types";
 
@@ -10,6 +11,7 @@ export default function WorldSettingsPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const seriesId = params.id;
+  const confirm = useConfirm();
 
   const [series, setSeries] = useState<Series | null>(null);
   const [settings, setSettings] = useState<WorldSettings>({
@@ -54,18 +56,22 @@ export default function WorldSettingsPage() {
     setTimeout(() => setSavedHint(false), 1500);
   }
 
-  function handleBack() {
+  async function handleBack() {
     if (dirty) {
-      if (!confirm("有未保存的修改，确定离开？")) return;
+      if (!await confirm({
+        message: "有未保存的修改，确定离开？",
+        variant: "primary",
+        confirmText: "离开",
+      })) return;
     }
-    router.push(`/series/${seriesId}`);
+    router.back();
   }
 
   if (notFound) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 text-slate-500">
         <p>未找到该企划</p>
-        <Button onClick={() => router.push("/home")}>返回首页</Button>
+        <Button onClick={() => router.push("/")}>返回首页</Button>
       </main>
     );
   }

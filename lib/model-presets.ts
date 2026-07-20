@@ -5,7 +5,7 @@
  * 自定义列表保存在服务端，读取时优先使用自定义列表，未自定义则 fallback 默认列表。
  */
 
-import type { LLMSettings, ImageGenSettings, VideoGenSettings } from "./types";
+import type { LLMSettings, ImageGenSettings, VideoGenSettings, AudioGenSettings, AudioModelCapability } from "./types";
 import type {
   ShotVideoConfig,
   VideoGenerationMode,
@@ -25,6 +25,8 @@ export interface ModelEntry {
   capability?: Partial<ImageModelCapability>;
   /** 视频模型能力（仅视频模型使用，用户自定义时覆盖注册表/FALLBACK） */
   videoCapability?: Partial<VideoModelCapability>;
+  /** 音频模型能力（仅音频模型使用，用户自定义时覆盖注册表/FALLBACK） */
+  audioCapability?: Partial<AudioModelCapability>;
 }
 
 /** 从模型列表中获取默认模型 value（优先 isDefault，否则取第一个） */
@@ -182,7 +184,7 @@ export const DEFAULT_IMAGE_MODELS: Record<ImageGenSettings["provider"], ModelEnt
         resolutions: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
         outputFormat: false, webSearch: false,
         optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
-        watermark: false, responseFormat: true, quality: true, maxRefImages: 4,
+        watermark: false, responseFormat: true, quality: true, supportsPolling: true, maxRefImages: 10,
       },
     },
   ],
@@ -332,6 +334,35 @@ export const DEFAULT_VIDEO_MODELS: Record<VideoGenSettings["provider"], ModelEnt
   custom: [],
 };
 
+/** 音频生成（TTS）模型默认（按供应商），内嵌能力矩阵（参照 docs/audio.md） */
+export const DEFAULT_AUDIO_MODELS: Record<AudioGenSettings["provider"], ModelEntry[]> = {
+  mimo: [
+    {
+      value: "mimo-v2.5-tts", label: "MiMo TTS（预置音色）",
+      hint: "预置音色 + 唱歌，支持 voice ID",
+      isDefault: true,
+      audioCapability: {
+        supportsPresetVoice: true, supportsVoiceDesign: false, supportsVoiceClone: false, supportsSinging: true,
+      },
+    },
+    {
+      value: "mimo-v2.5-tts-voicedesign", label: "MiMo TTS VoiceDesign（文本设计音色）",
+      hint: "用文字描述生成专属音色",
+      audioCapability: {
+        supportsPresetVoice: false, supportsVoiceDesign: true, supportsVoiceClone: false, supportsSinging: false,
+      },
+    },
+    {
+      value: "mimo-v2.5-tts-voiceclone", label: "MiMo TTS VoiceClone（音频复刻音色）",
+      hint: "用音频样本复刻音色",
+      audioCapability: {
+        supportsPresetVoice: false, supportsVoiceDesign: false, supportsVoiceClone: true, supportsSinging: false,
+      },
+    },
+  ],
+  custom: [],
+};
+
 // ==================== 模型能力描述 ====================
 
 /** 图片模型能力描述 */
@@ -354,6 +385,8 @@ export interface ImageModelCapability {
   responseFormat: boolean;
   /** 支持画质选择（quality，仅 gpt-image-2） */
   quality?: boolean;
+  /** 是否支持异步轮询（供应商异步队列模式，如 65535 的 X-Async-Mode） */
+  supportsPolling?: boolean;
   /** 最大参考图数量 */
   maxRefImages: number;
 }
@@ -433,7 +466,8 @@ export const IMAGE_MODEL_CAPABILITIES: Record<string, ImageModelCapability> = {
     watermark: false,
     responseFormat: true,
     quality: true,
-    maxRefImages: 4,
+    supportsPolling: true,
+    maxRefImages: 10,
   },
 };
 
@@ -619,13 +653,49 @@ export function getVideoModelCapability(
   return { ...base, ...entry.videoCapability };
 }
 
+/** 各音频模型能力注册表（键与 DEFAULT_AUDIO_MODELS 的 value 对齐，参照 docs/audio.md） */
+export const AUDIO_MODEL_CAPABILITIES: Record<string, AudioModelCapability> = {
+  "mimo-v2.5-tts": {
+    supportsPresetVoice: true, supportsVoiceDesign: false, supportsVoiceClone: false, supportsSinging: true,
+  },
+  "mimo-v2.5-tts-voicedesign": {
+    supportsPresetVoice: false, supportsVoiceDesign: true, supportsVoiceClone: false, supportsSinging: false,
+  },
+  "mimo-v2.5-tts-voiceclone": {
+    supportsPresetVoice: false, supportsVoiceDesign: false, supportsVoiceClone: true, supportsSinging: false,
+  },
+};
+
+/** 未知/用户自定义模型的保守回退（启用预置音色） */
+const FALLBACK_AUDIO_CAPABILITY: AudioModelCapability = {
+  supportsPresetVoice: true, supportsVoiceDesign: false, supportsVoiceClone: false, supportsSinging: false,
+};
+
+/**
+ * 查询音频模型能力。
+ * - 内置模型（在 AUDIO_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源
+ * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
+ */
+export function getAudioModelCapability(
+  modelValue: string,
+  models?: ModelEntry[]
+): AudioModelCapability {
+  const registry = AUDIO_MODEL_CAPABILITIES[modelValue];
+  if (registry) return registry;
+  const base = FALLBACK_AUDIO_CAPABILITY;
+  if (!models) return base;
+  const entry = models.find((m) => m.value === modelValue);
+  if (!entry?.audioCapability) return base;
+  return { ...base, ...entry.audioCapability };
+}
+
 /** 单个镜头视频生成的硬编码默认配置（卡片缺省 videoConfig 时回退） */
 export const DEFAULT_SHOT_VIDEO_CONFIG: ShotVideoConfig = {
   model: "doubao-seedance-2-0-260128",
   mode: "multimodal-ref",
   resolution: "720p",
   ratio: "16:9",
-  duration: 5,
+  duration: -1,
   watermark: false,
   generateAudio: true,
   seed: -1,
@@ -740,14 +810,51 @@ export async function getVideoModelValues(provider: VideoGenSettings["provider"]
   return models.map((m) => m.value);
 }
 
+// ---- 音频 ----
+
+/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { mimo: [...] } */
+function normalizeAudioModelsMap(raw: unknown): Record<string, ModelEntry[]> {
+  if (Array.isArray(raw)) return { mimo: raw };
+  return (raw as Record<string, ModelEntry[]>) ?? {};
+}
+
+export async function getAudioModels(provider: AudioGenSettings["provider"]): Promise<ModelEntry[]> {
+  try {
+    const all = normalizeAudioModelsMap(await apiClient.getSetting("models_audio"));
+    const custom = all?.[provider];
+    if (custom && custom.length > 0) return custom;
+  } catch { /* fall through */ }
+  return DEFAULT_AUDIO_MODELS[provider] ?? [];
+}
+
+export async function saveAudioModels(provider: AudioGenSettings["provider"], models: ModelEntry[]): Promise<void> {
+  let all: Record<string, ModelEntry[]> = {};
+  try { all = normalizeAudioModelsMap(await apiClient.getSetting("models_audio")); } catch { /* empty */ }
+  all[provider] = models;
+  await apiClient.saveSetting("models_audio", all);
+}
+
+export async function resetAudioModels(provider: AudioGenSettings["provider"]): Promise<ModelEntry[]> {
+  const defaults = DEFAULT_AUDIO_MODELS[provider] ?? [];
+  await saveAudioModels(provider, defaults);
+  return defaults;
+}
+
+/** 纯 model value 数组 */
+export async function getAudioModelValues(provider: AudioGenSettings["provider"]): Promise<string[]> {
+  const models = await getAudioModels(provider);
+  return models.map((m) => m.value);
+}
+
 // ---- 全局初始化 ----
 
 /**
  * 初始化：用代码中的默认模型配置覆盖数据库中的所有模型列表。
- * 覆盖范围：所有 LLM provider 的模型列表 + 图片模型 + 视频模型。
+ * 覆盖范围：所有 LLM provider 的模型列表 + 图片模型 + 视频模型 + 音频模型。
  */
 export async function initAllModels(): Promise<void> {
   await apiClient.saveSetting("models_llm", DEFAULT_LLM_MODELS);
   await apiClient.saveSetting("models_image", DEFAULT_IMAGE_MODELS);
   await apiClient.saveSetting("models_video", DEFAULT_VIDEO_MODELS);
+  await apiClient.saveSetting("models_audio", DEFAULT_AUDIO_MODELS);
 }

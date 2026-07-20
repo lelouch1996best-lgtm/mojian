@@ -100,6 +100,15 @@ export async function saveVideoProviderKey(provider: string, entry: ProviderCach
   await apiClient.saveSetting("video_provider_keys", all);
 }
 
+/** 清除某个视频 provider 的缓存配置（用于「初始化默认配置」时清空旧的缓存） */
+export async function clearVideoProviderKey(provider: string): Promise<void> {
+  const all = await getVideoProviderKeys();
+  if (provider in all) {
+    delete all[provider];
+    await apiClient.saveSetting("video_provider_keys", all);
+  }
+}
+
 /**
  * 根据生成模式构造 Seedance API 的 content 数组
  */
@@ -240,7 +249,7 @@ export async function createVideoTask(params: {
 }
 
 /** 查询视频生成任务状态 */
-export async function queryVideoTask(taskId: string): Promise<VideoQueryProxyResponse> {
+export async function queryVideoTask(taskId: string, signal?: AbortSignal): Promise<VideoQueryProxyResponse> {
   const s = await getVideoSettings();
   if (!s || !s.apiKey) {
     throw new Error("未配置视频生成 API");
@@ -254,6 +263,7 @@ export async function queryVideoTask(taskId: string): Promise<VideoQueryProxyRes
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -274,21 +284,35 @@ export async function queryVideoTask(taskId: string): Promise<VideoQueryProxyRes
  * @param onUpdate 状态更新回调
  * @param intervalMs 轮询间隔，默认 10 秒
  * @param timeoutMs 总超时，默认 10 分钟
+ * @param signal 可选 AbortSignal，取消后立即返回（不抛错）
  */
 export async function pollVideoTask(
   taskId: string,
   onUpdate: (status: VideoQueryProxyResponse) => void,
   intervalMs = 10000,
-  timeoutMs = 10 * 60 * 1000
+  timeoutMs = 10 * 60 * 1000,
+  signal?: AbortSignal
 ): Promise<VideoQueryProxyResponse> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const result = await queryVideoTask(taskId);
+    if (signal?.aborted) return { status: "expired", error: "已取消" };
+    const result = await queryVideoTask(taskId, signal);
     onUpdate(result);
     if (result.status === "succeeded" || result.status === "failed" || result.status === "expired") {
       return result;
     }
-    await new Promise((r) => setTimeout(r, intervalMs));
+    if (signal?.aborted) return { status: "expired", error: "已取消" };
+    await new Promise((r) => {
+      const t = setTimeout(r, intervalMs);
+      if (signal) {
+        const onAbort = () => {
+          clearTimeout(t);
+          r(undefined);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
   }
   return { status: "expired", error: "轮询超时" };
 }

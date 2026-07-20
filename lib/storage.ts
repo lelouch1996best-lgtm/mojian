@@ -1,5 +1,6 @@
 import type { CharacterProfile, Episode, ObjectProfile, SceneProfile, Series } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
+import { normalizeStyleSettings } from "@/lib/style-settings";
 
 /** 兼容旧 Series 数据：补全缺失字段（worldSettings / characterSettings / objectSettings / styleSettings 等） */
 export function normalizeSeries(s: Series): Series {
@@ -9,7 +10,7 @@ export function normalizeSeries(s: Series): Series {
     characterSettings: (s.characterSettings ?? []).map(normalizeCharacterProfile),
     objectSettings: (s.objectSettings ?? []).map(normalizeObjectProfile),
     sceneSettings: (s.sceneSettings ?? []).map(normalizeSceneProfile),
-    styleSettings: s.styleSettings ?? { selectedStyleId: "realistic", overrides: {} },
+    styleSettings: normalizeStyleSettings(s.styleSettings),
     episodeOrder: s.episodeOrder ?? [],
     order: s.order ?? 0,
   };

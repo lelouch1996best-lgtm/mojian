@@ -62,7 +62,7 @@ export function emptySeries(order = 1, title = "未命名企划"): Series {
     characterSettings: [],
     objectSettings: [],
     sceneSettings: [],
-    styleSettings: { selectedStyleId: "realistic", overrides: {} },
+    styleSettings: { selectedStyleId: "realistic", overrides: {}, customPresets: [] },
     episodeOrder: [],
   };
 }
@@ -338,6 +338,8 @@ export const ASSET_TYPE_LABELS: Record<string, string> = {
   character: "人物",
   scene: "场景",
   object: "物品",
+  screenshot: "截屏",
+  storyboard: "故事板",
 };
 
 /** 从 LLM 返回文本中提取资产数组 */
@@ -386,11 +388,12 @@ export function extractAssets(text: string): RawAsset[] {
 
 /** 规范化资产 type 字段 */
 export function normalizeAssetType(t?: string): AssetType {
-  if (t === "character" || t === "scene" || t === "object") return t;
+  if (t === "character" || t === "scene" || t === "object" || t === "screenshot") return t;
   // 兼容中文
   if (t === "人物") return "character";
   if (t === "场景") return "scene";
   if (t === "物品" || t === "道具") return "object";
+  if (t === "截屏") return "screenshot";
   return "character";
 }
 

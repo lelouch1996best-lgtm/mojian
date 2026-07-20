@@ -50,36 +50,8 @@ export interface CosUploadResponse {
  * @param file 用户选择的文件
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
  */
-export async function uploadRefFile(
-  file: File,
-  nameHint: string
-): Promise<string> {
-  const settings = await getCosSettings();
-  if (!settings) {
-    throw new Error("未配置 COS 存储，请先在设置中配置腾讯云 COS");
-  }
-  // 读取为 base64
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error("文件读取失败"));
-    reader.readAsDataURL(file);
-  });
-  const ext = file.name.split(".").pop() ?? "bin";
-  const res = await fetch("/api/cos/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      base64,
-      fileName: `${nameHint}.${ext}`,
-      settings,
-    }),
-  });
-  const data = (await res.json()) as CosUploadResponse | { error?: string };
-  if (!res.ok || !("url" in data)) {
-    throw new Error((data as { error?: string }).error ?? "上传失败");
-  }
-  return (data as CosUploadResponse).url;
+export async function uploadRefFile(file: File, nameHint: string): Promise<string> {
+  return (await import("./storage-provider")).uploadRefFile(file, nameHint);
 }
 
 /**
@@ -89,23 +61,5 @@ export async function uploadRefFile(
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
  */
 export async function uploadRefBase64(base64: string, nameHint: string): Promise<string> {
-  const settings = await getCosSettings();
-  if (!settings) {
-    throw new Error("未配置 COS 存储，请先在设置中配置腾讯云 COS");
-  }
-  const ext = base64.match(/data:image\/([\w.+-]+)/)?.[1] ?? "png";
-  const res = await fetch("/api/cos/upload", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      base64,
-      fileName: `${nameHint}.${ext}`,
-      settings,
-    }),
-  });
-  const data = (await res.json()) as CosUploadResponse | { error?: string };
-  if (!res.ok || !("url" in data)) {
-    throw new Error((data as { error?: string }).error ?? "上传失败");
-  }
-  return (data as CosUploadResponse).url;
+  return (await import("./storage-provider")).uploadRefBase64(base64, nameHint);
 }

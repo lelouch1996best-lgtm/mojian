@@ -35,23 +35,23 @@ export function expansionMessages(
 }
 
 // (b) Step2 分镜生成（要求返回 JSON）
-export function storyboardMessages(content: string, worldText = "", characterText = ""): LLMMessage[] {
-  const ctx = worldContext(worldText);
-  const charCtx = characterContext(characterText);
+export function storyboardMessages(content: string): LLMMessage[] {
   return [
     {
       role: "system",
-      content: `你是一位专业的视频分镜师。请将剧本内容拆分为多个镜头，生成分镜数据。${ctx}${charCtx}
+      content: `你是一位专业的视频分镜师。请将剧本内容拆分为多个镜头，生成分镜数据。
 要求：
 1. 根据内容合理划分镜头，每个镜头应是一个完整的视觉单元
-2. 为每个镜头填写全部字段
-3. 景别从以下选择：特写、近景、中景、全景、远景
-4. 运镜从以下选择：推、拉、摇、移、跟、固定
-5. 必须返回一个合法的 JSON 对象，格式为 {"shots":[...]}，不要包含任何其他文字、不要使用 markdown 代码块
+2. 每个镜头时长控制在 10-15 秒，填入 duration 字段，如 "10-15秒"
+3. 为保证单镜头时长充足，一个镜头内可包含多个连续的子画面或小动作累加：将同一场景或同一主体在时间上连续的若干动作串联到一个镜头中，在画面描述中按发生顺序逐条描述，使内容足以支撑 10-15 秒；不要把过短的单一动作单独拆成一个镜头
+4. 为每个镜头填写全部字段
+5. 景别从以下选择：特写、近景、中景、全景、远景
+6. 运镜从以下选择：推、拉、摇、移、跟、固定
+7. 必须返回一个合法的 JSON 对象，格式为 {"shots":[...]}，不要包含任何其他文字、不要使用 markdown 代码块
 
 每个 shot 对象的字段：
-- duration：时长，如 "3-5秒"
-- visualDescription：画面描述
+- duration：时长，取值范围 10-15 秒，如 "10-15秒"
+- visualDescription：画面描述（可串联多个连续子画面，按顺序描述）
 - shotType：景别
 - lightingMood：光影氛围
 - dialogueVoiceover：对白旁白
@@ -59,7 +59,7 @@ export function storyboardMessages(content: string, worldText = "", characterTex
 - cameraMovement：运镜
 
 返回格式示例：
-{"shots":[{"duration":"3-5秒","visualDescription":"...","shotType":"特写","lightingMood":"...","dialogueVoiceover":"...","soundEffects":"...","cameraMovement":"推"}]}`,
+{"shots":[{"duration":"10-15秒","visualDescription":"...","shotType":"特写","lightingMood":"...","dialogueVoiceover":"...","soundEffects":"...","cameraMovement":"推"}]}`,
     },
     { role: "user", content: `请为以下剧本生成分镜：\n\n${content}` },
   ];
@@ -160,7 +160,7 @@ export function assetMessages(
 ): LLMMessage[] {
   const tagList = tags.map((t, i) => `${i + 1}. ${t}`).join("\n");
   const styleCtx = styleText
-    ? `\n\n【漫剧风格 -- 生成描述时请遵循以下风格要求】\n${styleText}\n\n重要：生成 description 时，请确保描述内容与上述风格匹配。风格模板会在图片生成时自动拼接到描述末尾，因此你的 description 只需关注实体本身的具体外观描述即可。`
+    ? `\n\n【风格设定 -- 生成描述时请遵循以下风格要求】\n${styleText}\n\n重要：生成 description 时，请确保描述内容与上述风格匹配。风格模板会在图片生成时自动拼接到描述末尾，因此你的 description 只需关注实体本身的具体外观描述即可。`
     : "";
   const charCtx = characterContext(characterText);
 
@@ -211,7 +211,7 @@ export function regenerateAssetMessages(
       ? "形状、材质、颜色、尺寸、细节等"
       : "环境布局、建筑/自然元素、光影氛围等";
   const styleCtx = styleText
-    ? `\n\n【漫剧风格 -- 生成描述时请遵循以下风格要求】\n${styleText}`
+    ? `\n\n【风格设定 -- 生成描述时请遵循以下风格要求】\n${styleText}`
     : "";
 
   return [
@@ -268,7 +268,7 @@ export function videoPromptMessages(
     a.type === "character" ? "人物" : a.type === "scene" ? "场景" : "物品";
 
   const formatRelated = (a: Pick<Asset, "name" | "type" | "description">) =>
-    `- ${a.name}（${typeLabel(a)}）：${a.description || "（无描述）"}`;
+    `- ${a.name}（${typeLabel(a)}）`;
 
   const relatedList = relatedAssets.length
     ? relatedAssets.map(formatRelated).join("\n")
@@ -282,9 +282,12 @@ export function videoPromptMessages(
 核心要求：
 1. 仅围绕当前镜头的画面信息进行描述，不要引入其他镜头或无关资产
 2. **对于关联资产，在提示词中使用"@资产名称"格式指代**，例如"@李华 缓步走向 @古镇老街"
-3. 生成的提示词应是一段详细、连贯的中文，包含：主体、动作细节、场景环境、光影色调、镜头运镜、视觉风格
-4. 如果镜头信息某些字段为空，根据已有信息合理推断补充，不要留空
-5. 只返回提示词本身，不要任何额外说明或前缀`,
+3. **严禁描述人物、物品、场景的外貌形象**（包括五官、发型、衣着、体型、材质、颜色、建筑外观等）--这些已由参考图提供，提示词中一律不要描写外貌，只需用"@资产名称"指代并描述其动作、位置关系与状态
+4. 生成的提示词应是一段详细、连贯的中文，聚焦于：角色动作与表情、镜头运动、画面构图、光影氛围变化
+5. **必须包含对白旁白**：如果"对白旁白"字段有内容，须将其完整融入提示词，用中文引号「」包裹对白原文，并注明说话者（如 @李华 说道：「……」）；旁白同理用「」包裹
+6. **必须包含音效描述**：Seedance 模型支持音视频联合生成，须根据"音效"字段在提示词中描写本镜头的声音元素，包括环境音、动作音、氛围音等（如"雨滴敲打窗棂的细碎声、远处隐约的雷鸣、脚步踩在湿石板上的沉闷回响"）；字段为空时须根据画面情境合理推断补充，不可留空
+7. 如果镜头信息某些字段为空，根据已有信息合理推断补充，不要留空；但"对白旁白"为空时不要凭空编造对白
+8. 只返回提示词本身，不要任何额外说明或前缀`,
     },
     {
       role: "user",
@@ -299,7 +302,150 @@ ${relatedList}`,
   ];
 }
 
-// (h) 文本润色优化：对用户输入的描述性文字进行润色，使其更流畅生动
+// (h) Step4 故事板图片生成的画面描述提示词：由 LLM 根据镜头信息生成
+export function storyboardImagePromptMessages(
+  shot: Pick<
+    Shot,
+    | "duration"
+    | "visualDescription"
+    | "shotType"
+    | "lightingMood"
+    | "cameraMovement"
+    | "dialogueVoiceover"
+    | "soundEffects"
+  >,
+  relatedAssets: Pick<Asset, "name" | "type" | "description">[]
+): LLMMessage[] {
+  const typeLabel = (a: Pick<Asset, "type">) =>
+    a.type === "character" ? "人物" : a.type === "scene" ? "场景" : "物品";
+
+  const formatRelated = (a: Pick<Asset, "name" | "type" | "description">) =>
+    `- ${a.name}（${typeLabel(a)}）：${a.description || "（无描述）"}`;
+
+  const relatedList = relatedAssets.length
+    ? relatedAssets.map(formatRelated).join("\n")
+    : "（本镜头无关联资产）";
+
+  const fields = [
+    shot.duration && `- 时长：${shot.duration}`,
+    shot.visualDescription && `- 画面描述：${shot.visualDescription}`,
+    shot.shotType && `- 景别：${shot.shotType}`,
+    shot.lightingMood && `- 光影氛围：${shot.lightingMood}`,
+    shot.dialogueVoiceover && `- 对白旁白：${shot.dialogueVoiceover}`,
+    shot.soundEffects && `- 音效：${shot.soundEffects}`,
+    shot.cameraMovement && `- 运镜：${shot.cameraMovement}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return [
+    {
+      role: "system",
+      content: `你是一位影视分镜师。请根据提供的镜头信息和关联资产，生成一段用于 AI 图片生成的中文画面描述。
+这段描述将被用来生成一张专业影视分镜故事板图片。
+
+核心要求：
+1. 描述要聚焦画面内容：主体动作、场景环境、镜头角度、光影氛围、关键道具与位置关系
+2. 关联资产用"@资产名称"指代，例如"@林坤 躺在 @木屋 的木床上"
+3. **严禁描述人物外貌、物品外观**（包括五官、发型、衣着、体型、材质、颜色、建筑外观等）——这些已由参考图提供，提示词中一律不要描写外貌，只需用"@资产名称"指代并描述其动作、位置关系与状态
+4. 不要输出分镜格式要求（如网格、箭头、标注等），只输出纯粹的画面内容描述
+5. 描述应详细但不过度渲染，适合作为图片生成模型的主体提示词
+6. 只返回画面描述本身，不要任何额外说明或前缀`,
+    },
+    {
+      role: "user",
+      content: `请根据以下镜头信息和关联资产生成故事板画面描述：
+
+【镜头信息】
+${fields}
+
+【本镜头关联资产】
+${relatedList}
+
+请直接输出画面描述。`,
+    },
+  ];
+}
+
+// (h-2) Step4 将镜头信息包装为完整的故事板图片生成提示词
+// template：来自风格设定的故事板模板（可含 {镜头信息} 占位符）
+// baseDescription：镜头信息主体（直接取自镜头字段，非 LLM 生成）
+const STORYBOARD_PLACEHOLDER = "{镜头信息}";
+
+export function wrapStoryboardTemplate(
+  baseDescription: string,
+  template: string,
+): string {
+  if (!template.trim()) return baseDescription;
+  if (template.includes(STORYBOARD_PLACEHOLDER)) {
+    return template.replace(STORYBOARD_PLACEHOLDER, baseDescription);
+  }
+  return `${template}\n${baseDescription}`;
+}
+
+/** 将当前镜头相关字段按清晰逻辑拼接为【当前镜头信息】信息块 */
+export function buildShotInfoBlock(
+  shot: Pick<
+    Shot,
+    | "duration"
+    | "visualDescription"
+    | "shotType"
+    | "lightingMood"
+    | "cameraMovement"
+    | "dialogueVoiceover"
+    | "soundEffects"
+  >,
+): string {
+  const fields = [
+    shot.visualDescription && `- 画面描述：${shot.visualDescription}`,
+    shot.shotType && `- 景别：${shot.shotType}`,
+    shot.lightingMood && `- 光影氛围：${shot.lightingMood}`,
+    shot.cameraMovement && `- 运镜：${shot.cameraMovement}`,
+    shot.duration && `- 时长：${shot.duration}`,
+    shot.dialogueVoiceover && `- 对白旁白：${shot.dialogueVoiceover}`,
+    shot.soundEffects && `- 音效：${shot.soundEffects}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  if (!fields) return "";
+  return `【当前镜头信息】\n${fields}`;
+}
+
+/** 非模板路径：将 LLM 生成的画面描述与当前镜头信息块清晰拼接 */
+export function composeStoryboardPrompt(
+  baseDescription: string,
+  shotInfoBlock?: string,
+): string {
+  if (!shotInfoBlock) return baseDescription;
+  return `${baseDescription}\n\n${shotInfoBlock}`;
+}
+
+// (h-3) Step4 镜头故事板提示词构建（兼容旧逻辑，直接拼接画面内容）
+export function buildStoryboardPrompt(
+  shot: Pick<
+    Shot,
+    "duration" | "visualDescription" | "shotType" | "lightingMood" | "cameraMovement"
+  >
+): string {
+  const parts: string[] = [];
+  parts.push(
+    "专业影视分镜故事板，根据当前镜头生成一张多格分格铅笔线稿素描，黑白手绘速写，分镜师手稿，干净线稿无上色。"
+  );
+  if (shot.duration) parts.push(`镜头时长：${shot.duration}。`);
+  if (shot.shotType) parts.push(`景别：${shot.shotType}。`);
+  parts.push(
+    "光圈：按景别合理推断并标注（特写/近景用大光圈 f/1.4-2.8，中景 f/2.8-4，全景/远景用小光圈 f/5.6-11）。"
+  );
+  if (shot.cameraMovement) parts.push(`运镜：${shot.cameraMovement}。`);
+  if (shot.visualDescription) parts.push(`画面内容：${shot.visualDescription}。`);
+  if (shot.lightingMood) parts.push(`光影氛围参考：${shot.lightingMood}。`);
+  parts.push(
+    "要求：每个分格内标注镜头时长、景别、光圈、运镜；每格下方附文字描述；画面添加红/蓝/橙彩色箭头指示动作、视线与运镜方向，并以手写小字标注构图思路；线条采用细腻排线表现阴影与层次，整体为黑白铅笔速写风格，不上色。"
+  );
+  return parts.join("");
+}
+
+// (i) 文本润色优化：对用户输入的描述性文字进行润色，使其更流畅生动
 export function optimizeTextMessages(
   content: string,
   context?: string

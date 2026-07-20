@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import ImageLightbox from "./ImageLightbox";
 import TaggedText from "./TaggedText";
 import EditableCell from "./EditableCell";
@@ -41,6 +42,7 @@ export default function CharacterAssetCard({
   onExtract,
   seriesId,
 }: CharacterAssetCardProps) {
+  const router = useRouter();
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
@@ -75,7 +77,7 @@ export default function CharacterAssetCard({
   }
 
   function handleGotoSettings() {
-    if (seriesId) window.open(`/series/${seriesId}/characters`, "_blank");
+    if (seriesId) router.push(`/series/${seriesId}/characters`);
   }
 
   if (extracted && !selected) {
@@ -127,6 +129,18 @@ export default function CharacterAssetCard({
         {extracted && selected && (
           <span className="absolute left-2 top-2 rounded bg-black/30 px-1.5 py-0.5 text-xs text-white backdrop-blur">
             {selected.versionLabel || `v${selected.version ?? 1}`}
+          </span>
+        )}
+        {versions.some((v) => !!v.voiceUrl) && (
+          <span
+            className="absolute left-2 top-9 flex items-center gap-1 rounded-full bg-brand-500/90 px-2 py-0.5 text-[10px] font-medium text-white shadow backdrop-blur"
+            title="已关联音色，视频生成时将作为参考音频传入"
+          >
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4M8 23h8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            已关联音色
           </span>
         )}
         {onDelete && (

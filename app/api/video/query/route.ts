@@ -55,11 +55,13 @@ export async function POST(req: Request) {
   const data = await upstream.json();
   const status = (data?.status ?? "failed") as VideoStatus;
   const videoUrl: string | undefined = data?.content?.video_url;
+  const lastFrameUrl: string | undefined = data?.content?.last_frame_url;
   const errorMsg: string | undefined = data?.error?.message;
 
   const result: VideoQueryProxyResponse = {
     status,
     videoUrl,
+    lastFrameUrl,
     error: errorMsg,
   };
   return Response.json(result);

@@ -60,6 +60,16 @@ export interface CharacterProfile {
   imageUrl?: string;
   /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
   referenceImages?: string[];
+  /** 音色音频 URL（COS 持久 URL） */
+  voiceUrl?: string;
+  /** 音色设计描述（voicedesign 用，便于复用/再生成） */
+  voicePrompt?: string;
+  /** 生成音色所用的模型 */
+  voiceModel?: string;
+  /** 预置音色 ID 或复刻来源标记 */
+  voiceId?: string;
+  /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
+  imageTaskId?: string;
 }
 
 /** 单个物品设定档案 -- 系列级，跨集共享。同一物品可有多个版本（如不同形态/等级）。 */
@@ -85,6 +95,8 @@ export interface ObjectProfile {
   imageUrl?: string;
   /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
   referenceImages?: string[];
+  /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
+  imageTaskId?: string;
 }
 
 /** 单个场景设定档案 —— 系列级，跨集共享。同一场景可有多个版本（如白天/夜晚/战火后）。 */
@@ -110,9 +122,11 @@ export interface SceneProfile {
   imageUrl?: string;
   /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
   referenceImages?: string[];
+  /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
+  imageTaskId?: string;
 }
 
-/** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、漫剧风格 */
+/** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、风格设定 */
 export interface Series {
   id: string;
   title: string;
@@ -128,13 +142,13 @@ export interface Series {
   objectSettings: ObjectProfile[];
   /** 场景设定 —— 每系列独立，跨集共享 */
   sceneSettings: SceneProfile[];
-  /** 漫剧风格配置 —— 每系列独立 */
+  /** 风格设定配置 —— 每系列独立 */
   styleSettings: StyleSettings;
   /** 该系列下的剧集 ID 列表，决定顺序 */
   episodeOrder: string[];
 }
 
-/** 漫剧风格预设 -- 每种风格包含各类型资产的图片提示词模板 */
+/** 风格设定预设 -- 每种风格包含各类型资产的图片提示词模板 */
 export interface StylePreset {
   id: string;
   name: string;
@@ -145,19 +159,23 @@ export interface StylePreset {
   sceneTemplate: string;
   /** 物品图片提示词模板 */
   objectTemplate: string;
+  /** 故事板图片提示词模板（可含 {镜头信息} 占位符，生成时替换为当前镜头信息块） */
+  storyboardTemplate: string;
 }
 
 /** 风格配置（全局，存服务端数据库） */
 export interface StyleSettings {
   selectedStyleId: string;
-  /** 用户自定义覆盖（key = styleId） */
+  /** 用户自定义覆盖（key = styleId，仅针对内置预设） */
   overrides: Record<string, Partial<Omit<StylePreset, "id">>>;
+  /** 用户自添加的自定义风格预设（完整数据，独立于内置预设） */
+  customPresets?: StylePreset[];
 }
 
 /** 分镜表单行 —— 进号不存储，由数组下标 +1 派生 */
 export interface Shot {
   id: string; // uuid，重排/删除时保持引用稳定
-  duration: string; // 时长（可编辑）— "3-5秒"
+  duration: string; // 时长（可编辑）- "10-15秒"
   visualDescription: string; // 画面描述（可编辑）
   shotType: string; // 景别（可编辑）— 特写/近景/中景/全景/远景
   lightingMood: string; // 光影氛围（可编辑）
@@ -172,10 +190,14 @@ export interface Shot {
   relatedAssetIds: string[];
   /** 卡片级视频配置；缺省时回退 DEFAULT_SHOT_VIDEO_CONFIG */
   videoConfig?: ShotVideoConfig;
+  /** 镜头故事板图片 URL（专业影视分镜，COS 持久 URL） */
+  storyboardUrl?: string;
+  /** 故事板图片生成任务 ID（支持轮询的供应商用，刷新/切页后可恢复轮询） */
+  imageTaskId?: string;
 }
 
 /** 资产类型 */
-export type AssetType = "character" | "scene" | "object";
+export type AssetType = "character" | "scene" | "object" | "screenshot" | "storyboard";
 
 /** 资产生成状态 */
 export type AssetStatus = "pending" | "ready" | "failed";
@@ -189,8 +211,12 @@ export interface Asset {
   imagePrompt: string; // 图片生成提示词，与 description 保持一致
   imageUrl: string; // 生成的图片 URL（暂空，待接入图片 API）
   status: AssetStatus;
+  /** 异步图片生成任务 ID（支持轮询的供应商用，刷新页面后可恢复轮询） */
+  imageTaskId?: string;
   /** 卡片级图片生成配置；缺省时回退 DEFAULT_ASSET_IMAGE_CONFIG */
   imageConfig?: AssetImageConfig;
+  /** 故事板资产关联的镜头 ID（仅在 type === "storyboard" 时使用） */
+  shotId?: string;
 }
 
 export interface Episode {
@@ -288,6 +314,8 @@ export interface ImageProxyRequest {
   optimizePromptMode?: "standard" | "fast";
   /** 画质（quality，仅 gpt-image-2） */
   quality?: string;
+  /** 异步模式（供应商支持轮询时，前端设为 true，路由返回 jobId 而非 imageUrl） */
+  asyncMode?: boolean;
 }
 
 /** /api/image 非流式响应 */
@@ -295,6 +323,33 @@ export interface ImageProxyResponse {
   imageUrl: string; // 图片 URL 或 data:image/...;base64,... 形式
   size?: string;
   model?: string;
+}
+
+/** /api/image 异步模式响应（供应商支持轮询时返回） */
+export interface ImageAsyncCreateResponse {
+  /** 异步任务 ID，用于后续轮询 */
+  jobId: string;
+  /** 初始状态 */
+  status: string;
+}
+
+/** 前端发给 /api/image/query 的请求体 */
+export interface ImageQueryProxyRequest {
+  apiKey: string;
+  baseURL: string;
+  jobId: string;
+}
+
+/** 图片任务状态 */
+export type ImageTaskStatus = "pending" | "running" | "done" | "failed" | "expired";
+
+/** /api/image/query 响应体 */
+export interface ImageQueryProxyResponse {
+  status: ImageTaskStatus;
+  /** 成功时的图片 URL（done 状态） */
+  imageUrl?: string;
+  /** 失败时的错误信息 */
+  error?: string;
 }
 
 /** 腾讯云 COS 配置 */
@@ -354,6 +409,8 @@ export interface ShotVideoConfig {
   referenceAudioUrls?: string[];
   /** multimodal-ref 模式：手动添加的参考图 URL（asset:// 素材或公网 URL，与关联资产图合并） */
   referenceImageAssetUrls?: string[];
+  /** multimodal-ref 模式：手动添加的参考图名称（与 referenceImageAssetUrls 一一对应；本地上传为"参考图N"，资产库/故事板为原始名，缺省时回退"参考图N"） */
+  referenceImageAssetNames?: string[];
   /** first-frame / first-last-frame 模式：首帧图 URL（单独上传） */
   firstFrameImageUrl?: string;
   /** first-last-frame 模式：尾帧图 URL（单独上传） */
@@ -365,6 +422,47 @@ export interface VideoGenSettings {
   provider: "ark" | "ark-plan" | "custom";
   apiKey: string; // API Key
   baseURL: string; // https://ark.cn-beijing.volces.com/api/v3
+}
+
+/** 音频生成（TTS）API 配置（多供应商） */
+export interface AudioGenSettings {
+  provider: "mimo" | "custom";
+  apiKey: string;
+  baseURL: string; // https://api.xiaomimimo.com/v1
+}
+
+/** 音频（TTS）模型能力描述 */
+export interface AudioModelCapability {
+  /** 支持预置音色（mimo-v2.5-tts） */
+  supportsPresetVoice: boolean;
+  /** 支持文本设计音色（mimo-v2.5-tts-voicedesign） */
+  supportsVoiceDesign: boolean;
+  /** 支持音频样本复刻音色（mimo-v2.5-tts-voiceclone） */
+  supportsVoiceClone: boolean;
+  /** 支持唱歌模式（仅 mimo-v2.5-tts） */
+  supportsSinging: boolean;
+}
+
+/** 前端发给 /api/audio 的请求体（前端已构造好完整上游 payload） */
+export interface AudioProxyRequest {
+  apiKey: string;
+  baseURL: string;
+  /** 完整的上游请求体（前端构造，直接透传给 mimo chat/completions） */
+  payload: Record<string, unknown>;
+}
+
+/** /api/audio 响应 */
+export interface AudioProxyResponse {
+  audioBase64: string;
+  format: string;
+}
+
+/** generateVoice 生成结果 */
+export interface VoiceGenResult {
+  voiceUrl: string;
+  voicePrompt: string;
+  voiceModel: string;
+  voiceId: string;
 }
 
 /** Seedance API content 数组项 */
@@ -418,6 +516,8 @@ export interface VideoQueryProxyRequest {
 export interface VideoQueryProxyResponse {
   status: VideoStatus;
   videoUrl?: string;
+  /** 视频尾帧图像 URL（仅当请求 return_last_frame=true 时返回） */
+  lastFrameUrl?: string;
   error?: string;
 }
 
@@ -425,7 +525,7 @@ export interface VideoQueryProxyResponse {
 export interface AssetLibraryItem {
   /** 唯一键，由来源派生（如 `asset-{epId}-{assetId}`） */
   id: string;
-  mediaType: "image" | "video";
+  mediaType: "image" | "video" | "audio";
   /** 图片/视频 URL（COS 持久 URL） */
   url: string;
   seriesId: string;
@@ -433,7 +533,7 @@ export interface AssetLibraryItem {
   /** 剧集级媒体才有 */
   episodeId?: string;
   episodeTitle?: string;
-  entityType: "character" | "scene" | "object" | "shot";
+  entityType: "character" | "scene" | "object" | "shot" | "screenshot" | "storyboard";
   /** 人物/物品/场景名，或分镜画面描述 */
   entityName: string;
   source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene";

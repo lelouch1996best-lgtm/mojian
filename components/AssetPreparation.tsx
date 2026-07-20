@@ -2,12 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
+import Modal from "./ui/Modal";
 import ImageLightbox from "./ImageLightbox";
 import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
 import { callLLM, streamLLM } from "@/lib/llm-client";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG } from "@/lib/image-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration, isPollingSupported } from "@/lib/image-client";
 import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
 import { assetMessages, regenerateAssetMessages } from "@/lib/prompts";
@@ -30,7 +31,7 @@ interface AssetPreparationProps {
   onUpdateAsset: (id: string, field: keyof Asset, value: string) => void;
   onReplaceAssets: (assets: Asset[]) => void;
   onBackToStep2: () => void;
-  /** 系列级漫剧风格设定（优先使用，不传则用全局） */
+  /** 系列级风格设定设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
   /** 系列级人物设定（优先使用，不传则用全局） */
   characterSettings?: CharacterProfile[] | null;
@@ -60,6 +61,8 @@ const TYPE_BADGE_CLASS: Record<AssetType, string> = {
   character: "bg-[#FDF0E3] text-[#92400E]",
   scene: "bg-[#F7F8E8] text-[#4D7C0F]",
   object: "bg-[#FDF3E3] text-[#92400E]",
+  screenshot: "bg-slate-100 text-slate-600",
+  storyboard: "bg-amber-50 text-amber-700",
 };
 
 export default function AssetPreparation({
@@ -98,6 +101,12 @@ export default function AssetPreparation({
   // 当前所有镜头里的 @标签（去重，按首次出现顺序）
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
 
+  // 第三步资产准备仅展示人物/场景/物品类型；截屏、故事板等资产不在第三步展示
+  const preparationAssets = useMemo(
+    () => episode.assets.filter((a) => a.type === "character" || a.type === "scene" || a.type === "object"),
+    [episode.assets]
+  );
+
   const [imageConfigured, setImageConfigured] = useState(false);
   const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
   const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
@@ -109,6 +118,120 @@ export default function AssetPreparation({
       setImageModels(await getImageModels(provider));
     });
   }, []);
+
+  // 组件级 AbortController：卸载（切步骤/路由离开/刷新）时取消所有进行中的图片生成轮询，
+  // 避免孤儿轮询与重新挂载后的恢复轮询产生重复。
+  // 同步初始化（而非在 useEffect 中创建），确保首次渲染即可向 generateImage 传递 signal。
+  const abortRef = useRef<AbortController | null>(null);
+  if (abortRef.current === null) abortRef.current = new AbortController();
+  useEffect(() => {
+    const ac = abortRef.current!;
+    return () => ac.abort();
+  }, []);
+
+  // 始终指向最新 episode 的 ref，供恢复轮询的异步回调读取最新资产状态做去重/已完成判断，
+  // 避免闭包捕获过期数据导致重复处理或漏处理。
+  const episodeRef = useRef(episode);
+  episodeRef.current = episode;
+
+  // 切页/刷新回来后，立即根据 imageTaskId 恢复资产生成中占位（不等待 imageConfigured/imageModels 加载完成）。
+  // 仅对有 imageTaskId 且 status==="pending" 的资产显示占位（已完成的不显示）。
+  const didRestoreLoading = useRef(false);
+  useEffect(() => {
+    if (didRestoreLoading.current) return;
+    didRestoreLoading.current = true;
+    const ids = (episode.assets ?? []).filter((a) => a.imageTaskId && a.status === "pending").map((a) => a.id);
+    if (ids.length > 0) {
+      setGeneratingImageIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.add(id));
+        return next;
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [episode.assets]);
+
+  // 进入 Step3 时，恢复未完成的资产生图轮询（刷新/切页后任务不丢失）。
+  const resumeRef = useRef(false);
+  useEffect(() => {
+    if (resumeRef.current) return;
+    if (!imageConfigured || imageModels.length === 0) return;
+    resumeRef.current = true;
+    const signal = abortRef.current?.signal;
+
+    for (const asset of episode.assets ?? []) {
+      if (asset.status !== "pending" || !asset.imageTaskId) continue;
+      // 若切页期间 generateImageForAsset 已完成并写入 imageUrl，则无需恢复轮询
+      if (asset.imageUrl) {
+        onUpdateAsset(asset.id, "imageTaskId", "");
+        setGeneratingImageIds((prev) => {
+          const next = new Set(prev);
+          next.delete(asset.id);
+          return next;
+        });
+        continue;
+      }
+      // 仅对支持轮询的模型恢复
+      const model = asset.imageConfig?.model ?? imageModels[0]?.value ?? "";
+      if (!isPollingSupported(model, imageModels)) continue;
+
+      setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
+
+      resumeImageGeneration(asset.imageTaskId, undefined, signal)
+        .then(async (result) => {
+          // 读取最新资产状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已写入 imageUrl）
+          const latestAsset = episodeRef.current.assets.find((a) => a.id === asset.id);
+          if (latestAsset?.imageUrl) {
+            // 已有图片，仅清理残留 taskId，不覆盖已写入的（可能是 COS 持久 URL）
+            onUpdateAsset(asset.id, "imageTaskId", "");
+            return;
+          }
+          onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
+          onUpdateAsset(asset.id, "status", "ready");
+          onUpdateAsset(asset.id, "imageTaskId", "");
+          // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
+          try {
+            if (await isCosConfigured()) {
+              const cosSettings = await getCosSettings();
+              if (cosSettings) {
+                const res = await fetch("/api/cos/transfer", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    sourceUrl: result.imageUrl,
+                    settings: cosSettings,
+                    prefix: "ai-script/assets",
+                  }),
+                });
+                const data = await res.json();
+                if (res.ok && data.url) {
+                  onUpdateAsset(asset.id, "imageUrl", data.url);
+                }
+              }
+            }
+          } catch (e) {
+            console.error("资产转存 COS 失败：", (e as Error).message);
+          }
+        })
+        .catch((err) => {
+          // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
+          // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId
+          const isAborted = signal?.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
+          if (!isAborted) {
+            onUpdateAsset(asset.id, "status", "failed");
+            onUpdateAsset(asset.id, "imageTaskId", "");
+          }
+        })
+        .finally(() => {
+          setGeneratingImageIds((prev) => {
+            const next = new Set(prev);
+            next.delete(asset.id);
+            return next;
+          });
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageConfigured, imageModels]);
 
   // 图片生成弹框状态（单资产生成时使用）
   const [genTargetAssetId, setGenTargetAssetId] = useState<string | null>(null);
@@ -137,7 +260,7 @@ export default function AssetPreparation({
     if (didPrefill.current) return;
     const chars = getLatestVersions(characterSettings ?? []);
     if (chars.length === 0) return;
-    if (episode.assets.length > 0) return;
+    if (preparationAssets.length > 0) return;
     didPrefill.current = true;
     const prefilled: Asset[] = chars
       .filter((c) => c.name.trim())
@@ -156,15 +279,17 @@ export default function AssetPreparation({
         };
       });
     if (prefilled.length > 0) {
-      onReplaceAssets(prefilled);
+      // 保留已有的截屏/故事板等非资产准备类型资产
+      const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
+      onReplaceAssets([...prefilled, ...preserved]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [characterSettings, episode.assets.length]);
+  }, [characterSettings, preparationAssets.length]);
 
   // 已有资产按 name 索引，判断哪些标签还没建资产
   const existingNames = useMemo(
-    () => new Set(episode.assets.map((a) => a.name)),
-    [episode.assets]
+    () => new Set(preparationAssets.map((a) => a.name)),
+    [preparationAssets]
   );
   const missingTags = tags.filter((t) => !existingNames.has(t));
 
@@ -340,7 +465,9 @@ export default function AssetPreparation({
             status: imageUrl ? "ready" : (prev?.status ?? "pending"),
           };
         });
-      onReplaceAssets(next);
+      // 保留已有的截屏/故事板等非资产准备类型资产
+      const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
+      onReplaceAssets([...next, ...preserved]);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -420,15 +547,25 @@ export default function AssetPreparation({
           ...(asset.imageConfig ?? {}),
         };
       }
-      const result = await generateImage(prompt, config, images, imageModels);
+      const result = await generateImage(prompt, config, images, imageModels, (jobId) => {
+        // 异步任务创建后立即持久化 jobId，刷新页面后可恢复轮询
+        onUpdateAsset(asset.id, "imageTaskId", jobId);
+      }, abortRef.current?.signal);
       onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
       onUpdateAsset(asset.id, "status", "ready");
+      onUpdateAsset(asset.id, "imageTaskId", "");
 
       // 自动转存到 COS（Seedream 图片 URL 只有 24h 有效期）
       await transferImageToCos(asset, result.imageUrl);
     } catch (e) {
-      onUpdateAsset(asset.id, "status", "failed");
-      setError(`「${asset.name}」图片生成失败：${(e as Error).message}`);
+      // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复；
+      // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId
+      const isAborted = abortRef.current?.signal.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      if (!isAborted) {
+        onUpdateAsset(asset.id, "status", "failed");
+        onUpdateAsset(asset.id, "imageTaskId", "");
+        setError(`「${asset.name}」图片生成失败：${(e as Error).message}`);
+      }
     } finally {
       setGeneratingImageIds((prev) => {
         const next = new Set(prev);
@@ -469,7 +606,7 @@ export default function AssetPreparation({
       setError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
-    const pending = episode.assets.filter((a) => {
+    const pending = preparationAssets.filter((a) => {
       if (!a.imagePrompt || a.status === "ready") return false;
       // 已关联人物设定的人物资产用人物图片，不参与 AI 生图
       if (a.type === "character" && (characterVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
@@ -669,7 +806,7 @@ export default function AssetPreparation({
             ← 返回分镜
           </Button>
           <span className="text-sm text-slate-500">
-            共 {tags.length} 个标签 · 已生成 {episode.assets.length} 个资产
+            共 {tags.length} 个标签 · 已生成 {preparationAssets.length} 个资产
             {missingTags.length > 0 && (
               <span className="ml-2 text-amber-600">
                 （{missingTags.length} 个标签待生成）
@@ -689,7 +826,7 @@ export default function AssetPreparation({
             variant="secondary"
             size="sm"
             onClick={handleGenerateAllImages}
-            disabled={episode.assets.length === 0 || !imageConfigured}
+            disabled={preparationAssets.length === 0 || !imageConfigured}
           >
             批量生成图片
           </Button>
@@ -763,14 +900,8 @@ export default function AssetPreparation({
         )}
       </div>
 
-      {error && (
-        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          {error}
-        </div>
-      )}
-
       {/* 资产卡片网格 */}
-      {episode.assets.length === 0 ? (
+      {preparationAssets.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/50 py-16 text-center">
           <div className="mb-2 text-4xl opacity-40">🖼️</div>
           <p className="text-sm text-slate-500">
@@ -779,7 +910,7 @@ export default function AssetPreparation({
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {episode.assets.map((asset) => {
+          {preparationAssets.map((asset) => {
             const commonProps = {
               asset,
               onUpdate: (field: keyof Asset, value: string) => onUpdateAsset(asset.id, field, value),
@@ -995,6 +1126,27 @@ export default function AssetPreparation({
           if (targetAsset) void generateImageForAsset(targetAsset, params);
         }}
       />
+
+      <Modal
+        open={!!error}
+        onClose={() => setError(null)}
+        title="出错了"
+        width="max-w-sm"
+        footer={
+          <Button variant="danger" onClick={() => setError(null)}>
+            我知道了
+          </Button>
+        }
+      >
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </span>
+          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{error}</p>
+        </div>
+      </Modal>
     </div>
   );
 }
