@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
-import Modal from "./ui/Modal";
 import ImageLightbox from "./ImageLightbox";
+import { useErrorDialog } from "./ui/ConfirmDialog";
 import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
@@ -12,7 +12,7 @@ import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImag
 import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
 import { assetMessages, regenerateAssetMessages } from "@/lib/prompts";
-import { getCosSettings, isCosConfigured, uploadRefBase64 } from "@/lib/cos-client";
+import { isCosConfigured, transferAsset, uploadRefBase64 } from "@/lib/cos-client";
 import { getActiveStyle, getAssetTemplate, styleToText, styleTemplateForType } from "@/lib/style-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
 import { getLatestObjectVersions } from "@/lib/object-settings";
@@ -84,7 +84,7 @@ export default function AssetPreparation({
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
   const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set());
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+  const showError = useErrorDialog();
 
   // 添加资产表单状态
   const [showAddCard, setShowAddCard] = useState(false);
@@ -173,7 +173,7 @@ export default function AssetPreparation({
       }
       // 仅对支持轮询的模型恢复
       const model = asset.imageConfig?.model ?? imageModels[0]?.value ?? "";
-      if (!isPollingSupported(model, imageModels)) continue;
+      if (!isPollingSupported(model, imageModels, imageProvider)) continue;
 
       setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
 
@@ -189,28 +189,14 @@ export default function AssetPreparation({
           onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
           onUpdateAsset(asset.id, "status", "ready");
           onUpdateAsset(asset.id, "imageTaskId", "");
-          // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
+          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
           try {
             if (await isCosConfigured()) {
-              const cosSettings = await getCosSettings();
-              if (cosSettings) {
-                const res = await fetch("/api/cos/transfer", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    sourceUrl: result.imageUrl,
-                    settings: cosSettings,
-                    prefix: "ai-script/assets",
-                  }),
-                });
-                const data = await res.json();
-                if (res.ok && data.url) {
-                  onUpdateAsset(asset.id, "imageUrl", data.url);
-                }
-              }
+              const { url } = await transferAsset(result.imageUrl, "ai-script/assets");
+              onUpdateAsset(asset.id, "imageUrl", url);
             }
           } catch (e) {
-            console.error("资产转存 COS 失败：", (e as Error).message);
+            console.error("资产转存失败：", (e as Error).message);
           }
         })
         .catch((err) => {
@@ -417,11 +403,10 @@ export default function AssetPreparation({
   /** 一键生成：把所有标签交给 LLM，返回分类 + 图片提示词，覆盖现有资产 */
   async function handleGenerateAll() {
     if (tags.length === 0) {
-      setError("没有可用的标签，请先在第二步做智能标注");
+      showError("没有可用的标签，请先在第二步做智能标注");
       return;
     }
     setGenerating(true);
-    setError(null);
     try {
       const styleText = styleToText(await getActiveStyle(seriesStyleSettings));
       const raw = await callLLM(assetMessages(tags, episode.expandedContent, styleText, characterText), {
@@ -430,7 +415,7 @@ export default function AssetPreparation({
       });
       const rawAssets = extractAssets(raw);
       if (rawAssets.length === 0) {
-        setError("未能解析出资产，请重试");
+        showError("未能解析出资产，请重试");
         return;
       }
       // 保留已有的 imageUrl / status，按 name 匹配；同时匹配人物/物品设定中的图片
@@ -469,7 +454,7 @@ export default function AssetPreparation({
       const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
       onReplaceAssets([...next, ...preserved]);
     } catch (e) {
-      setError((e as Error).message);
+      showError((e as Error).message);
     } finally {
       setGenerating(false);
     }
@@ -478,7 +463,6 @@ export default function AssetPreparation({
   /** 重新生成单个资产的外貌/外观描述（流式） */
   async function handleRegenerateAsset(asset: Asset) {
     setRegeneratingIds((prev) => new Set(prev).add(asset.id));
-    setError(null);
     try {
       const style = await getActiveStyle(seriesStyleSettings);
       const styleText = styleTemplateForType(style, asset.type);
@@ -490,7 +474,7 @@ export default function AssetPreparation({
         onUpdateAsset(asset.id, "imagePrompt", acc);
       }
     } catch (e) {
-      setError(`「${asset.name}」重新生成失败：${(e as Error).message}`);
+      showError(`「${asset.name}」重新生成失败：${(e as Error).message}`);
     } finally {
       setRegeneratingIds((prev) => {
         const next = new Set(prev);
@@ -504,13 +488,12 @@ export default function AssetPreparation({
   async function openGenerateImageDialog(asset: Asset) {
     const prompt = asset.imagePrompt.trim() || asset.description.trim() || asset.name.trim();
     if (!imageConfigured) {
-      setError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
+      showError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
     if (asset.description.trim() && asset.imagePrompt.trim() !== asset.description.trim()) {
       onUpdateAsset(asset.id, "imagePrompt", asset.description.trim());
     }
-    setError(null);
     const template = await getAssetTemplate(asset.type, seriesStyleSettings);
     setGenStyleTemplate(template);
     setGenInitialPrompt(prompt);
@@ -564,7 +547,7 @@ export default function AssetPreparation({
       if (!isAborted) {
         onUpdateAsset(asset.id, "status", "failed");
         onUpdateAsset(asset.id, "imageTaskId", "");
-        setError(`「${asset.name}」图片生成失败：${(e as Error).message}`);
+        showError(`「${asset.name}」图片生成失败：${(e as Error).message}`);
       }
     } finally {
       setGeneratingImageIds((prev) => {
@@ -575,26 +558,12 @@ export default function AssetPreparation({
     }
   }
 
-  /** 将 Seedream 生成的图片 URL 转存到 COS（24h 过期保护） */
+  /** 将 Seedream 生成的图片 URL 转存到存储（24h 过期保护） */
   async function transferImageToCos(asset: Asset, sourceUrl: string) {
     if (!cosConfigured) return;
-    const cosSettings = await getCosSettings();
-    if (!cosSettings) return;
-
     try {
-      const res = await fetch("/api/cos/transfer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sourceUrl,
-          settings: cosSettings,
-          prefix: "ai-script/assets",
-        }),
-      });
-      const data = await res.json();
-      if (res.ok && data.url) {
-        onUpdateAsset(asset.id, "imageUrl", data.url);
-      }
+      const { url } = await transferAsset(sourceUrl, "ai-script/assets");
+      onUpdateAsset(asset.id, "imageUrl", url);
     } catch {
       // 转存失败不阻断流程，保留原始 URL（24h 内仍可访问）
     }
@@ -603,7 +572,7 @@ export default function AssetPreparation({
   /** 批量生成所有资产的图片 */
   async function handleGenerateAllImages() {
     if (!imageConfigured) {
-      setError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
+      showError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
     const pending = preparationAssets.filter((a) => {
@@ -623,93 +592,29 @@ export default function AssetPreparation({
       return true;
     });
     if (pending.length === 0) {
-      setError("没有待生成图片的资产");
+      showError("没有待生成图片的资产");
       return;
     }
-    setError(null);
     // 顺序生成，避免触发上游限流
     for (const asset of pending) {
       try {
         await generateImageForAsset(asset);
       } catch (e) {
-        // generateImageForAsset 内部已设 failed + setError
+        // generateImageForAsset 内部已设 failed + showError
         break;
       }
     }
-  }
-
-  /** 上传本地图片到 COS */
-  async function handleUploadToCos(asset: Asset) {
-    if (!cosConfigured) {
-      setError("未配置 COS 存储，请先在设置中配置腾讯云 COS");
-      return;
-    }
-    const cosSettings = await getCosSettings();
-    if (!cosSettings) {
-      setError("COS 设置读取失败");
-      return;
-    }
-
-    // 打开文件选择器
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-
-      setError(null);
-      setUploadingIds((prev) => new Set(prev).add(asset.id));
-
-      try {
-        // 读取为 base64
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(new Error("文件读取失败"));
-          reader.readAsDataURL(file);
-        });
-
-        // 调用 COS 上传 API
-        const res = await fetch("/api/cos/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            base64,
-            fileName: `asset-${asset.name}-${file.name}`,
-            settings: cosSettings,
-          }),
-        });
-
-        const data = await res.json();
-        if (!res.ok || !data.url) {
-          throw new Error(data.error ?? "上传失败");
-        }
-
-        onUpdateAsset(asset.id, "imageUrl", data.url);
-        onUpdateAsset(asset.id, "status", "ready");
-      } catch (e) {
-        setError(`「${asset.name}」上传失败：${(e as Error).message}`);
-      } finally {
-        setUploadingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(asset.id);
-          return next;
-        });
-      }
-    };
-    input.click();
   }
 
   /** 添加新资产（占位卡片表单提交） */
   function handleAddAsset() {
     const name = newAssetName.trim();
     if (!name) {
-      setError("请输入资产名称");
+      showError("请输入资产名称");
       return;
     }
     if (episode.assets.some((a) => a.name === name)) {
-      setError(`资产「${name}」已存在`);
+      showError(`资产「${name}」已存在`);
       return;
     }
     const newAsset: Asset = {
@@ -728,7 +633,7 @@ export default function AssetPreparation({
   /** 从已有设定添加资产 */
   function handleAddFromSettings() {
     if (!selectedSettingId) {
-      setError("请选择一个设定");
+      showError("请选择一个设定");
       return;
     }
     let newAsset: Asset | null = null;
@@ -780,7 +685,7 @@ export default function AssetPreparation({
     }
     if (!newAsset) return;
     if (episode.assets.some((a) => a.name === newAsset!.name)) {
-      setError(`资产「${newAsset!.name}」已存在`);
+      showError(`资产「${newAsset!.name}」已存在`);
       return;
     }
     onReplaceAssets([...episode.assets, newAsset]);
@@ -794,7 +699,6 @@ export default function AssetPreparation({
     setSelectedSettingId("");
     setAddMode("new");
     setShowAddCard(false);
-    setError(null);
   }
 
   return (
@@ -957,7 +861,7 @@ export default function AssetPreparation({
           {/* 添加资产占位卡片 */}
           {!showAddCard ? (
             <button
-              onClick={() => { setShowAddCard(true); setError(null); }}
+              onClick={() => { setShowAddCard(true); }}
               className="group flex aspect-[4/3] min-h-[220px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white/60 text-slate-400 transition-colors hover:border-brand-400 hover:text-brand-500"
             >
               <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="opacity-50 group-hover:opacity-80 transition-opacity">
@@ -1126,27 +1030,6 @@ export default function AssetPreparation({
           if (targetAsset) void generateImageForAsset(targetAsset, params);
         }}
       />
-
-      <Modal
-        open={!!error}
-        onClose={() => setError(null)}
-        title="出错了"
-        width="max-w-sm"
-        footer={
-          <Button variant="danger" onClick={() => setError(null)}>
-            我知道了
-          </Button>
-        }
-      >
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{error}</p>
-        </div>
-      </Modal>
     </div>
   );
 }

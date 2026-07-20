@@ -70,11 +70,6 @@ import {
   getCosSettings,
   saveCosSettings,
 } from "@/lib/cos-client";
-import {
-  getStorageProvider,
-  saveStorageProvider,
-  type StorageProvider,
-} from "@/lib/storage-provider";
 import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings } from "@/lib/types";
 
 export default function SettingsPage() {
@@ -155,15 +150,6 @@ export default function SettingsPage() {
   const [cosTesting, setCosTesting] = useState(false);
   const [cosTestResult, setCosTestResult] = useState<{
     ok: boolean;
-    message: string;
-  } | null>(null);
-
-  // ---- 存储方式状态 ----
-  const [storageProvider, setStorageProvider] = useState<StorageProvider>("cos");
-  const [localTesting, setLocalTesting] = useState(false);
-  const [localTestResult, setLocalTestResult] = useState<{
-    ok: boolean;
-    dir: string;
     message: string;
   } | null>(null);
 
@@ -260,10 +246,6 @@ export default function SettingsPage() {
     setCosPanelOpen(cosCfg);
     setCosConfigured(cosCfg);
     setCosTestResult(null);
-
-    // 存储方式
-    const sp = await getStorageProvider();
-    setStorageProvider(sp);
     })();
     // 初始化完成后启用自动保存
     setTimeout(() => { skipAutoSave.current = false; }, 0);
@@ -680,28 +662,6 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleLocalTest() {
-    setLocalTesting(true);
-    setLocalTestResult(null);
-    try {
-      const res = await fetch("/api/local/test", { method: "POST" });
-      const data = await res.json();
-      setLocalTestResult({
-        ok: !!data.ok,
-        dir: data.dir ?? "",
-        message: data.message ?? (data.ok ? "目录可写" : "测试失败"),
-      });
-    } catch (e) {
-      setLocalTestResult({
-        ok: false,
-        dir: "",
-        message: `请求失败：${(e as Error).message}`,
-      });
-    } finally {
-      setLocalTesting(false);
-    }
-  }
-
   // ---- 自动保存（防抖） ----
   const skipAutoSave = useRef(true);
 
@@ -976,8 +936,9 @@ export default function SettingsPage() {
             </div>
 
             {PROVIDER_PRESETS[provider]?.hint && (
-              <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-                {PROVIDER_PRESETS[provider].hint}
+              <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                <span>{PROVIDER_PRESETS[provider].hint}</span>
               </div>
             )}
             {testResult && (
@@ -1085,8 +1046,9 @@ export default function SettingsPage() {
               </div>
 
               {IMAGE_PROVIDER_PRESETS[imgSettings.provider]?.hint && (
-                <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-                  {IMAGE_PROVIDER_PRESETS[imgSettings.provider].hint}
+                <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                  <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                  <span>{IMAGE_PROVIDER_PRESETS[imgSettings.provider].hint}</span>
                 </div>
               )}
 
@@ -1171,8 +1133,9 @@ export default function SettingsPage() {
               </Field>
 
               {VIDEO_PROVIDER_PRESETS[vidSettings.provider]?.hint && (
-                <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-                  {VIDEO_PROVIDER_PRESETS[vidSettings.provider].hint}
+                <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                  <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                  <span>{VIDEO_PROVIDER_PRESETS[vidSettings.provider].hint}</span>
                 </div>
               )}
 
@@ -1274,8 +1237,9 @@ export default function SettingsPage() {
               </Field>
 
               {AUDIO_PROVIDER_PRESETS[audSettings.provider]?.hint && (
-                <div className="rounded-md bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-500">
-                  {AUDIO_PROVIDER_PRESETS[audSettings.provider].hint}
+                <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                  <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                  <span>{AUDIO_PROVIDER_PRESETS[audSettings.provider].hint}</span>
                 </div>
               )}
 
@@ -1317,7 +1281,7 @@ export default function SettingsPage() {
           )}
         </fieldset>
 
-        {/* ========= COS 存储折叠区域 ========= */}
+        {/* ========= 存储折叠区域 ========= */}
         <fieldset className={`rounded-xl border transition-colors ${cosPanelOpen ? "border-brand-200" : "border-slate-200"}`}>
           <legend className="px-2">
             <button
@@ -1331,7 +1295,7 @@ export default function SettingsPage() {
               >
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-              腾讯云 COS 存储
+              存储
               {!cosConfigured && cosPanelOpen && (
                 <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
@@ -1343,54 +1307,56 @@ export default function SettingsPage() {
 
           {cosPanelOpen && (
             <div className="space-y-3 p-4 pt-0">
-              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
-                用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
-              </div>
-
-              <Field label="SecretId">
-                <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
-              </Field>
-
-              <Field label="SecretKey">
-                <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
-              </Field>
-
-              <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
-                <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
-              </Field>
-
-              <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
-                <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
-                  <option value="ap-guangzhou">广州（ap-guangzhou）</option>
-                  <option value="ap-beijing">北京（ap-beijing）</option>
-                  <option value="ap-shanghai">上海（ap-shanghai）</option>
-                  <option value="ap-nanjing">南京（ap-nanjing）</option>
-                  <option value="ap-chengdu">成都（ap-chengdu）</option>
-                  <option value="ap-chongqing">重庆（ap-chongqing）</option>
-                  <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
-                  <option value="ap-hongkong">中国香港（ap-hongkong）</option>
-                  <option value="ap-singapore">新加坡（ap-singapore）</option>
-                  <option value="ap-tokyo">东京（ap-tokyo）</option>
-                  <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
-                  <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
-                </select>
-              </Field>
-
-              <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
-                <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
-              </Field>
-
-              {cosTestResult && (
-                <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-                  <div className="flex items-center gap-2">
-                    {cosTesting && <Spinner size={14} />}
-                    <span className="break-all">{cosTestResult.message}</span>
+              <div className="space-y-3 pt-2">
+                  <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                    用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
                   </div>
-                </div>
-              )}
 
-              <div className="flex justify-end gap-2">
-                <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
+                  <Field label="SecretId">
+                    <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
+                  </Field>
+
+                  <Field label="SecretKey">
+                    <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
+                  </Field>
+
+                  <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
+                    <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
+                  </Field>
+
+                  <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
+                    <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
+                      <option value="ap-guangzhou">广州（ap-guangzhou）</option>
+                      <option value="ap-beijing">北京（ap-beijing）</option>
+                      <option value="ap-shanghai">上海（ap-shanghai）</option>
+                      <option value="ap-nanjing">南京（ap-nanjing）</option>
+                      <option value="ap-chengdu">成都（ap-chengdu）</option>
+                      <option value="ap-chongqing">重庆（ap-chongqing）</option>
+                      <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
+                      <option value="ap-hongkong">中国香港（ap-hongkong）</option>
+                      <option value="ap-singapore">新加坡（ap-singapore）</option>
+                      <option value="ap-tokyo">东京（ap-tokyo）</option>
+                      <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
+                      <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
+                    </select>
+                  </Field>
+
+                  <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
+                    <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
+                  </Field>
+
+                  {cosTestResult && (
+                    <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                      <div className="flex items-center gap-2">
+                        {cosTesting && <Spinner size={14} />}
+                        <span className="break-all">{cosTestResult.message}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
+                  </div>
               </div>
             </div>
           )}

@@ -4,11 +4,11 @@ export const runtime = "nodejs";
 
 /**
  * 取消视频生成任务。
- * 上游 API: DELETE /api/v3/contents/generations/tasks/{id}
- * 仅排队中（queued）的任务可以被取消，运行中（running）的不能取消。
+ * - ark / ark-plan / custom：DELETE /api/v3/contents/generations/tasks/{id}，仅排队中（queued）的任务可取消。
+ * - apimart：无取消接口，本地取消（直接返回成功，不调用上游）。
  */
 export async function POST(req: Request) {
-  let body: { apiKey: string; baseURL: string; taskId: string };
+  let body: { provider?: VideoGenSettings["provider"]; apiKey: string; baseURL: string; taskId: string };
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -20,6 +20,11 @@ export async function POST(req: Request) {
       { error: "缺少必要参数（baseURL / apiKey / taskId）" },
       { status: 400 }
     );
+  }
+
+  // APIMart 无取消接口：本地取消，不调用上游
+  if (body.provider === "apimart") {
+    return Response.json({ ok: true });
   }
 
   const base = body.baseURL.replace(/\/+$/, "");

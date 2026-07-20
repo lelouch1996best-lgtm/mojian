@@ -186,6 +186,8 @@ export interface Shot {
   videoUrl: string; // 生成的视频 URL（mp4，24h 有效）
   videoStatus: VideoStatus; // 视频生成状态
   videoTaskId: string; // 视频生成任务 ID（用于轮询）
+  /** 创建该视频任务时使用的供应商（恢复轮询时按此选择查询端点与凭证；旧数据缺省时回退当前设置） */
+  videoTaskProvider?: VideoGenSettings["provider"];
   /** 该镜头关联的资产 ID 列表（由 @ 补全自动添加，用户可手动解除关联） */
   relatedAssetIds: string[];
   /** 卡片级视频配置；缺省时回退 DEFAULT_SHOT_VIDEO_CONFIG */
@@ -268,7 +270,7 @@ export interface RawShot {
 
 /** 图片生成 API 配置（多供应商，全局仅管理供应商和模型，生成参数在卡片级配置） */
 export interface ImageGenSettings {
-  provider: "ark" | "ark-plan" | "openai" | "custom";
+  provider: "ark" | "ark-plan" | "openai" | "apimart" | "custom";
   baseURL: string;
   apiKey: string;
   model: string;
@@ -303,6 +305,8 @@ export interface ImageProxyRequest {
   model: string;
   prompt: string;
   size?: string;
+  /** APIMart 分辨率档位（1k/2k/4k），与 size(比例) 正交 */
+  resolution?: string;
   outputFormat?: "png" | "jpeg";
   watermark?: boolean;
   responseFormat?: "url" | "b64_json";
@@ -335,6 +339,7 @@ export interface ImageAsyncCreateResponse {
 
 /** 前端发给 /api/image/query 的请求体 */
 export interface ImageQueryProxyRequest {
+  provider: ImageGenSettings["provider"];
   apiKey: string;
   baseURL: string;
   jobId: string;
@@ -419,7 +424,7 @@ export interface ShotVideoConfig {
 
 /** 视频生成 API 配置（多供应商） */
 export interface VideoGenSettings {
-  provider: "ark" | "ark-plan" | "custom";
+  provider: "ark" | "ark-plan" | "apimart" | "custom";
   apiKey: string; // API Key
   baseURL: string; // https://ark.cn-beijing.volces.com/api/v3
 }
@@ -492,21 +497,48 @@ export interface VideoUpstreamPayload {
   tools?: Array<{ type: "web_search" }>;
 }
 
+/** 发送给 APIMart 视频生成 API 的请求体（扁平结构） */
+export interface VideoApimartUpstreamPayload {
+  model: string;
+  prompt: string;
+  /** 宽高比，如 "16:9" */
+  size?: string;
+  /** 480p/720p/1080p/4k */
+  resolution?: string;
+  duration?: number;
+  seed?: number;
+  generate_audio?: boolean;
+  return_last_frame?: boolean;
+  tools?: Array<{ type: "web_search" }>;
+  /** 参考图片 URL 数组（图生视频，与 image_with_roles 互斥） */
+  image_urls?: string[];
+  /** 带角色的图片数组（指定首帧/尾帧/参考人像，与 image_urls 互斥） */
+  image_with_roles?: Array<{ url: string; role: "first_frame" | "last_frame" | "reference_image" }>;
+  /** 参考视频 URL 数组（多模态参考） */
+  video_urls?: string[];
+  /** 参考音频 URL 数组（多模态参考） */
+  audio_urls?: string[];
+}
+
 /** 前端发给 /api/video/create 的请求体（前端已构造好完整上游 payload） */
 export interface VideoCreateProxyRequest {
+  provider: VideoGenSettings["provider"];
   apiKey: string;
   baseURL: string;
-  /** 完整的上游请求体（前端构造，直接透传给 Seedance API） */
-  payload: VideoUpstreamPayload;
+  /** 完整的上游请求体（前端构造，按 provider 选择 ark content[] 或 APIMart 扁平结构） */
+  payload: VideoUpstreamPayload | VideoApimartUpstreamPayload;
 }
 
 /** /api/video/create 响应 */
 export interface VideoCreateProxyResponse {
   taskId: string;
+  /** 实际使用的供应商，供前端持久化到 Shot.videoTaskProvider */
+  provider?: VideoGenSettings["provider"];
 }
 
 /** 前端发给 /api/video/query 的请求体 */
 export interface VideoQueryProxyRequest {
+  provider: VideoGenSettings["provider"];
   apiKey: string;
   baseURL: string;
   taskId: string;

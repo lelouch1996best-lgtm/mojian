@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
+import { useConfirm } from "./ui/ConfirmDialog";
 import AssetPicker, { type PickedAssetItem } from "./AssetPicker";
 import { ImageConfigFields } from "./ImageConfigFields";
 import { getImageModelCapability } from "@/lib/model-presets";
@@ -129,6 +130,7 @@ export function ImageGenerationDialog({
   const [uploading, setUploading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const confirm = useConfirm();
 
   // @ 提及状态
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -253,7 +255,7 @@ export function ImageGenerationDialog({
   );
 
 
-  const maxRefImages = getImageModelCapability(config.model, imageModels).maxRefImages;
+  const maxRefImages = getImageModelCapability(config.model, imageModels, provider).maxRefImages;
 
   // @ 提及标签：优先使用资产原名（imageLabels），无则回退 图片N
   const mentionValues = images.map((_, i) => imageLabels?.[i] || `图片${i + 1}`);
@@ -491,6 +493,77 @@ export function ImageGenerationDialog({
 
   const promptLen = prompt.trim().length;
   const canConfirm = promptLen > 0 && !loading;
+
+  /**
+   * 确认生图：检测提示词中未使用的参考图，按需弹框确认后过滤 + 重编号。
+   * - 检测：每张参考图的提及标签（资产名 / 图片N）是否出现在最终提示词中
+   * - 过滤：移除未使用的参考图链接，同步过滤 imageLabels
+   * - 重编号：对默认标签「图片N」按新下标重写提示词中的引用（资产名不变）；
+   *   从大到小替换避免误匹配，负向先行断言避免命中「图片10」等更长编号
+   */
+  async function handleConfirm() {
+    const base = keepMentionPrefix ? prompt : resolveMentions(prompt, mentionValues);
+    const resolved = base.trim();
+
+    const usedFlags = images.map((_, i) => resolved.includes(mentionValues[i]));
+    const hasUnused = images.length > 0 && usedFlags.some((used) => !used);
+
+    if (hasUnused) {
+      const unusedLabels = mentionValues.filter((_, i) => !usedFlags[i]);
+      const ok = await confirm({
+        message: `检测到以下参考图未在提示词中使用：\n${unusedLabels.map((l) => `• ${l}`).join("\n")}\n是否继续？`,
+        confirmText: "是",
+        cancelText: "否",
+        variant: "primary",
+      });
+      if (!ok) return;
+    }
+
+    let finalPrompt = resolved;
+    let finalImages = images;
+    let finalImageLabels = imageLabels;
+
+    if (hasUnused) {
+      const filteredImages: string[] = [];
+      const filteredLabels: string[] = [];
+      const oldToNewIndex: number[] = [];
+      images.forEach((img, i) => {
+        if (usedFlags[i]) {
+          oldToNewIndex[i] = filteredImages.length;
+          filteredImages.push(img);
+          filteredLabels.push(imageLabels?.[i] ?? "");
+        } else {
+          oldToNewIndex[i] = -1;
+        }
+      });
+
+      for (let oldIdx = images.length - 1; oldIdx >= 0; oldIdx--) {
+        const newIdx = oldToNewIndex[oldIdx];
+        if (newIdx === -1) continue;
+        const oldLabel = mentionValues[oldIdx];
+        const oldN = oldIdx + 1;
+        const newN = newIdx + 1;
+        if (oldLabel === `图片${oldN}` && oldN !== newN) {
+          finalPrompt = finalPrompt.replace(
+            new RegExp(`图片${oldN}(?!\\d)`, "g"),
+            `图片${newN}`
+          );
+        }
+      }
+
+      finalImages = filteredImages;
+      if (imageLabels) {
+        finalImageLabels = filteredLabels;
+      }
+    }
+
+    onConfirm({
+      prompt: finalPrompt,
+      images: finalImages,
+      config,
+      imageLabels: finalImageLabels,
+    });
+  }
 
   if (!open || !mounted) return null;
 
@@ -759,14 +832,7 @@ export function ImageGenerationDialog({
           </Button>
           <Button
             onClick={() => {
-              const base = keepMentionPrefix ? prompt : resolveMentions(prompt, mentionValues);
-              const resolved = base.trim();
-              onConfirm({
-                prompt: resolved,
-                images,
-                config,
-                imageLabels,
-              });
+              void handleConfirm();
             }}
             loading={loading}
             disabled={!canConfirm}

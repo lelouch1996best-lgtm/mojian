@@ -22,8 +22,7 @@ export function ImageConfigFields({
   provider: ImageGenSettings["provider"];
   imageModels: ModelEntry[];
 }) {
-  void provider;
-  const cap = getImageModelCapability(value.model, imageModels);
+  const cap = getImageModelCapability(value.model, imageModels, provider);
 
   // 切换模型后，收敛不支持的配置项
   useEffect(() => {

@@ -44,6 +44,50 @@ export interface CosUploadResponse {
   region: string;
 }
 
+/** 转存/上传结果 */
+export interface TransferResult {
+  url: string;
+  key: string;
+}
+
+/** 将远程图片转存到 COS，返回公网 URL 与 key */
+export async function transferAsset(
+  sourceUrl: string,
+  prefix?: string
+): Promise<TransferResult> {
+  const settings = await getCosSettings();
+  if (!settings) throw new Error("未配置 COS 存储");
+  const res = await fetch("/api/cos/transfer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sourceUrl,
+      settings,
+      prefix: prefix ?? "ai-script/assets",
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error ?? "转存失败");
+  return { url: data.url, key: data.key };
+}
+
+/** 将 base64 data URI 上传到 COS，返回公网 URL 与 key */
+export async function uploadBase64(
+  base64: string,
+  fileName: string
+): Promise<TransferResult> {
+  const settings = await getCosSettings();
+  if (!settings) throw new Error("未配置 COS 存储");
+  const res = await fetch("/api/cos/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base64, fileName, settings }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error ?? "上传失败");
+  return { url: data.url, key: data.key };
+}
+
 /**
  * 将本地文件上传到 COS，返回公网 URL。
  * 用于视频卡片上传参考视频/音频/尾帧图等参考素材。
@@ -51,7 +95,15 @@ export interface CosUploadResponse {
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
  */
 export async function uploadRefFile(file: File, nameHint: string): Promise<string> {
-  return (await import("./storage-provider")).uploadRefFile(file, nameHint);
+  const base64 = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("文件读取失败"));
+    reader.readAsDataURL(file);
+  });
+  const ext = file.name.split(".").pop() ?? "bin";
+  const result = await uploadBase64(base64, `${nameHint}.${ext}`);
+  return result.url;
 }
 
 /**
@@ -61,5 +113,7 @@ export async function uploadRefFile(file: File, nameHint: string): Promise<strin
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
  */
 export async function uploadRefBase64(base64: string, nameHint: string): Promise<string> {
-  return (await import("./storage-provider")).uploadRefBase64(base64, nameHint);
+  const ext = base64.match(/data:image\/([\w.+-]+)/)?.[1] ?? "png";
+  const result = await uploadBase64(base64, `${nameHint}.${ext}`);
+  return result.url;
 }

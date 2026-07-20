@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
-import Modal from "@/components/ui/Modal";
-import { useConfirm } from "@/components/ui/ConfirmDialog";
+import { useConfirm, useErrorDialog } from "@/components/ui/ConfirmDialog";
 import { getSeries, saveSeries } from "@/lib/storage";
 import { emptyCharacterProfile } from "@/lib/character-settings";
 import { debounce, uuid } from "@/lib/utils";
@@ -12,7 +11,7 @@ import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImag
 import { getImageModels, getAudioModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
 import { isAudioConfigured, generateVoice, type VoiceGenParams } from "@/lib/audio-client";
 import { getAssetTemplate } from "@/lib/style-settings";
-import { getCosSettings, isCosConfigured, uploadRefBase64, uploadRefFile } from "@/lib/cos-client";
+import { isCosConfigured, transferAsset, uploadBase64, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
 import { ImageGenerationDialog } from "@/components/ImageGenerationDialog";
 import { VoiceGenerationDialog } from "@/components/VoiceGenerationDialog";
 import AssetPicker, { type PickedAssetItem } from "@/components/AssetPicker";
@@ -24,6 +23,7 @@ export default function CharacterSettingsPage() {
   const params = useParams<{ id: string }>();
   const seriesId = params.id;
   const confirm = useConfirm();
+  const showError = useErrorDialog();
 
   const [series, setSeries] = useState<Series | null>(null);
   const [characters, setCharacters] = useState<CharacterProfile[]>([]);
@@ -34,7 +34,6 @@ export default function CharacterSettingsPage() {
   const [uploadingImageIds, setUploadingImageIds] = useState<Set<string>>(new Set());
   const [imageConfigured, setImageConfigured] = useState(false);
   const [cosConfigured, setCosConfigured] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [imageConfig, setImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
   const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
   const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
@@ -182,28 +181,14 @@ export default function CharacterSettingsPage() {
             return;
           }
           let imageUrl = result.imageUrl;
-          // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
+          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
           try {
             if (await isCosConfigured()) {
-              const cosSettings = await getCosSettings();
-              if (cosSettings) {
-                const res = await fetch("/api/cos/transfer", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    sourceUrl: imageUrl,
-                    settings: cosSettings,
-                    prefix: "ai-script/characters",
-                  }),
-                });
-                const data = await res.json();
-                if (res.ok && data.url) {
-                  imageUrl = data.url;
-                }
-              }
+              const { url } = await transferAsset(imageUrl, "ai-script/characters");
+              imageUrl = url;
             }
           } catch (e) {
-            console.error("人物转存 COS 失败：", (e as Error).message);
+            console.error("人物转存存储失败：", (e as Error).message);
           }
           const updated = charactersRef.current.map((c) => (c.id === char.id ? { ...c, imageUrl, imageTaskId: undefined } : c));
           setCharacters(updated);
@@ -222,7 +207,7 @@ export default function CharacterSettingsPage() {
           const isAborted = signal?.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
           if (!isAborted) {
             setCharacters((prev) => prev.map((c) => (c.id === char.id ? { ...c, imageTaskId: undefined } : c)));
-            setError(`「${char.name}」图片生成失败：${(err as Error).message}`);
+            showError(`「${char.name}」图片生成失败：${(err as Error).message}`);
           }
         })
         .finally(() => {
@@ -283,10 +268,9 @@ export default function CharacterSettingsPage() {
   /** 打开图片生成弹框（先做必要校验） */
   async function openGenerateImageDialog(char: CharacterProfile) {
     if (!imageConfigured) {
-      setError("未配置图片生成 API，请先在「设置」中配置");
+      showError("未配置图片生成 API，请先在「设置」中配置");
       return;
     }
-    setError(null);
     const template = await getAssetTemplate("character", series?.styleSettings ?? null);
     setStyleTemplate(template);
     const prompt = char.appearance.trim() || char.name.trim();
@@ -296,9 +280,9 @@ export default function CharacterSettingsPage() {
     setConfigOpen(true);
   }
 
-  /** 上传参考图文件到 COS，返回 URL 列表（COS 未配置时回退 base64） */
+  /** 上传参考图文件到存储，返回 URL 列表（存储未配置时回退 base64） */
   async function handleUploadRefFiles(files: File[]): Promise<string[]> {
-    if (!cosConfigured) {
+    if (!(await isCosConfigured())) {
       return Promise.all(files.map((f) => new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(reader.result as string);
@@ -360,27 +344,13 @@ export default function CharacterSettingsPage() {
       }, abortRef.current?.signal);
       let imageUrl = result.imageUrl;
 
-      // 自动转存到 COS（Seedream URL 24h 过期）
-      if (cosConfigured) {
-        const cosSettings = await getCosSettings();
-        if (cosSettings) {
-          try {
-            const res = await fetch("/api/cos/transfer", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                sourceUrl: imageUrl,
-                settings: cosSettings,
-                prefix: "ai-script/characters",
-              }),
-            });
-            const data = await res.json();
-            if (res.ok && data.url) {
-              imageUrl = data.url;
-            }
-          } catch {
-            // 转存失败不阻断流程，保留原始 URL
-          }
+      // 自动转存到存储（Seedream URL 24h 过期）
+      if (await isCosConfigured()) {
+        try {
+          const { url } = await transferAsset(imageUrl, "ai-script/characters");
+          imageUrl = url;
+        } catch {
+          // 转存失败不阻断流程，保留原始 URL
         }
       }
 
@@ -399,7 +369,7 @@ export default function CharacterSettingsPage() {
       const isAborted = abortRef.current?.signal.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         setCharacters((prev) => prev.map((c) => (c.id === char.id ? { ...c, imageTaskId: undefined } : c)));
-        setError(`「${char.name}」图片生成失败：${(e as Error).message}`);
+        showError(`「${char.name}」图片生成失败：${(e as Error).message}`);
       }
     } finally {
       setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
@@ -412,25 +382,19 @@ export default function CharacterSettingsPage() {
   function expandAll() { setExpandedIds(new Set(characters.map((c) => c.id))); }
   function collapseAll() { setExpandedIds(new Set()); }
 
-  /** 上传本地图片作为人物形象图（转 base64 后调用 COS 上传 API） */
+  /** 上传本地图片作为人物形象图（转 base64 后调用存储上传 API） */
   async function handleUploadImage(char: CharacterProfile, file: File) {
-    if (!cosConfigured) {
-      setError("未配置对象存储（COS），无法上传图片，请先在「设置」中配置");
+    if (!(await isCosConfigured())) {
+      showError("未配置对象存储（COS），无法上传图片，请先在「设置」中配置");
       return;
     }
     const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
     if (!allowed.includes(file.type)) {
-      setError(`不支持的图片格式：${file.type || "未知"}，仅支持 png/jpg/webp/gif/bmp`);
+      showError(`不支持的图片格式：${file.type || "未知"}，仅支持 png/jpg/webp/gif/bmp`);
       return;
     }
-    setError(null);
     setUploadingImageIds((prev) => new Set(prev).add(char.id));
     try {
-      const cosSettings = await getCosSettings();
-      if (!cosSettings) {
-        setError("无法读取 COS 配置，请先在「设置」中配置");
-        return;
-      }
       // 读取文件为 base64 data URL
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -438,20 +402,8 @@ export default function CharacterSettingsPage() {
         reader.onerror = () => reject(new Error("读取文件失败"));
         reader.readAsDataURL(file);
       });
-      const res = await fetch("/api/cos/upload", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          base64,
-          fileName: file.name,
-          settings: cosSettings,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.url) {
-        throw new Error(data.error || "上传失败");
-      }
-      const updated = characters.map((c) => (c.id === char.id ? { ...c, imageUrl: data.url } : c));
+      const { url } = await uploadBase64(base64, file.name);
+      const updated = characters.map((c) => (c.id === char.id ? { ...c, imageUrl: url } : c));
       setCharacters(updated);
       if (series) {
         const updatedSeries = { ...series, characterSettings: updated };
@@ -461,7 +413,7 @@ export default function CharacterSettingsPage() {
         setTimeout(() => setSavedHint(false), 1500);
       }
     } catch (e) {
-      setError(`「${char.name}」图片上传失败：${(e as Error).message}`);
+      showError(`「${char.name}」图片上传失败：${(e as Error).message}`);
     } finally {
       setUploadingImageIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
     }
@@ -470,10 +422,9 @@ export default function CharacterSettingsPage() {
   /** 打开音色生成弹框 */
   function handleGenerateVoice(char: CharacterProfile) {
     if (!audioConfigured) {
-      setError("未配置音频生成 API，请先在「设置」中配置");
+      showError("未配置音频生成 API，请先在「设置」中配置");
       return;
     }
-    setError(null);
     setVoiceTargetId(char.id);
     setVoiceDialogOpen(true);
   }
@@ -484,7 +435,6 @@ export default function CharacterSettingsPage() {
     if (!targetId) return;
     setVoiceDialogOpen(false);
     setGeneratingVoiceIds((prev) => new Set(prev).add(targetId));
-    setError(null);
     try {
       const result = await generateVoice(params);
       const updated = characters.map((c) =>
@@ -507,7 +457,7 @@ export default function CharacterSettingsPage() {
         setTimeout(() => setSavedHint(false), 1500);
       }
     } catch (e) {
-      setError(`音色生成失败：${(e as Error).message}`);
+      showError(`音色生成失败：${(e as Error).message}`);
     } finally {
       setGeneratingVoiceIds((prev) => { const n = new Set(prev); n.delete(targetId); return n; });
     }
@@ -515,18 +465,16 @@ export default function CharacterSettingsPage() {
 
   /** 从资产库选取音频作为人物音色 */
   function handleAddVoiceFromAsset(char: CharacterProfile) {
-    setError(null);
     setVoiceAssetTargetId(char.id);
     setVoiceAssetPickerOpen(true);
   }
 
   /** 上传本地音频文件作为人物音色 */
   async function handleUploadVoice(char: CharacterProfile, file: File) {
-    if (!cosConfigured) {
-      setError("未配置 COS 存储，请先在「设置」中配置腾讯云 COS");
+    if (!(await isCosConfigured())) {
+      showError("未配置 COS 存储，请先在「设置」中配置腾讯云 COS");
       return;
     }
-    setError(null);
     setUploadingVoiceIds((prev) => new Set(prev).add(char.id));
     try {
       const nameHint = `voice-${char.id}-${Date.now()}`;
@@ -545,7 +493,7 @@ export default function CharacterSettingsPage() {
         setTimeout(() => setSavedHint(false), 1500);
       }
     } catch (e) {
-      setError(`「${char.name}」音频上传失败：${(e as Error).message}`);
+      showError(`「${char.name}」音频上传失败：${(e as Error).message}`);
     } finally {
       setUploadingVoiceIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
     }
@@ -740,7 +688,7 @@ export default function CharacterSettingsPage() {
         onGenerate={handleVoiceGenerate}
         character={characters.find((c) => c.id === voiceTargetId)}
         audioModels={audioModels}
-        cosConfigured={cosConfigured}
+        storageConfigured={cosConfigured}
       />
 
       <AssetPicker
@@ -751,27 +699,6 @@ export default function CharacterSettingsPage() {
         selectedUrls={[]}
         onConfirm={handleVoiceAssetConfirm}
       />
-
-      <Modal
-        open={!!error}
-        onClose={() => setError(null)}
-        title="出错了"
-        width="max-w-sm"
-        footer={
-          <Button variant="danger" onClick={() => setError(null)}>
-            我知道了
-          </Button>
-        }
-      >
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{error}</p>
-        </div>
-      </Modal>
     </main>
   );
 }

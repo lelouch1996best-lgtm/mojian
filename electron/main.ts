@@ -9,7 +9,6 @@
 
 import { app, BrowserWindow, shell, ipcMain } from "electron";
 import path from "path";
-import fs from "fs";
 import net from "net";
 import { spawn, type ChildProcess } from "child_process";
 import { getMachineId, getDisplayMachineId } from "./machine-id";
@@ -230,12 +229,6 @@ app.whenReady().then(async () => {
     // 生产模式：启用本地鉴权 token
     process.env.NODE_ENV = "production";
     process.env.STORAGE_TOKEN = STORAGE_TOKEN;
-
-    const localStorageDir = path.join(app.getPath("userData"), "local-assets");
-    try {
-      fs.mkdirSync(localStorageDir, { recursive: true });
-    } catch {}
-    process.env.LOCAL_STORAGE_DIR = localStorageDir;
   }
   // 开发模式不设置 STORAGE_TOKEN，lib/auth.ts 在 development 下自动放行
 

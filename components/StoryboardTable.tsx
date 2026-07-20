@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import StoryboardRow from "./StoryboardRow";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
-import { useConfirm } from "./ui/ConfirmDialog";
+import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import { callLLM } from "@/lib/llm-client";
 import { taggingMessages, storyboardMessages } from "@/lib/prompts";
 import { downloadJSON, extractTagItems, extractAllTags, extractShots, toShot } from "@/lib/utils";
@@ -50,8 +50,8 @@ export default function StoryboardTable({
 }: StoryboardTableProps) {
   const [tagging, setTagging] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const confirm = useConfirm();
+  const showError = useErrorDialog();
 
   // 当前已有标签（去重，按首次出现顺序）
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
@@ -62,7 +62,6 @@ export default function StoryboardTable({
   async function handleTagging() {
     if (episode.shots.length === 0) return;
     setTagging(true);
-    setError(null);
     try {
       const raw = await callLLM(taggingMessages(episode.shots), {
         responseFormat: "json_object",
@@ -70,7 +69,7 @@ export default function StoryboardTable({
       });
       const items = extractTagItems(raw);
       if (items.length === 0) {
-        setError("标注失败：未能解析返回结果，请重试");
+        showError("标注失败：未能解析返回结果，请重试");
         return;
       }
       const updates: { id: string; visualDescription: string }[] = [];
@@ -81,12 +80,12 @@ export default function StoryboardTable({
         }
       }
       if (updates.length === 0) {
-        setError("标注失败：未能匹配到镜头");
+        showError("标注失败：未能匹配到镜头");
         return;
       }
       onUpdateManyVisuals(updates);
     } catch (e) {
-      setError((e as Error).message);
+      showError((e as Error).message);
     } finally {
       setTagging(false);
     }
@@ -97,7 +96,7 @@ export default function StoryboardTable({
     if (!onReplaceShots) return;
     const content = episode.expandedContent.trim() || episode.originalContent.trim();
     if (!content) {
-      setError("缺少扩写内容，无法重新生成分镜，请返回第一步补充内容");
+      showError("缺少扩写内容，无法重新生成分镜，请返回第一步补充内容");
       return;
     }
     if (episode.shots.length > 0) {
@@ -108,7 +107,6 @@ export default function StoryboardTable({
       if (!ok) return;
     }
     setRegenerating(true);
-    setError(null);
     try {
       const raw = await callLLM(storyboardMessages(content), {
         responseFormat: "json_object",
@@ -116,13 +114,13 @@ export default function StoryboardTable({
       });
       const rawShots = extractShots(raw);
       if (rawShots.length === 0) {
-        setError("未能解析出分镜，请重试或调整扩写内容");
+        showError("未能解析出分镜，请重试或调整扩写内容");
         return;
       }
       const shots = rawShots.map(toShot);
       onReplaceShots(shots);
     } catch (e) {
-      setError((e as Error).message);
+      showError((e as Error).message);
     } finally {
       setRegenerating(false);
     }
@@ -223,12 +221,6 @@ export default function StoryboardTable({
               )}
             </span>
           ))}
-        </div>
-      )}
-
-      {error && (
-        <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">
-          {error}
         </div>
       )}
 

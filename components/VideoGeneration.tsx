@@ -5,6 +5,7 @@ import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
 import Spinner from "./ui/Spinner";
 import Modal from "./ui/Modal";
+import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import EditableCell from "./EditableCell";
 import ImageLightbox from "./ImageLightbox";
 import AssetPicker from "./AssetPicker";
@@ -20,7 +21,7 @@ import {
   wrapStoryboardTemplate,
   buildShotInfoBlock,
 } from "@/lib/prompts";
-import { isStorageConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "@/lib/storage-provider";
+import { isCosConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
 import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration, isPollingSupported } from "@/lib/image-client";
 import { ASSET_TYPE_LABELS, emptyAsset, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
 import {
@@ -42,6 +43,7 @@ import type {
   Shot,
   ShotVideoConfig,
   StyleSettings,
+  VideoGenSettings,
   VideoGenerationMode,
   VideoRatio,
   VideoResolution,
@@ -110,6 +112,7 @@ function sanitizeConfig(
   if (!cap.webSearch && next.webSearch) next.webSearch = false;
   if (!cap.priority && next.priority !== 0) next.priority = 0;
   if (!cap.draft && next.draft) next.draft = false;
+  if (cap.watermark === false && next.watermark) next.watermark = false;
   return next;
 }
 
@@ -182,7 +185,7 @@ function appendVoiceClauses(
     .join(" ，");
   let p = basePrompt.trim();
   if (!/[。.！？!?]$/.test(p)) p += "。";
-  return `${p}【音色参考】${clauses} 。`;
+  return `${p}\n【音色参考】${clauses} 。`;
 }
 
 export default function VideoGeneration({
@@ -203,7 +206,8 @@ export default function VideoGeneration({
   const [capturingIds, setCapturingIds] = useState<Set<string>>(new Set());
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const showError = useErrorDialog();
+  const confirm = useConfirm();
 
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
 
@@ -308,7 +312,7 @@ export default function VideoGeneration({
       if (shot.videoStatus !== "queued" && shot.videoStatus !== "running") continue;
       if (shot.videoTaskId) {
         setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
-        pollAndFinalize(shot, shot.videoTaskId, signal, { silent: true }).finally(() => {
+        pollAndFinalize(shot, shot.videoTaskId, signal, { silent: true, provider: shot.videoTaskProvider }).finally(() => {
           setVideoGeneratingIds((prev) => {
             const next = new Set(prev);
             next.delete(shot.id);
@@ -367,15 +371,15 @@ export default function VideoGeneration({
           }
           onUpdateShot(shot.id, "storyboardUrl", finalUrl);
           onUpdateShot(shot.id, "imageTaskId", "");
-          // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）
+          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）
           try {
-            if (await isStorageConfigured()) {
+            if (await isCosConfigured()) {
               const { url } = await transferAsset(result.imageUrl, "ai-script/storyboards");
               finalUrl = url;
               onUpdateShot(shot.id, "storyboardUrl", finalUrl);
             }
           } catch (e) {
-            console.error("故事板转存 COS 失败：", (e as Error).message);
+            console.error("故事板转存存储失败：", (e as Error).message);
           }
 
           // 计算故事板名称（用于参考图显示名 + 资产名，与 handleGenerateStoryboard 保持一致）
@@ -452,7 +456,6 @@ export default function VideoGeneration({
 
   async function generateOne(shot: Shot) {
     setGeneratingIds((prev) => new Set(prev).add(shot.id));
-    setError(null);
     try {
       const related = getRelatedAssets(shot);
       const messages = videoPromptMessages(shot, related);
@@ -461,7 +464,7 @@ export default function VideoGeneration({
       console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
       onUpdateShot(shot.id, "finalPrompt", prompt.trim());
     } catch (e) {
-      setError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
+      showError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
     } finally {
       setGeneratingIds((prev) => {
         const next = new Set(prev);
@@ -473,7 +476,6 @@ export default function VideoGeneration({
 
   async function generateAll() {
     setGeneratingAll(true);
-    setError(null);
     for (const shot of episode.shots) {
       setGeneratingIds((prev) => new Set(prev).add(shot.id));
       try {
@@ -484,7 +486,7 @@ export default function VideoGeneration({
         console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
         onUpdateShot(shot.id, "finalPrompt", prompt.trim());
       } catch (e) {
-        setError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
+        showError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
         break;
       } finally {
         setGeneratingIds((prev) => {
@@ -501,8 +503,14 @@ export default function VideoGeneration({
    * 轮询视频任务并收尾：成功则写入 videoUrl 并转存 COS，失败/超时则更新状态。
    * 被 abort（组件卸载）时直接返回，不改动 videoStatus，保留 running 供下次挂载恢复。
    * @param silent 后台恢复时为 true，不弹错误横幅
+   * @param provider 任务创建时的供应商，按此选择查询端点与凭证（支持跨供应商恢复）
    */
-  async function pollAndFinalize(shot: Shot, taskId: string, signal: AbortSignal, opts?: { silent?: boolean }) {
+  async function pollAndFinalize(
+    shot: Shot,
+    taskId: string,
+    signal: AbortSignal,
+    opts?: { silent?: boolean; provider?: VideoGenSettings["provider"] }
+  ) {
     const shotIndex = episode.shots.indexOf(shot) + 1;
     try {
       const final = await pollVideoTask(
@@ -514,45 +522,47 @@ export default function VideoGeneration({
         },
         10000,
         10 * 60 * 1000,
-        signal
+        signal,
+        opts?.provider
       );
       if (signal.aborted) return;
       if (final.status === "succeeded" && final.videoUrl) {
         onUpdateShot(shot.id, "videoUrl", final.videoUrl);
         onUpdateVideoStatus(shot.id, "succeeded");
-        // 自动转存到 COS（Seedance 视频 URL 只有 24h 有效期）
+        // 自动转存到 COS（视频 URL 有有效期）
         await transferVideoToCos(shot, final.videoUrl);
         // 若 API 返回了尾帧图像，自动转存并保存为截屏资产
         if (final.lastFrameUrl) {
           await saveReturnedLastFrame(shot, final.lastFrameUrl);
         }
+      } else if (final.status === "cancelled") {
+        onUpdateVideoStatus(shot.id, "cancelled");
       } else {
-        onUpdateVideoStatus(shot.id, final.status === "expired" ? "expired" : "failed");
+        onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : (final.status === "expired" ? "expired" : "failed"));
         if (!opts?.silent) {
-          setError(`镜头 ${shotIndex} 视频生成失败：${final.error ?? final.status}`);
+          showError(`镜头 ${shotIndex} 视频生成失败：${final.error ?? final.status}`);
         }
       }
     } catch (e) {
       if (signal.aborted) return;
-      onUpdateVideoStatus(shot.id, "failed");
+      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed");
       if (!opts?.silent) {
-        setError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
+        showError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
       }
     }
   }
 
   /** 生成单个镜头的视频 */
-  async function generateVideo(shot: Shot) {
+  async function generateVideo(shot: Shot, opts?: { skipUnusedRefCheck?: boolean }) {
     if (!shot.finalPrompt) {
-      setError(`镜头 ${episode.shots.indexOf(shot) + 1} 还没有视频提示词，请先生成`);
+      showError(`镜头 ${episode.shots.indexOf(shot) + 1} 还没有视频提示词，请先生成`);
       return;
     }
     if (!videoConfigured) {
-      setError("未配置视频生成 API，请先在设置中配置");
+      showError("未配置视频生成 API，请先在设置中配置");
       return;
     }
     setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
-    setError(null);
 
     // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
     const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
@@ -572,6 +582,72 @@ export default function VideoGeneration({
       // 匹配 @name 后接边界字符或字符串结尾
       const re = new RegExp(`@${escaped}(?=${boundaryCharClass}|$)`);
       return re.test(prompt);
+    }
+
+    // 校验：multimodal-ref 模式下若存在未 @ 引用的素材（参考图 / 参考视频 / 参考音频 / 人物音色），弹框确认
+    // 点否：关闭弹框，用户继续编辑；点是：继续生成（后续过滤逻辑会自动丢弃未使用的素材）
+    if (!opts?.skipUnusedRefCheck && config.mode === "multimodal-ref") {
+      const relatedForCheck = getRelatedAssets(shot);
+      const latestCharactersForCheck = getLatestVersions(characterSettings ?? []);
+
+      const unusedImages: string[] = [];
+      const unusedVideos: string[] = [];
+      const unusedAudios: string[] = [];
+
+      // 参考图：关联资产图片 + 手动参考图（标签可能为资产名或 参考图N）
+      relatedForCheck.forEach((a) => {
+        if (a.imageUrl && !mentionedInPrompt(a.name)) unusedImages.push(a.name);
+      });
+      (config.referenceImageAssetUrls ?? []).forEach((_, i) => {
+        const tag = getRefImgName(config.referenceImageAssetNames, i);
+        if (!mentionedInPrompt(tag)) unusedImages.push(tag);
+      });
+
+      // 参考视频：@视频N
+      (config.referenceVideoUrls ?? []).forEach((_, i) => {
+        if (!mentionedInPrompt(`视频${i + 1}`)) unusedVideos.push(`视频${i + 1}`);
+      });
+
+      // 参考音频：@音频N
+      (config.referenceAudioUrls ?? []).forEach((_, i) => {
+        if (!mentionedInPrompt(`音频${i + 1}`)) unusedAudios.push(`音频${i + 1}`);
+      });
+
+      // 人物音色：@人物名音频（仅当该人物已配置 voiceUrl 才算可用素材）
+      relatedForCheck
+        .filter((a) => a.type === "character")
+        .forEach((a) => {
+          const matched = latestCharactersForCheck.find(
+            (c) => c.name && c.name.toLowerCase() === a.name.toLowerCase()
+          );
+          if (matched?.voiceUrl && !mentionedInPrompt(`${a.name}音频`)) {
+            unusedAudios.push(`${a.name}音频`);
+          }
+        });
+
+      const total = unusedImages.length + unusedVideos.length + unusedAudios.length;
+      if (total > 0) {
+        const sections: string[] = [];
+        if (unusedImages.length > 0) {
+          sections.push(`【参考图】\n${unusedImages.map((n) => `• ${n}`).join("\n")}`);
+        }
+        if (unusedVideos.length > 0) {
+          sections.push(`【参考视频】\n${unusedVideos.map((n) => `• ${n}`).join("\n")}`);
+        }
+        if (unusedAudios.length > 0) {
+          sections.push(`【参考音频】\n${unusedAudios.map((n) => `• ${n}`).join("\n")}`);
+        }
+        const ok = await confirm({
+          message: `检测到以下素材未在提示词中使用：\n${sections.join("\n")}\n是否继续？`,
+          confirmText: "是",
+          cancelText: "否",
+          variant: "primary",
+        });
+        if (!ok) {
+          setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
+          return;
+        }
+      }
     }
 
     // 收集关联资产的图片 URL：仅保留在 finalPrompt 中被 @ 到的资产（未 @ 的不作为参考图传给 API）
@@ -617,7 +693,7 @@ export default function VideoGeneration({
     if (config.mode === "first-frame") {
       firstFrameUrl = config.firstFrameImageUrl;
       if (!firstFrameUrl) {
-        setError(`镜头 ${shotIndex} 首帧模式需要上传首帧图片，请在卡片参数中上传`);
+        showError(`镜头 ${shotIndex} 首帧模式需要上传首帧图片，请在卡片参数中上传`);
         setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
         return;
       }
@@ -625,7 +701,7 @@ export default function VideoGeneration({
       firstFrameUrl = config.firstFrameImageUrl;
       lastFrameUrl = config.lastFrameImageUrl;
       if (!firstFrameUrl || !lastFrameUrl) {
-        setError(`镜头 ${shotIndex} 首尾帧模式需要上传首帧与尾帧图片，请在卡片参数中上传`);
+        showError(`镜头 ${shotIndex} 首尾帧模式需要上传首帧与尾帧图片，请在卡片参数中上传`);
         setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
         return;
       }
@@ -642,7 +718,7 @@ export default function VideoGeneration({
 
       const vidCount = usedReferenceVideoUrls.length;
       if (referenceImageUrls.length === 0 && vidCount === 0) {
-        setError(`镜头 ${shotIndex} 多模态参考模式需至少提供 1 张参考图（在提示词中 @ 关联资产或参考图）或 1 个参考视频（在提示词中 @视频N）`);
+        showError(`镜头 ${shotIndex} 多模态参考模式需至少提供 1 张参考图（在提示词中 @ 关联资产或参考图）或 1 个参考视频（在提示词中 @视频N）`);
         setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
         return;
       }
@@ -755,13 +831,16 @@ export default function VideoGeneration({
         referenceAudioUrls: mergedAudioUrls,
       });
       onUpdateShot(shot.id, "videoTaskId", createResult.taskId);
+      if (createResult.provider) {
+        onUpdateShot(shot.id, "videoTaskProvider", createResult.provider);
+      }
       onUpdateVideoStatus(shot.id, "running");
 
       // 轮询任务状态并收尾（内部已捕获轮询错误，仅 createTask 阶段错误会落到 catch）
-      await pollAndFinalize(shot, createResult.taskId, abortRef.current!.signal);
+      await pollAndFinalize(shot, createResult.taskId, abortRef.current!.signal, { provider: createResult.provider });
     } catch (e) {
-      onUpdateVideoStatus(shot.id, "failed");
-      setError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
+      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed");
+      showError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
     } finally {
       setVideoGeneratingIds((prev) => {
         const next = new Set(prev);
@@ -774,52 +853,50 @@ export default function VideoGeneration({
   /** 批量生成所有镜头视频 */
   async function generateAllVideos() {
     if (!videoConfigured) {
-      setError("未配置视频生成 API");
+      showError("未配置视频生成 API");
       return;
     }
     const pending = episode.shots.filter(
       (s) => s.finalPrompt && s.videoStatus !== "succeeded"
     );
     if (pending.length === 0) {
-      setError("没有待生成视频的镜头");
+      showError("没有待生成视频的镜头");
       return;
     }
-    setError(null);
     for (const shot of pending) {
-      await generateVideo(shot);
+      await generateVideo(shot, { skipUnusedRefCheck: true });
     }
   }
 
-  /** 取消排队中的视频任务 */
+  /** 取消排队中的视频任务（APIMart 为本地取消，ark 为上游 DELETE） */
   async function cancelVideo(shot: Shot) {
     if (!shot.videoTaskId) return;
-    setError(null);
     try {
-      await cancelVideoTask(shot.videoTaskId);
+      await cancelVideoTask(shot.videoTaskId, shot.videoTaskProvider);
       onUpdateVideoStatus(shot.id, "cancelled");
     } catch (e) {
-      setError(`取消失败：${(e as Error).message}`);
+      showError(`取消失败：${(e as Error).message}`);
     }
   }
 
-  /** 将 Seedance 生成的视频转存到 COS（24h 过期保护） */
+  /** 将 Seedance 生成的视频转存到存储（24h 过期保护） */
   async function transferVideoToCos(shot: Shot, sourceUrl: string) {
-    if (!(await isStorageConfigured())) return;
+    if (!(await isCosConfigured())) return;
 
     try {
-      const { url } = await transferAsset(sourceUrl, "ai-script/assets");
+      const { url } = await transferAsset(sourceUrl, "ai-script/videos");
       onUpdateShot(shot.id, "videoUrl", url);
     } catch (e) {
-      console.error("视频转存 COS 失败：", (e as Error).message);
+      console.error("视频转存存储失败：", (e as Error).message);
     }
   }
 
-  /** 将 API 返回的尾帧图像转存到 COS 并保存为截屏资产 */
+  /** 将 API 返回的尾帧图像转存到存储并保存为截屏资产 */
   async function saveReturnedLastFrame(shot: Shot, sourceUrl: string) {
     const shotIndex = episode.shots.indexOf(shot) + 1;
     try {
       let imageUrl = sourceUrl;
-      if (await isStorageConfigured()) {
+      if (await isCosConfigured()) {
         const { url } = await transferAsset(sourceUrl, "ai-script/screenshots");
         imageUrl = url;
       }
@@ -849,12 +926,11 @@ export default function VideoGeneration({
 
   /** 截取视频尾帧并保存为截屏资产 */
   async function captureLastFrame(shot: Shot, index: number) {
-    if (!(await isStorageConfigured())) {
-      setError("请先配置存储方式，再截取尾帧");
+    if (!(await isCosConfigured())) {
+      showError("请先配置存储方式，再截取尾帧");
       return;
     }
     setCapturingIds((prev) => new Set(prev).add(shot.id));
-    setError(null);
 
     try {
       const base64 = await extractVideoLastFrame(shot.videoUrl);
@@ -879,7 +955,7 @@ export default function VideoGeneration({
         });
       }, 2000);
     } catch (e) {
-      setError(`截取尾帧失败：${(e as Error).message}`);
+      showError(`截取尾帧失败：${(e as Error).message}`);
     } finally {
       setCapturingIds((prev) => {
         const next = new Set(prev);
@@ -1086,7 +1162,6 @@ export default function VideoGeneration({
                   return next;
                 })
               }
-              onSetError={setError}
               videoConfigured={videoConfigured}
               onGeneratePrompt={() => generateOne(shot)}
               onGenerateVideo={() => generateVideo(shot)}
@@ -1413,7 +1488,6 @@ function VideoCard({
   onCaptureScreenshot,
   isCapturing,
   isSaved,
-  onSetError,
   onAddAsset,
   abortSignal,
 }: {
@@ -1448,16 +1522,14 @@ function VideoCard({
   isGeneratingStoryboard: boolean;
   onSetGeneratingStoryboard: (value: boolean) => void;
   onCaptureScreenshot: () => void;
-  onSetError: (error: string | null) => void;
   onAddAsset: (asset: Asset) => void;
   /** 组件级 AbortSignal，切页/卸载时取消故事板图片生成轮询（保留 jobId 供恢复） */
   abortSignal?: AbortSignal;
 }) {
   const hasPrompt = !!shot.finalPrompt;
   const videoStatus = shot.videoStatus ?? "idle";
+  const isVideoReady = videoStatus === "succeeded" && !!shot.videoUrl;
   const isVideoBusy = videoStatus === "queued" || videoStatus === "running" || isGeneratingVideo;
-  // 非 busy 且有 videoUrl 即展示旧视频（重新生成失败/超时后保留上一次结果，不丢失）
-  const isVideoReady = !isVideoBusy && !!shot.videoUrl;
 
   // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
   const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
@@ -1468,12 +1540,29 @@ function VideoCard({
         getVideoModelCapability(defaultVidModel, videoModels)
       );
   const cap = getVideoModelCapability(config.model, videoModels);
+
+  // 供应商切换后，当前 model 可能不在新供应商的模型列表中（如 ark 的 doubao-seedance-2-0-260128
+  // 不在 apimart 的列表里）。检测到时自动收敛到新供应商的默认模型并按新能力收敛参数，
+  // 确保切回视频生成页时参数与供应商一致。
+  useEffect(() => {
+    if (videoModels.length === 0) return;
+    const saved = shot.videoConfig;
+    if (!saved) return;
+    if (videoModels.some((m) => m.value === saved.model)) return;
+    const newModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
+    const newCap = getVideoModelCapability(newModel, videoModels);
+    const sanitized = sanitizeConfig(
+      { ...DEFAULT_SHOT_VIDEO_CONFIG, ...saved, model: newModel },
+      newCap
+    );
+    onUpdateVideoConfig(sanitized);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoModels, shot.videoConfig?.model]);
   const [showVideoConfig, setShowVideoConfig] = useState(false);
   const [showInputMaterials, setShowInputMaterials] = useState(true);
   const [showShotInfo, setShowShotInfo] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"video" | "audio" | "firstFrame" | "lastFrame" | "refImage" | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
+  const showError = useErrorDialog();
   const [pickerTarget, setPickerTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | "refVideo" | "refAudio" | null>(null);
 
   // 故事板生成状态
@@ -1528,14 +1617,13 @@ function VideoCard({
       return null;
     })();
     if (!targetName) {
-      setNoticeMessage("参考图中，未包含故事板");
+      showError("参考图中，未包含故事板");
       return;
     }
     const block = `【故事板】\n请参考故事板@${targetName}  生成视频。`;
     const current = shot.finalPrompt ?? "";
     const next = current.trim() ? `${current.trim()}\n\n${block}` : block;
     onUpdatePrompt(next);
-    setUploadError(null);
   }
 
   // 添加素材ID功能暂时隐藏
@@ -1585,16 +1673,15 @@ function VideoCard({
       const file = input.files?.[0];
       if (!file) return;
       setUploadingKind(kind);
-      setUploadError(null);
       try {
         const url = await uploadRefFile(file, `${kind}-${shot.id}`);
         if (kind === "video") {
           const arr = config.referenceVideoUrls ?? [];
-          if (arr.length >= 3) { setUploadError("参考视频最多 3 个"); return; }
+          if (arr.length >= 3) { showError("参考视频最多 3 个"); return; }
           onUpdateVideoConfig({ referenceVideoUrls: [...arr, url] });
         } else if (kind === "audio") {
           const arr = config.referenceAudioUrls ?? [];
-          if (arr.length >= 3) { setUploadError("参考音频最多 3 个"); return; }
+          if (arr.length >= 3) { showError("参考音频最多 3 个"); return; }
           onUpdateVideoConfig({ referenceAudioUrls: [...arr, url] });
         } else if (kind === "refImage") {
           const names = config.referenceImageAssetNames ?? [];
@@ -1609,7 +1696,7 @@ function VideoCard({
           onUpdateVideoConfig({ lastFrameImageUrl: url });
         }
       } catch (e) {
-        setUploadError((e as Error).message);
+        showError((e as Error).message);
       } finally {
         setUploadingKind(null);
       }
@@ -1686,7 +1773,6 @@ function VideoCard({
     setStoryboardOpen(false);
     setStoryboardConfig(params.config);
     onSetGeneratingStoryboard(true);
-    setUploadError(null);
     try {
       // 发送给图片模型前确定性替换 @资产名称 -> 图片N（兜底，不依赖 LLM 自觉）
       // 编号与 params.images 数组顺序一致；标签缺省时回退 图片N（此时 @图片N -> 图片N 无实质变化）
@@ -1712,15 +1798,15 @@ function VideoCard({
       let finalUrl = result.imageUrl;
       onUpdateShotField("storyboardUrl", finalUrl);
       onUpdateShotField("imageTaskId", "");
-      // 转存到 COS（Seedream 图片 URL 只有 24h 有效期）；失败时回退使用临时 URL，不阻断后续入库
+      // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；失败时回退使用临时 URL，不阻断后续入库
       try {
-        if (await isStorageConfigured()) {
+        if (await isCosConfigured()) {
           const { url } = await transferAsset(result.imageUrl, "ai-script/storyboards");
           finalUrl = url;
           onUpdateShotField("storyboardUrl", finalUrl);
         }
       } catch (e) {
-        console.error("故事板转存 COS 失败：", (e as Error).message);
+        console.error("故事板转存存储失败：", (e as Error).message);
       }
 
       // 保存为故事板资产：自动命名为“剧集名-镜头名-故事版n”
@@ -1751,7 +1837,7 @@ function VideoCard({
       const isAborted = abortSignal?.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         onUpdateShotField("imageTaskId", "");
-        setUploadError(`故事板生成失败：${(e as Error).message}`);
+        showError(`故事板生成失败：${(e as Error).message}`);
       }
     } finally {
       onSetGeneratingStoryboard(false);
@@ -2318,10 +2404,12 @@ function VideoCard({
               </div>
 
               <div className="flex flex-wrap items-center gap-4 pt-0.5">
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                  <input type="checkbox" checked={config.watermark} onChange={(e) => onUpdateVideoConfig({ watermark: e.target.checked })} className="h-3.5 w-3.5" />
-                  水印
-                </label>
+                {cap.watermark !== false && (
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                    <input type="checkbox" checked={config.watermark} onChange={(e) => onUpdateVideoConfig({ watermark: e.target.checked })} className="h-3.5 w-3.5" />
+                    水印
+                  </label>
+                )}
                 {cap.audio && (
                   <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
                     <input type="checkbox" checked={config.generateAudio} onChange={(e) => onUpdateVideoConfig({ generateAudio: e.target.checked })} className="h-3.5 w-3.5" />
@@ -2581,49 +2669,6 @@ function VideoCard({
           </label>
         }
       />
-
-      <Modal
-        open={!!noticeMessage}
-        onClose={() => setNoticeMessage(null)}
-        title="提示"
-        width="max-w-sm"
-        footer={
-          <Button variant="primary" onClick={() => setNoticeMessage(null)}>
-            我知道了
-          </Button>
-        }
-      >
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-500">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
-              <path d="M12 11v5m0-8h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{noticeMessage}</p>
-        </div>
-      </Modal>
-
-      <Modal
-        open={!!(error || uploadError)}
-        onClose={() => { setError(null); setUploadError(null); }}
-        title="出错了"
-        width="max-w-sm"
-        footer={
-          <Button variant="danger" onClick={() => { setError(null); setUploadError(null); }}>
-            我知道了
-          </Button>
-        }
-      >
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <p className="pt-1 text-sm leading-relaxed text-slate-600 whitespace-pre-line">{error || uploadError}</p>
-        </div>
-      </Modal>
     </div>
   );
 }

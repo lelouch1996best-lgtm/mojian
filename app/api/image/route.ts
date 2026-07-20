@@ -24,8 +24,79 @@ export async function POST(req: Request) {
 
   const base = body.baseURL.replace(/\/+$/, "");
 
+  // ---- APIMart 供应商：始终异步，参考图走 image_urls，提交响应为 { code, data:[{task_id}] } ----
+  if (body.provider === "apimart") {
+    const upstreamBody: Record<string, unknown> = {
+      model: body.model,
+      prompt: body.prompt,
+      n: 1,
+    };
+    if (body.size) upstreamBody.size = body.size;
+    if (body.resolution) upstreamBody.resolution = body.resolution;
+    if (body.images && body.images.length > 0) {
+      upstreamBody.image_urls = body.images.slice(0, 16);
+    }
+
+    let apimartRes: Response;
+    try {
+      apimartRes = await fetch(`${base}/images/generations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${body.apiKey}`,
+        },
+        body: JSON.stringify(upstreamBody),
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });
+    }
+
+    if (!apimartRes.ok) {
+      const errText = await apimartRes.text().catch(() => "");
+      let friendly = errText.slice(0, 500);
+      try {
+        const errJson = JSON.parse(errText);
+        friendly = errJson?.error?.message ?? friendly;
+      } catch {
+        /* keep raw */
+      }
+      return Response.json(
+        { error: `上游错误（${apimartRes.status}）：${friendly}` },
+        { status: apimartRes.status || 502 }
+      );
+    }
+
+    const apimartRaw = await apimartRes.text().catch(() => "");
+    let apimartData: Record<string, unknown>;
+    try {
+      apimartData = JSON.parse(apimartRaw);
+    } catch {
+      const snippet = apimartRaw.slice(0, 300).replace(/\s+/g, " ").trim();
+      return Response.json(
+        {
+          error: `上游返回了非 JSON 响应（可能是 baseURL 错误或代理返回了 HTML 页面）。HTTP ${apimartRes.status}，内容片段：${snippet || "(空)"}`,
+        },
+        { status: 502 }
+      );
+    }
+
+    // 提交响应：{ code: 200, data: [{ status: "submitted", task_id }] }
+    const arr = (apimartData as { data?: Array<{ task_id?: string; status?: string }> })?.data;
+    const first = Array.isArray(arr) && arr.length > 0 ? arr[0] : undefined;
+    const taskId = first?.task_id;
+    if (!taskId) {
+      return Response.json({ error: "APIMart 未返回 task_id" }, { status: 502 });
+    }
+    const result: ImageAsyncCreateResponse = {
+      jobId: taskId,
+      status: first?.status ?? "submitted",
+    };
+    return Response.json(result);
+  }
+
   // 按模型能力条件性构造上游请求体（参照 docs/gpt2.md、docs/image.md 参数支持矩阵）
-  const cap = getImageModelCapability(body.model);
+  const cap = getImageModelCapability(body.model, undefined, body.provider);
   const asyncMode = !!body.asyncMode;
 
   // gpt-image-2 有参考图时走 /images/edits 端点（multipart/form-data，image 为文件字段）

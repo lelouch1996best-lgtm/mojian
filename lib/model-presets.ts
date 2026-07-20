@@ -188,6 +188,18 @@ export const DEFAULT_IMAGE_MODELS: Record<ImageGenSettings["provider"], ModelEnt
       },
     },
   ],
+  apimart: [
+    {
+      value: "gpt-image-2", label: "GPT-Image-2",
+      hint: "APIMart gpt-image-2，异步任务模式，支持 15 种比例 + 1K/2K/4K 分辨率，参考图最多 16 张",
+      isDefault: true,
+      capability: {
+        resolutions: ["1K", "2K", "4K"], outputFormat: false, webSearch: false,
+        optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
+        watermark: false, responseFormat: false, quality: false, supportsPolling: true, maxRefImages: 16,
+      },
+    },
+  ],
   custom: [],
 };
 
@@ -331,6 +343,45 @@ export const DEFAULT_VIDEO_MODELS: Record<VideoGenSettings["provider"], ModelEnt
       },
     },
   ],
+  apimart: [
+    {
+      value: "doubao-seedance-2.0", label: "Seedance 2.0（APIMart）",
+      hint: "APIMart 标准版，音画同生，多模态参考，480p/720p/1080p/4k，4-15s",
+      isDefault: true,
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p", "1080p", "4k"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: false, audio: true, draft: false,
+        seed: true, cameraFixed: false, webSearch: true, priority: false,
+        returnLastFrame: true, watermark: false,
+      },
+    },
+    {
+      value: "doubao-seedance-2.0-fast", label: "Seedance 2.0 fast（APIMart）",
+      hint: "APIMart 快速版，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: false, audio: true, draft: false,
+        seed: true, cameraFixed: false, webSearch: true, priority: false,
+        returnLastFrame: true, watermark: false,
+      },
+    },
+    {
+      value: "doubao-seedance-2.0-mini", label: "Seedance 2.0 mini（APIMart）",
+      hint: "APIMart 迷你版，仅 480p/720p，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+        durationRange: [4, 15], durationAuto: false, audio: true, draft: false,
+        seed: true, cameraFixed: false, webSearch: true, priority: false,
+        returnLastFrame: true, watermark: false,
+      },
+    },
+  ],
   custom: [],
 };
 
@@ -471,6 +522,25 @@ export const IMAGE_MODEL_CAPABILITIES: Record<string, ImageModelCapability> = {
   },
 };
 
+/** 供应商级模型能力覆盖（键格式 `${provider}:${modelValue}`）。
+ *  用于同一模型名在不同供应商下能力不同的情况（如 gpt-image-2 在 65535 与 APIMart 下参数不同）。
+ *  覆盖优先于全局 IMAGE_MODEL_CAPABILITIES，未命中的模型仍走全局注册表/FALLBACK。 */
+export const IMAGE_MODEL_CAPABILITIES_BY_PROVIDER: Record<string, ImageModelCapability> = {
+  "apimart:gpt-image-2": {
+    resolutions: ["1K", "2K", "4K"],
+    outputFormat: false,
+    webSearch: false,
+    optimizePrompt: false,
+    optimizePromptFast: false,
+    sequentialImageGen: false,
+    watermark: false,
+    responseFormat: false,
+    quality: false,
+    supportsPolling: true,
+    maxRefImages: 16,
+  },
+};
+
 /** 未知/用户自定义模型的保守回退（启用所有功能，由上游 API 决定是否报错） */
 const FALLBACK_IMAGE_CAPABILITY: ImageModelCapability = {
   resolutions: ["2K"],
@@ -486,14 +556,21 @@ const FALLBACK_IMAGE_CAPABILITY: ImageModelCapability = {
 
 /**
  * 查询图片模型能力。
+ * - 供应商级覆盖（IMAGE_MODEL_CAPABILITIES_BY_PROVIDER）：优先级最高，用于同一模型名在不同供应商下能力不同的情况
+ *   （如 gpt-image-2 在 65535 与 APIMart 下参数不同）。需传入 provider 才会命中。
  * - 内置模型（在 IMAGE_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源，忽略数据库中的旧值
  *   （避免代码更新能力矩阵后数据库残留旧值导致能力不生效）
  * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
  */
 export function getImageModelCapability(
   modelValue: string,
-  models?: ModelEntry[]
+  models?: ModelEntry[],
+  provider?: string
 ): ImageModelCapability {
+  if (provider) {
+    const override = IMAGE_MODEL_CAPABILITIES_BY_PROVIDER[`${provider}:${modelValue}`];
+    if (override) return override;
+  }
   const registry = IMAGE_MODEL_CAPABILITIES[modelValue];
   if (registry) return registry;
   const base = FALLBACK_IMAGE_CAPABILITY;
@@ -529,6 +606,8 @@ export interface VideoModelCapability {
   priority: boolean;
   /** 是否支持返回尾帧图像 */
   returnLastFrame: boolean;
+  /** 是否支持水印（ark 支持；APIMart 不支持，false 时 UI 隐藏开关）。缺省（undefined）视为支持 */
+  watermark?: boolean;
 }
 
 /** 各模型能力注册表（键与 DEFAULT_VIDEO_MODELS 的 value 对齐） */
@@ -616,6 +695,51 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     webSearch: false,
     priority: false,
     returnLastFrame: true,
+  },
+  "doubao-seedance-2.0": {
+    modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+    resolutions: ["480p", "720p", "1080p", "4k"],
+    ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+    durationRange: [4, 15],
+    durationAuto: false,
+    audio: true,
+    draft: false,
+    seed: true,
+    cameraFixed: false,
+    webSearch: true,
+    priority: false,
+    returnLastFrame: true,
+    watermark: false,
+  },
+  "doubao-seedance-2.0-fast": {
+    modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+    resolutions: ["480p", "720p"],
+    ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+    durationRange: [4, 15],
+    durationAuto: false,
+    audio: true,
+    draft: false,
+    seed: true,
+    cameraFixed: false,
+    webSearch: true,
+    priority: false,
+    returnLastFrame: true,
+    watermark: false,
+  },
+  "doubao-seedance-2.0-mini": {
+    modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+    resolutions: ["480p", "720p"],
+    ratios: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"],
+    durationRange: [4, 15],
+    durationAuto: false,
+    audio: true,
+    draft: false,
+    seed: true,
+    cameraFixed: false,
+    webSearch: true,
+    priority: false,
+    returnLastFrame: true,
+    watermark: false,
   },
 };
 

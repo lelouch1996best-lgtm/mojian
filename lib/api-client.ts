@@ -49,4 +49,9 @@ export const apiClient = {
 
   // Asset Library
   listAssetLibrary: () => request<AssetLibraryItem[]>("/data/assets"),
+  deleteAssetLibraryItems: (ids: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/data/assets", {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    }),
 };

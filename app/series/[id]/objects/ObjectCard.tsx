@@ -2,6 +2,7 @@ import { useRef } from "react";
 import type { ObjectProfile } from "@/lib/types";
 import Spinner from "@/components/ui/Spinner";
 import ImageLightbox from "@/components/ImageLightbox";
+import ImageActionToolbar from "@/components/ImageActionToolbar";
 
 /** 单个物品版本卡片 */
 export function ObjectCard({
@@ -33,7 +34,7 @@ export function ObjectCard({
       isLatest ? "border-brand-300" : "border-slate-200"
     }`}>
       {/* 图片区域 */}
-      <div className="relative flex h-28 items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
+      <div className="group relative flex h-28 items-center justify-center bg-gradient-to-br from-slate-50 to-slate-100">
         {object.imageUrl ? (
           <ImageLightbox src={object.imageUrl} alt={object.name} className="h-full w-full">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -98,36 +99,13 @@ export function ObjectCard({
           {object.versionLabel || `v${object.version}`}
           {isLatest && " · 最新"}
         </span>
-        {/* 重新生成按钮 */}
-        {object.imageUrl && !isGenerating && (
-          <button onClick={onGenerateImage}
-            className="absolute bottom-2 right-2 rounded-md bg-white/80 p-1.5 text-slate-500 backdrop-blur transition-colors hover:text-brand-500"
-            title="重新生成图片">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <path d="M21 12a9 9 0 11-3-6.7M21 4v4h-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </button>
+        {object.imageUrl && !isGenerating && !isUploading && (
+          <ImageActionToolbar
+            onRegenerate={onGenerateImage}
+            onUpload={() => fileInputRef.current?.click()}
+            onDelete={onDelete}
+          />
         )}
-        {/* 上传替换按钮 */}
-        {object.imageUrl && !isUploading && (
-          <button onClick={() => fileInputRef.current?.click()}
-            className="absolute right-2 top-10 rounded-md bg-white/80 p-1.5 text-slate-500 backdrop-blur transition-colors hover:text-brand-500"
-            title="上传替换图片">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          </button>
-        )}
-        {/* 删除按钮 */}
-        <button onClick={onDelete}
-          className="absolute right-2 top-2 rounded-md bg-white/80 p-1 text-slate-400 backdrop-blur transition-colors hover:text-red-500"
-          title="删除此版本">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0v12a1 1 0 001 1h6a1 1 0 001-1V7"
-              stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
       </div>
 
       {/* 卡片内容 */}
