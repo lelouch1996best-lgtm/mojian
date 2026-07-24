@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { getImageSettings } from "./image-client";
 import { apiClient } from "./api-client";
+import { getVideoModels, getDefaultShotVideoConfig, saveDefaultShotVideoConfig, type ModelOption } from "./model-presets";
 
 /** 视频供应商预设 */
 export interface VideoProviderPreset {
@@ -58,8 +59,6 @@ export async function getVideoSettings(): Promise<VideoGenSettings | null> {
   try {
     const s = await apiClient.getSetting<VideoGenSettings>("video");
     if (s) {
-      // 向后兼容：旧数据缺少 provider 字段时默认 ark
-      if (!s.provider) return { ...DEFAULT_VIDEO_SETTINGS, ...s, provider: "ark" };
       return s;
     }
     // 未配置时，尝试复用图片 API 的 Key（当图片 provider 同为火山引擎系时）
@@ -90,15 +89,8 @@ export async function isVideoConfigured(): Promise<boolean> {
 /** 获取各视频 provider 缓存的配置（切换供应商时自动恢复，含 baseURL） */
 export async function getVideoProviderKeys(): Promise<ProviderCache> {
   try {
-    const raw = await apiClient.getSetting<Record<string, unknown>>("video_provider_keys");
-    if (!raw) return {};
-    const result: ProviderCache = {};
-    for (const [k, v] of Object.entries(raw)) {
-      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
-      if (typeof v === "string") result[k] = { apiKey: v };
-      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
-    }
-    return result;
+    const raw = await apiClient.getSetting<ProviderCache>("video_provider_keys");
+    return raw ?? {};
   } catch {
     return {};
   }
@@ -142,6 +134,42 @@ async function resolveVideoCredentials(
   }
   if (!apiKey || !baseURL) return null;
   return { provider: p, apiKey, baseURL };
+}
+
+/**
+ * 聚合所有「已配置 API Key」的视频供应商的全部模型（供模型选择弹框使用）。
+ * - 已配置 = 当前激活供应商有 apiKey，或在 video_provider_keys 缓存中有 apiKey 的供应商；
+ * - 每个模型条目携带其供应商与供应商显示名，便于按供应商分组展示与生成时路由凭证。
+ * 新增供应商 / 修改模型参数 / 新增模型后，调用本函数即可取到最新全集。
+ */
+export async function getAllConfiguredVideoModels(): Promise<ModelOption[]> {
+  const current = await getVideoSettings();
+  const cache = await getVideoProviderKeys();
+  const configuredProviders = new Set<string>();
+  if (current?.apiKey) configuredProviders.add(current.provider);
+  for (const [p, entry] of Object.entries(cache)) {
+    if (entry?.apiKey) configuredProviders.add(p);
+  }
+  const options: ModelOption[] = [];
+  for (const p of Array.from(configuredProviders)) {
+    const preset = VIDEO_PROVIDER_PRESETS[p as VideoGenSettings["provider"]];
+    if (!preset) continue;
+    const models = await getVideoModels(p as VideoGenSettings["provider"]);
+    for (const entry of models) {
+      options.push({ provider: p, providerLabel: preset.label, entry });
+    }
+  }
+  return options;
+}
+
+/**
+ * 若用户尚未设置默认视频模型（存储值 model 为空），则把当前生成所用模型+供应商持久化为默认。
+ * 仅在「首次生成」时落盘一次；用户已在「默认生成参数」中主动选择模型时为空操作。
+ */
+export async function saveDefaultShotVideoConfigIfEmpty(config: ShotVideoConfig): Promise<void> {
+  const current = await getDefaultShotVideoConfig();
+  if (current.model) return;
+  await saveDefaultShotVideoConfig({ ...current, model: config.model, provider: config.provider });
 }
 
 /**
@@ -194,6 +222,11 @@ function buildVideoContent(params: {
   return content;
 }
 
+/** 判断是否为 APIMart Grok Imagine 1.5 视频模型（兼容别名 -ext） */
+export function isGrokVideoModel(model: string): boolean {
+  return model === "grok-imagine-1.5-video-apimart" || model === "grok-imagine-1.5-video-ext";
+}
+
 /**
  * 构造发送给视频生成 API 的完整请求体（按 provider 选择 ark content[] 或 APIMart 扁平结构）
  */
@@ -211,25 +244,39 @@ export function buildVideoUpstreamPayload(params: {
 
   // ---- APIMart：扁平结构，size=宽高比，image_with_roles/image_urls/video_urls/audio_urls ----
   if (provider === "apimart") {
+    const isGrok = isGrokVideoModel(config.model);
     const p: VideoApimartUpstreamPayload = { model: config.model, prompt, size: config.ratio };
-    if (config.resolution) p.resolution = config.resolution;
-    // APIMart 无 duration=-1 自动档：-1 时省略，用上游默认 5
+    // 分辨率/质量：Grok 用 quality（480p/720p），Seedance 用 resolution
+    if (isGrok) {
+      if (config.resolution) p.quality = config.resolution;
+    } else {
+      if (config.resolution) p.resolution = config.resolution;
+    }
+    // APIMart 无 duration=-1 自动档：-1 时省略，用上游默认
     if (typeof config.duration === "number" && config.duration !== -1) p.duration = config.duration;
     if (typeof config.generateAudio === "boolean") p.generate_audio = config.generateAudio;
     if (typeof config.seed === "number" && config.seed !== -1) p.seed = config.seed;
     if (typeof config.returnLastFrame === "boolean") p.return_last_frame = config.returnLastFrame;
     if (config.webSearch) p.tools = [{ type: "web_search" }];
     if (config.mode === "first-frame" && params.firstFrameUrl) {
-      p.image_with_roles = [{ url: params.firstFrameUrl, role: "first_frame" }];
+      // Grok 图生视频用普通 image_urls（不支持角色）；Seedance 用 image_with_roles
+      if (isGrok) {
+        p.image_urls = [params.firstFrameUrl];
+      } else {
+        p.image_with_roles = [{ url: params.firstFrameUrl, role: "first_frame" }];
+      }
     } else if (config.mode === "first-last-frame" && params.firstFrameUrl && params.lastFrameUrl) {
       p.image_with_roles = [
         { url: params.firstFrameUrl, role: "first_frame" },
         { url: params.lastFrameUrl, role: "last_frame" },
       ];
     } else if (config.mode === "multimodal-ref") {
+      // 多图参考：Seedance 支持 图/视频/音频；Grok 仅支持 image_urls（最多 7 张），不发送 video_urls/audio_urls
       if (params.referenceImageUrls?.length) p.image_urls = params.referenceImageUrls;
-      if (params.referenceVideoUrls?.length) p.video_urls = params.referenceVideoUrls;
-      if (params.referenceAudioUrls?.length) p.audio_urls = params.referenceAudioUrls;
+      if (!isGrok) {
+        if (params.referenceVideoUrls?.length) p.video_urls = params.referenceVideoUrls;
+        if (params.referenceAudioUrls?.length) p.audio_urls = params.referenceAudioUrls;
+      }
     }
     // text2video：仅 prompt，不加素材
     return p;
@@ -280,19 +327,26 @@ export async function createVideoTask(params: {
   referenceAudioUrls?: string[];
 }): Promise<VideoCreateProxyResponse> {
   const { config } = params;
-  const s = await getVideoSettings();
-  if (!s || !s.apiKey) {
+  // 未选择模型（且无任何已配置供应商可回退）时，明确提示先配置，避免发出空 model 的请求
+  if (!config.model) {
+    throw new Error("未选择视频生成模型，请先在「设置 -> 默认生成参数」中选择默认模型，或先配置视频生成 API");
+  }
+  // 首次生成时把当前选用模型落盘为默认（用户未主动设置默认模型时生效一次）
+  await saveDefaultShotVideoConfigIfEmpty(config);
+  // 按所选模型所属供应商解析凭证（跨供应商生成）；缺省回退当前激活供应商
+  const creds = await resolveVideoCredentials(config.provider);
+  if (!creds || !creds.apiKey) {
     throw new Error("未配置视频生成 API，请先在设置中填写");
   }
 
   // 前端构造完整上游请求体（可在控制台核对参数是否与文档一致）
-  const payload = buildVideoUpstreamPayload({ ...params, provider: s.provider });
+  const payload = buildVideoUpstreamPayload({ ...params, provider: creds.provider });
   console.log("[VideoGeneration] 上游请求 payload：", payload);
 
   const body: VideoCreateProxyRequest = {
-    provider: s.provider,
-    apiKey: s.apiKey,
-    baseURL: s.baseURL,
+    provider: creds.provider,
+    apiKey: creds.apiKey,
+    baseURL: creds.baseURL,
     payload,
   };
   const res = await fetch("/api/video/create", {
@@ -310,7 +364,9 @@ export async function createVideoTask(params: {
     }
     throw new Error(msg);
   }
-  return (await res.json()) as VideoCreateProxyResponse;
+  const response = (await res.json()) as VideoCreateProxyResponse;
+  // 始终回传实际使用的供应商，供调用方持久化到 Shot.videoTaskProvider（恢复轮询时按此路由凭证）
+  return { ...response, provider: creds.provider };
 }
 
 /** 查询视频生成任务状态（按任务创建时的供应商解析凭证，支持跨供应商恢复） */

@@ -43,22 +43,36 @@ export function hasSceneSettings(s: SceneProfile[] | null | undefined): boolean 
   return s.some((sc) => sc.name?.trim());
 }
 
-/**
- * 从场景列表中，按 sceneId 分组，取每组 version 最大的。
- * 兼容旧数据（无 sceneId 的视为各自独立）。
- */
+/** 检查单个场景档案是否有任何有效内容（名称/文本字段/图片/参考图/生图任务任一存在）。
+ *  用于自动保存时过滤完全空白的占位记录，避免只上传图片未填名称时记录被误删。 */
+export function isSceneProfileValid(s: SceneProfile | null | undefined): boolean {
+  if (!s) return false;
+  return Boolean(
+    s.name?.trim() ||
+      s.category?.trim() ||
+      s.appearance?.trim() ||
+      s.lightingMood?.trim() ||
+      s.origin?.trim() ||
+      s.versionLabel?.trim() ||
+      s.imageUrl ||
+      (s.referenceImages && s.referenceImages.length > 0) ||
+      s.imageTaskId
+  );
+}
+
+/** 从场景列表中，按 sceneId 分组，取每组 version 最大的 */
 export function getLatestSceneVersions(s: SceneProfile[]): SceneProfile[] {
   if (!s || s.length === 0) return [];
   const groupMap = new Map<string, SceneProfile[]>();
   for (const sc of s) {
-    const gid = sc.sceneId || sc.id;
+    const gid = sc.sceneId;
     const arr = groupMap.get(gid);
     if (arr) arr.push(sc);
     else groupMap.set(gid, [sc]);
   }
   const result: SceneProfile[] = [];
   groupMap.forEach((arr: SceneProfile[]) => {
-    arr.sort((a: SceneProfile, b: SceneProfile) => (b.version ?? 1) - (a.version ?? 1));
+    arr.sort((a: SceneProfile, b: SceneProfile) => b.version - a.version);
     result.push(arr[0]);
   });
   return result;

@@ -16,6 +16,7 @@ export function ObjectCard({
   isGenerating,
   onUploadImage,
   isUploading,
+  onRandomAppearance,
 }: {
   object: ObjectProfile;
   isLatest: boolean;
@@ -27,6 +28,7 @@ export function ObjectCard({
   isGenerating: boolean;
   onUploadImage: (file: File) => void;
   isUploading: boolean;
+  onRandomAppearance: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
@@ -146,7 +148,12 @@ export function ObjectCard({
                 onChange={(e) => onUpdate("category", e.target.value)}
                 placeholder="如：法器、载具、生活道具…" className="obj-input" />
             </Field>
-            <Field label="🎨 外观" hint="外观特征、材质造型">
+            <Field label="🎨 外观" hint="外观特征、材质造型" action={
+              <button onClick={onRandomAppearance} title="随机生成外观"
+                className="text-xs text-brand-600 transition-colors hover:text-brand-700">
+                ✨
+              </button>
+            }>
               <textarea value={object.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
                 placeholder="如：青铜长剑，剑身刻有云纹，剑柄缠红绳…"
@@ -182,12 +189,15 @@ export function ObjectCard({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, action, children }: { label: string; hint?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
         <label className="text-xs font-semibold text-black">{label}</label>
-        {hint && <span className="text-xs text-slate-400">{hint}</span>}
+        <div className="flex items-center gap-1.5">
+          {hint && <span className="text-xs text-slate-400">{hint}</span>}
+          {action}
+        </div>
       </div>
       {children}
     </div>

@@ -75,15 +75,8 @@ export async function saveSettings(s: LLMSettings): Promise<void> {
 /** 获取各 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model，避免自定义配置丢失） */
 export async function getProviderKeys(): Promise<ProviderCache> {
   try {
-    const raw = await apiClient.getSetting<Record<string, unknown>>("llm_provider_keys");
-    if (!raw) return {};
-    const result: ProviderCache = {};
-    for (const [k, v] of Object.entries(raw)) {
-      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
-      if (typeof v === "string") result[k] = { apiKey: v };
-      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
-    }
-    return result;
+    const raw = await apiClient.getSetting<ProviderCache>("llm_provider_keys");
+    return raw ?? {};
   } catch {
     return {};
   }

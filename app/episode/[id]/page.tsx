@@ -14,12 +14,14 @@ import CharacterConflictModal, {
 } from "@/components/CharacterConflictModal";
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings } from "@/lib/llm-client";
-import { emptyShot, debounce, removeTagPrefix } from "@/lib/utils";
+import { getStyleTemplates } from "@/lib/style-settings";
+import { emptyShot, debounce, removeTagPrefix, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
+import { useUnloadPersist } from "@/lib/use-unload-persist";
 import { getLatestVersions } from "@/lib/character-settings";
 import { getLatestObjectVersions } from "@/lib/object-settings";
 import { getLatestSceneVersions } from "@/lib/scene-settings";
-import type { Asset, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
-import { DEFAULT_SHOT_VIDEO_CONFIG } from "@/lib/model-presets";
+import type { Asset, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile, PreviousEpisodeContext } from "@/lib/types";
+import { DEFAULT_SHOT_VIDEO_CONFIG, getDefaultShotVideoConfig } from "@/lib/model-presets";
 import type { ReactNode } from "react";
 
 function HoverMenu({ trigger, children }: { trigger: ReactNode; children: ReactNode }) {
@@ -54,13 +56,16 @@ export default function EpisodePage() {
 
   const [episode, setEpisode] = useState<Episode | null>(null);
   const [seriesOrder, setSeriesOrder] = useState<number>(1);
+  const [seriesTitle, setSeriesTitle] = useState<string>("");
   const [seriesStyleSettings, setSeriesStyleSettings] = useState<StyleSettings | null>(null);
   const [seriesWorldSettings, setSeriesWorldSettings] = useState<WorldSettings | null>(null);
   const [seriesCharacterSettings, setSeriesCharacterSettings] = useState<CharacterProfile[]>([]);
   const [seriesObjectSettings, setSeriesObjectSettings] = useState<ObjectProfile[]>([]);
   const [seriesSceneSettings, setSeriesSceneSettings] = useState<SceneProfile[]>([]);
-  const [previousContext, setPreviousContext] = useState<string>("");
+  const [previousEpisodes, setPreviousEpisodes] = useState<PreviousEpisodeContext[]>([]);
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
+  // 用户自定义的默认视频生成参数（videoConfig 惰性写入的合并基座；初始值为代码兜底，加载完成后覆盖）
+  const [defaultVideoConfig, setDefaultVideoConfig] = useState<ShotVideoConfig>(DEFAULT_SHOT_VIDEO_CONFIG);
   const [titleEditing, setTitleEditing] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -82,7 +87,7 @@ export default function EpisodePage() {
         setSavedHint(true);
         setTimeout(() => setSavedHint(false), 1500);
       }
-    }, 400),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -95,6 +100,17 @@ export default function EpisodePage() {
     });
   }
 
+  // 立即落盘（绕过 1500ms 防抖）：用于 imageTaskId 等关键恢复字段。
+  // 推迟到渲染提交后读取 episodeRef，避免并发 setEpisode 闭包滞后读到旧值；
+  // 取消防抖队列，避免与本次直存重复落盘。
+  const persistNow = useCallback(() => {
+    setTimeout(() => {
+      const ep = episodeRef.current;
+      if (!ep) return;
+      void saveEpisode(ep);
+    }, 0);
+  }, []);
+
   // 监听 episode 变化，防抖保存（跳过首次加载，避免无意义回存）
   const skipPersistRef = useRef(true);
   useEffect(() => {
@@ -106,28 +122,17 @@ export default function EpisodePage() {
     persist(episode);
   }, [episode, persist]);
 
-  // 页面卸载时兜底保存，防止防抖未触发导致数据丢失
-  useEffect(() => {
-    const handler = () => {
-      const ep = episodeRef.current;
-      if (!ep) return;
-      fetch("/api/data/episodes", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
-        },
-        body: JSON.stringify(ep),
-        keepalive: true,
-      });
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, []);
+  // 卸载兜底落盘：刷新/关闭走 beforeunload，SPA 路由离开走组件卸载 cleanup，
+  // 防止 1500ms 防抖未触发导致进行中的视频任务状态丢失。
+  useUnloadPersist(() => episodeRef.current, "/api/data/episodes");
 
   useEffect(() => {
     if (!id) return;
     (async () => {
+      const prev = episodeRef.current;
+      if (prev && prev.id !== id) {
+        await saveEpisode(prev);
+      }
       const ep = await getEpisode(id);
       if (!ep) {
         setNotFound(true);
@@ -135,31 +140,33 @@ export default function EpisodePage() {
       }
       setEpisode(ep);
       setCurrentStep(ep.step);
+      // 用户自定义的默认视频生成参数
+      getDefaultShotVideoConfig().then(setDefaultVideoConfig);
 
       // 计算前几集的扩写内容（同系列内），作为扩写时的上下文
       const seriesData = await getSeries(ep.seriesId);
       const allEpisodes = await getEpisodesBySeries(ep.seriesId);
+      // 预加载全局风格模板缓存，保证 VideoGeneration 中 sync 函数能正确解析选中风格
+      await getStyleTemplates();
       const currentIdx = seriesData?.episodeOrder.indexOf(ep.id) ?? -1;
       setSeriesOrder(currentIdx >= 0 ? currentIdx + 1 : 1);
+      setSeriesTitle(seriesData?.title ?? "");
       setSeriesStyleSettings(seriesData?.styleSettings ?? null);
       setSeriesWorldSettings(seriesData?.worldSettings ?? null);
       setSeriesCharacterSettings(seriesData?.characterSettings ?? []);
     setSeriesObjectSettings(seriesData?.objectSettings ?? []);
     setSeriesSceneSettings(seriesData?.sceneSettings ?? []);
-      const prevEpisodes = allEpisodes.filter((_, i) => i < currentIdx && allEpisodes[i].expandedContent.trim());
-      const prev = prevEpisodes.map((e, i) => `【第${i + 1}集】\n${e.expandedContent.trim()}`);
-      // 限制总字数，避免超出 token 限制（保留约 3000 字）
-      let ctx = prev.join("\n\n");
-      if (ctx.length > 3000) {
-        let truncated = "";
-        for (let i = prev.length - 1; i >= 0; i--) {
-          const next = prev[i] + (i < prev.length - 1 ? "\n\n" : "") + truncated;
-          if (next.length > 3000) break;
-          truncated = prev[i] + (i < prev.length - 1 ? "\n\n" : "") + truncated;
-        }
-        ctx = truncated || prev[prev.length - 1]?.slice(-3000) || "";
-      }
-      setPreviousContext(ctx);
+      // 前序已有扩写内容的剧集（保留真实集序），作为扩写弹窗的可勾选上下文
+      const prevEps: PreviousEpisodeContext[] = allEpisodes
+        .map((e, i) => ({ e, orderIndex: i + 1 }))
+        .filter(({ e, orderIndex }) => orderIndex - 1 < currentIdx && e.expandedContent.trim())
+        .map(({ e, orderIndex }) => ({
+          id: e.id,
+          orderIndex,
+          title: e.title,
+          content: e.expandedContent.trim(),
+        }));
+      setPreviousEpisodes(prevEps);
     })();
   }, [id]);
 
@@ -182,6 +189,9 @@ export default function EpisodePage() {
     const pending: { id: string; imageUrl: string }[] = [];
     for (const a of episode.assets) {
       if (a.type !== "character" && a.type !== "object" && a.type !== "scene") continue;
+      // 跳过生成中资产：并发更新 episode 时本 effect 会反复重跑，
+      // 若不跳过会把刚生成的新图覆盖回设定旧图，并强制改 status=ready 破坏轮询恢复。
+      if (a.status === "pending" || a.imageTaskId) continue;
       const key = `${a.name.toLowerCase()}|${a.type}`;
       const latest = latestImageByKey.get(key);
       if (latest && latest !== a.imageUrl) pending.push({ id: a.id, imageUrl: latest });
@@ -368,10 +378,13 @@ export default function EpisodePage() {
       shots: ep.shots.map((s) => (s.id === shotId ? { ...s, [field]: value } : s)),
     }));
   }
-  function handleUpdateVideoStatus(shotId: string, status: VideoStatus) {
+  function handleUpdateVideoStatus(shotId: string, status: VideoStatus, error?: string) {
+    const isError = status === "failed" || status === "expired";
     update((ep) => ({
       ...ep,
-      shots: ep.shots.map((s) => (s.id === shotId ? { ...s, videoStatus: status } : s)),
+      shots: ep.shots.map((s) =>
+        s.id === shotId ? { ...s, videoStatus: status, videoError: isError ? error : undefined } : s
+      ),
     }));
   }
   /** 卡片级视频配置增量更新（惰性写入：首次修改时落库 videoConfig） */
@@ -380,7 +393,7 @@ export default function EpisodePage() {
       ...ep,
       shots: ep.shots.map((s) => {
         if (s.id !== shotId) return s;
-        const base = s.videoConfig ?? DEFAULT_SHOT_VIDEO_CONFIG;
+        const base = s.videoConfig ?? defaultVideoConfig;
         return { ...s, videoConfig: { ...base, ...patch } };
       }),
     }));
@@ -477,9 +490,6 @@ export default function EpisodePage() {
   }
 
   function gotoStep(step: 1 | 2 | 3 | 4) {
-    if (step === 2 && !step1Done) return;
-    if (step === 3 && !step2Done) return;
-    if (step === 4 && !step3Done) return;
     setCurrentStep(step);
     update((ep) => ({ ...ep, step }));
   }
@@ -557,6 +567,8 @@ export default function EpisodePage() {
           >
             <MenuItem onClick={() => router.push("/settings")}>设置</MenuItem>
             <MenuItem onClick={() => router.push("/assets")}>资产库</MenuItem>
+            <MenuItem onClick={() => router.push("/preset-library")}>预设库</MenuItem>
+            <MenuItem onClick={() => router.push("/style-templates")}>风格模板</MenuItem>
           </HoverMenu>
 
           <HoverMenu
@@ -588,9 +600,11 @@ export default function EpisodePage() {
           <ContentExpansion
             originalContent={episode.originalContent}
             expandedContent={episode.expandedContent}
-            previousContext={previousContext}
+            previousEpisodes={previousEpisodes}
             worldSettings={seriesWorldSettings}
             characterSettings={seriesCharacterSettings}
+            objectSettings={seriesObjectSettings}
+            sceneSettings={seriesSceneSettings}
             onOriginalChange={(v) =>
               update((ep) => ({ ...ep, originalContent: v }))
             }
@@ -619,8 +633,10 @@ export default function EpisodePage() {
         <div className="mx-auto max-w-6xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <AssetPreparation
             episode={episode}
+            seriesTitle={seriesTitle}
             onUpdateAsset={handleUpdateAsset}
             onReplaceAssets={handleReplaceAssets}
+            onPersistNow={persistNow}
             onBackToStep2={() => gotoStep(2)}
             seriesStyleSettings={seriesStyleSettings}
             characterSettings={seriesCharacterSettings}
@@ -635,14 +651,20 @@ export default function EpisodePage() {
         </div>
       ) : (
         <VideoGeneration
+          key={episode.id}
           episode={episode}
+          seriesTitle={seriesTitle}
           onUpdateShot={handleUpdateShot}
           onUpdateVideoStatus={handleUpdateVideoStatus}
           onUpdateVideoConfig={handleUpdateVideoConfig}
           onBackToStep3={() => gotoStep(3)}
+          onAddRow={handleAddRow}
+          onDeleteRow={handleDeleteRow}
+          onMoveRow={handleMoveRow}
           onLinkAsset={handleLinkAsset}
           onUnlinkAsset={handleUnlinkAsset}
           onAddScreenshot={handleAddScreenshot}
+          onPersistNow={persistNow}
           seriesStyleSettings={seriesStyleSettings}
           characterSettings={seriesCharacterSettings}
         />

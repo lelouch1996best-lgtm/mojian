@@ -43,22 +43,36 @@ export function hasObjectSettings(o: ObjectProfile[] | null | undefined): boolea
   return o.some((ob) => ob.name?.trim());
 }
 
-/**
- * 从物品列表中，按 objectId 分组，取每组 version 最大的。
- * 兼容旧数据（无 objectId 的视为各自独立）。
- */
+/** 检查单个物品档案是否有任何有效内容（名称/文本字段/图片/参考图/生图任务任一存在）。
+ *  用于自动保存时过滤完全空白的占位记录，避免只上传图片未填名称时记录被误删。 */
+export function isObjectProfileValid(o: ObjectProfile | null | undefined): boolean {
+  if (!o) return false;
+  return Boolean(
+    o.name?.trim() ||
+      o.category?.trim() ||
+      o.appearance?.trim() ||
+      o.purpose?.trim() ||
+      o.origin?.trim() ||
+      o.versionLabel?.trim() ||
+      o.imageUrl ||
+      (o.referenceImages && o.referenceImages.length > 0) ||
+      o.imageTaskId
+  );
+}
+
+/** 从物品列表中，按 objectId 分组，取每组 version 最大的 */
 export function getLatestObjectVersions(o: ObjectProfile[]): ObjectProfile[] {
   if (!o || o.length === 0) return [];
   const groupMap = new Map<string, ObjectProfile[]>();
   for (const ob of o) {
-    const gid = ob.objectId || ob.id;
+    const gid = ob.objectId;
     const arr = groupMap.get(gid);
     if (arr) arr.push(ob);
     else groupMap.set(gid, [ob]);
   }
   const result: ObjectProfile[] = [];
   groupMap.forEach((arr: ObjectProfile[]) => {
-    arr.sort((a: ObjectProfile, b: ObjectProfile) => (b.version ?? 1) - (a.version ?? 1));
+    arr.sort((a: ObjectProfile, b: ObjectProfile) => b.version - a.version);
     result.push(arr[0]);
   });
   return result;

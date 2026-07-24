@@ -3,10 +3,13 @@
 ## 项目概述
 Next.js 14 (App Router) + Tailwind 的 AI 剧本开发工具：故事扩写 → 分镜表 → 资产准备 → 视频生成 四步流程。数据存 localStorage，LLM/图片/视频 API 经本地 `/api/*` 转发。
 
-## 路由结构（2026-06-22 调整后）
-- `/` → 墨间落地页（暖色设计稿还原），CTA 跳 `/home`。
-- `/home` → 剧集列表（原首页），头部「墨间」logo 链回 `/`。
-- `/episode/[id]` → 四步编辑器，返回按钮回 `/home`。
+## 路由结构（2026-07-21 更新）
+- `/` -> 企划列表首页（原 `/home` 已废弃删除），头部「墨间」logo 链回 `/`，「资产库」/「设置」入口。
+- `/series/[id]` -> 企划详情（剧集网格 + 世界/人物/物品/场景/风格设定入口），返回按钮回 `/`。
+- `/series/[id]/{world-settings,characters,objects,scenes,style-settings}` -> 五个系列级设定独立页面，返回回 `/series/[id]` 或 `/`。
+- `/episode/[id]` -> 四步编辑器，返回按钮 `seriesId ? \`/series/${seriesId}\` : "/"`。
+- `/assets` 资产库、`/settings` 设置、`/activate` 激活页。
+- 历史遗留：曾存在 `/`(落地页) -> `/home`(列表) -> `/episode/[id]` 结构，落地页与 `/home` 均已移除，统一以 `/` 为首页。
 - 登录功能未实现，「登录」为 `#` 占位。
 
 ## 设计系统（墨间暖色）

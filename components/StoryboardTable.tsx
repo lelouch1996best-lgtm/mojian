@@ -57,6 +57,11 @@ export default function StoryboardTable({
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
   // 当前已有标签数（用于判断是否已标注过）
   const tagCount = tags.length;
+  // 画面描述 @ 补全选项：复用已添加的标签，并允许新建
+  const atMentionOptions = useMemo(
+    () => tags.map((t) => ({ label: t, value: t })),
+    [tags]
+  );
 
   /** 智能标注：调用 LLM 给所有画面描述加 @标签 */
   async function handleTagging() {
@@ -146,6 +151,15 @@ export default function StoryboardTable({
     downloadJSON(name, exportData);
   }
 
+  /** 删除镜头（二次确认） */
+  async function handleDeleteShot(shotId: string, index: number) {
+    const ok = await confirm({
+      message: `确定删除镜头 ${index + 1} 吗？该镜头的画面描述及 @标注 将一并移除，且无法撤销。`,
+      confirmText: "删除",
+    });
+    if (ok) onDeleteRow(shotId);
+  }
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -185,15 +199,15 @@ export default function StoryboardTable({
           <Button variant="ghost" size="sm" onClick={handleExport}>
             导出 JSON
           </Button>
-          <Button size="sm" onClick={onEnterStep3} disabled={tagCount === 0}>
-            下一步：资产准备 →
+          <Button size="sm" onClick={onEnterStep3}>
+            下一步：资产准备 -&gt;
           </Button>
         </div>
       </div>
 
       {tagCount === 0 && (
         <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
-          提示：点击「智能标注」可自动识别画面描述中的人物、场景、物品，并用琥珀色 @标签 标注。标注完成后才能进入第三步资产准备。
+          提示：点击「智能标注」可自动识别画面描述中的人物、场景、物品，并用琥珀色 @标签 标注，作为第三步资产准备的建议来源；也可直接进入资产准备手动添加。
         </div>
       )}
 
@@ -254,8 +268,9 @@ export default function StoryboardTable({
                 isFirst={i === 0}
                 isLast={i === episode.shots.length - 1}
                 onUpdate={(field, value) => onUpdateShot(shot.id, field, value)}
-                onDelete={() => onDeleteRow(shot.id)}
+                onDelete={() => handleDeleteShot(shot.id, i)}
                 onMove={(dir) => onMoveRow(shot.id, dir)}
+                atMentionOptions={atMentionOptions}
               />
             ))}
             {episode.shots.length === 0 && (
@@ -286,7 +301,7 @@ export default function StoryboardTable({
       </div>
 
       <p className="text-xs text-slate-400">
-        提示：点击单元格可直接编辑；景别与运镜可下拉选择；画面描述中的琥珀色 @标签 由「智能标注」自动生成，是第三步资产准备的依据。
+        提示：点击单元格可直接编辑；景别与运镜可下拉选择；在画面描述中输入 @ 可弹出已添加标签并选择，输入新名称即可新建标签；琥珀色 @标签 是第三步资产准备的依据，可由「智能标注」自动生成或手动添加。
       </p>
     </div>
   );

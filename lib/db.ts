@@ -26,7 +26,7 @@ export function getDb(): Database.Database {
       title             TEXT NOT NULL DEFAULT '',
       description       TEXT NOT NULL DEFAULT '',
       order_num         INTEGER NOT NULL DEFAULT 0,
-      world_settings    TEXT NOT NULL DEFAULT '{}',
+      world_setting     TEXT NOT NULL DEFAULT '{}',
       character_settings TEXT NOT NULL DEFAULT '[]',
       object_settings   TEXT NOT NULL DEFAULT '[]',
       scene_settings    TEXT NOT NULL DEFAULT '[]',
@@ -56,28 +56,46 @@ export function getDb(): Database.Database {
       value      TEXT NOT NULL DEFAULT '',
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS media_assets (
+      id            TEXT PRIMARY KEY,
+      media_type    TEXT NOT NULL,
+      url           TEXT NOT NULL,
+      entity_type   TEXT NOT NULL,
+      entity_name   TEXT NOT NULL DEFAULT '',
+      prompt        TEXT NOT NULL DEFAULT '',
+      source        TEXT NOT NULL DEFAULT '',
+      series_id     TEXT NOT NULL DEFAULT '',
+      series_title  TEXT NOT NULL DEFAULT '',
+      episode_id    TEXT NOT NULL DEFAULT '',
+      episode_title TEXT NOT NULL DEFAULT '',
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_assets_created_at ON media_assets(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_assets_series_id ON media_assets(series_id);
+    CREATE INDEX IF NOT EXISTS idx_media_assets_media_type ON media_assets(media_type);
+    CREATE INDEX IF NOT EXISTS idx_media_assets_entity_type ON media_assets(entity_type);
+
+    CREATE TABLE IF NOT EXISTS presets (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL DEFAULT '',
+      type       TEXT NOT NULL,
+      url        TEXT NOT NULL DEFAULT '',
+      content    TEXT NOT NULL DEFAULT '',
+      tags       TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_presets_created_at ON presets(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_presets_type ON presets(type);
+
+    CREATE TABLE IF NOT EXISTS preset_tags (
+      id         TEXT PRIMARY KEY,
+      name       TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
   `);
-
-  // 迁移：为旧库的 series 表补 character_settings 列（CREATE TABLE IF NOT EXISTS 不会改已有表结构）
-  try {
-    db.prepare("SELECT character_settings FROM series LIMIT 1").get();
-  } catch {
-    db.exec("ALTER TABLE series ADD COLUMN character_settings TEXT NOT NULL DEFAULT '[]'");
-  }
-
-  // 迁移：为旧库的 series 表补 object_settings 列
-  try {
-    db.prepare("SELECT object_settings FROM series LIMIT 1").get();
-  } catch {
-    db.exec("ALTER TABLE series ADD COLUMN object_settings TEXT NOT NULL DEFAULT '[]'");
-  }
-
-  // 迁移：为旧库的 series 表补 scene_settings 列
-  try {
-    db.prepare("SELECT scene_settings FROM series LIMIT 1").get();
-  } catch {
-    db.exec("ALTER TABLE series ADD COLUMN scene_settings TEXT NOT NULL DEFAULT '[]'");
-  }
 
   return db;
 }

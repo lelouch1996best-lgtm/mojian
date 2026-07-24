@@ -8,12 +8,13 @@ import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
 import { callLLM, streamLLM } from "@/lib/llm-client";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration, isPollingSupported } from "@/lib/image-client";
-import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
+import { type ModelOption } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
 import { assetMessages, regenerateAssetMessages } from "@/lib/prompts";
-import { isCosConfigured, transferAsset, uploadRefBase64 } from "@/lib/cos-client";
-import { getActiveStyle, getAssetTemplate, styleToText, styleTemplateForType } from "@/lib/style-settings";
+import { isCosConfigured, transferAsset, uploadRefBase64, uploadRefFile } from "@/lib/cos-client";
+import { recordMediaAsset } from "@/lib/storage";
+import { getActiveStyle, getAssetTemplate, getAssetReferenceImage, styleToText, styleTemplateForType } from "@/lib/style-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
 import { getLatestObjectVersions } from "@/lib/object-settings";
 import { getLatestSceneVersions } from "@/lib/scene-settings";
@@ -24,12 +25,17 @@ import {
   ASSET_TYPE_LABELS,
   uuid,
 } from "@/lib/utils";
-import type { AssetImageConfig, Asset, AssetStatus, AssetType, CharacterProfile, Episode, ImageGenSettings, ObjectProfile, SceneProfile, StyleSettings } from "@/lib/types";
+import type { AssetImageConfig, Asset, AssetStatus, AssetType, CharacterProfile, Episode, ObjectProfile, SceneProfile, StyleSettings } from "@/lib/types";
 
 interface AssetPreparationProps {
   episode: Episode;
+  /** 所属企划标题（用于媒体资产账本记录） */
+  seriesTitle?: string;
   onUpdateAsset: (id: string, field: keyof Asset, value: string) => void;
   onReplaceAssets: (assets: Asset[]) => void;
+  /** 立即落盘当前 episode（绕过 1500ms 防抖）。用于 imageTaskId 等关键恢复字段，
+   *  确保任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。 */
+  onPersistNow?: () => void;
   onBackToStep2: () => void;
   /** 系列级风格设定设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
@@ -65,10 +71,87 @@ const TYPE_BADGE_CLASS: Record<AssetType, string> = {
   storyboard: "bg-amber-50 text-amber-700",
 };
 
+/**
+ * 根据标签列表，从人物/物品/场景设定中按名字匹配生成资产。
+ * 匹配优先级：人物 > 物品 > 场景；同一标签只取首个命中类型，且跳过已存在的资产名。
+ * 自动预填与「从设定中匹配添加」共用此逻辑。
+ */
+function buildAssetsFromSettings(
+  tagNames: string[],
+  existingNames: Set<string>,
+  characterSettings: CharacterProfile[] | null | undefined,
+  objectSettings: ObjectProfile[] | null | undefined,
+  sceneSettings: SceneProfile[] | null | undefined,
+): Asset[] {
+  const charByName = new Map<string, CharacterProfile>();
+  for (const c of getLatestVersions(characterSettings ?? [])) {
+    if (c.name.trim()) charByName.set(c.name.trim().toLowerCase(), c);
+  }
+  const objectByName = new Map<string, ObjectProfile>();
+  for (const o of getLatestObjectVersions(objectSettings ?? [])) {
+    if (o.name.trim()) objectByName.set(o.name.trim().toLowerCase(), o);
+  }
+  const sceneByName = new Map<string, SceneProfile>();
+  for (const s of getLatestSceneVersions(sceneSettings ?? [])) {
+    if (s.name.trim()) sceneByName.set(s.name.trim().toLowerCase(), s);
+  }
+  const usedNames = new Set(existingNames);
+  const matchedKeys = new Set<string>();
+  const result: Asset[] = [];
+  for (const tag of tagNames) {
+    const key = tag.trim().toLowerCase();
+    if (matchedKeys.has(key)) continue;
+    let asset: Asset | null = null;
+    const c = charByName.get(key);
+    if (c) {
+      asset = {
+        id: crypto.randomUUID(),
+        name: c.name.trim(),
+        type: "character",
+        description: c.appearance.trim(),
+        imageUrl: c.imageUrl ?? "",
+        status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
+      };
+    } else {
+      const o = objectByName.get(key);
+      if (o) {
+        asset = {
+          id: crypto.randomUUID(),
+          name: o.name.trim(),
+          type: "object",
+          description: o.appearance.trim(),
+          imageUrl: o.imageUrl ?? "",
+          status: (o.imageUrl ? "ready" : "pending") as AssetStatus,
+        };
+      } else {
+        const s = sceneByName.get(key);
+        if (s) {
+          asset = {
+            id: crypto.randomUUID(),
+            name: s.name.trim(),
+            type: "scene",
+            description: s.appearance.trim(),
+            imageUrl: s.imageUrl ?? "",
+            status: (s.imageUrl ? "ready" : "pending") as AssetStatus,
+          };
+        }
+      }
+    }
+    if (!asset) continue;
+    if (usedNames.has(asset.name)) continue;
+    usedNames.add(asset.name);
+    matchedKeys.add(key);
+    result.push(asset);
+  }
+  return result;
+}
+
 export default function AssetPreparation({
   episode,
+  seriesTitle,
   onUpdateAsset,
   onReplaceAssets,
+  onPersistNow,
   onBackToStep2,
   seriesStyleSettings,
   characterSettings,
@@ -108,15 +191,16 @@ export default function AssetPreparation({
   );
 
   const [imageConfigured, setImageConfigured] = useState(false);
-  const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
-  const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供模型选择弹框使用）
+  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   useEffect(() => {
-    getImageSettings().then(async (s) => {
+    (async () => {
+      const s = await getImageSettings();
       setImageConfigured(!!s?.apiKey);
-      const provider = s?.provider ?? "ark";
-      if (s?.provider) setImageProvider(s.provider);
-      setImageModels(await getImageModels(provider));
-    });
+      setImageOptions(await getAllConfiguredImageModels());
+    })();
+    // 用户自定义的图片默认生成参数（每次打开弹框时作为基础）
+    getDefaultAssetImageConfig().then(setDefaultImageConfig);
   }, []);
 
   // 组件级 AbortController：卸载（切步骤/路由离开/刷新）时取消所有进行中的图片生成轮询，
@@ -134,7 +218,7 @@ export default function AssetPreparation({
   const episodeRef = useRef(episode);
   episodeRef.current = episode;
 
-  // 切页/刷新回来后，立即根据 imageTaskId 恢复资产生成中占位（不等待 imageConfigured/imageModels 加载完成）。
+  // 切页/刷新回来后，立即根据 imageTaskId 恢复资产生成中占位（不等待 imageConfigured/imageOptions 加载完成）。
   // 仅对有 imageTaskId 且 status==="pending" 的资产显示占位（已完成的不显示）。
   const didRestoreLoading = useRef(false);
   useEffect(() => {
@@ -155,54 +239,64 @@ export default function AssetPreparation({
   const resumeRef = useRef(false);
   useEffect(() => {
     if (resumeRef.current) return;
-    if (!imageConfigured || imageModels.length === 0) return;
+    if (!imageConfigured || imageOptions.length === 0) return;
     resumeRef.current = true;
     const signal = abortRef.current?.signal;
 
     for (const asset of episode.assets ?? []) {
+      // 切页期间已完成的资产 status 已被置为 ready（与 imageUrl 同步写入），
+      // 此处按 status 过滤即可；不能用 imageUrl 判断——重新生成场景下资产带有旧图，会被误判跳过
       if (asset.status !== "pending" || !asset.imageTaskId) continue;
-      // 若切页期间 generateImageForAsset 已完成并写入 imageUrl，则无需恢复轮询
-      if (asset.imageUrl) {
-        onUpdateAsset(asset.id, "imageTaskId", "");
-        setGeneratingImageIds((prev) => {
-          const next = new Set(prev);
-          next.delete(asset.id);
-          return next;
-        });
-        continue;
-      }
-      // 仅对支持轮询的模型恢复
-      const model = asset.imageConfig?.model ?? imageModels[0]?.value ?? "";
-      if (!isPollingSupported(model, imageModels, imageProvider)) continue;
+      // 仅对支持轮询的模型恢复（按创建任务时的供应商路由凭证）
+      const provider = asset.imageTaskProvider ?? asset.imageConfig?.provider;
+      const model = asset.imageConfig?.model ?? imageOptions[0]?.entry.value ?? "";
+      if (!isPollingSupported(model, provider)) continue;
 
       setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
 
-      resumeImageGeneration(asset.imageTaskId, undefined, signal)
+      resumeImageGeneration(asset.imageTaskId, provider, undefined, signal)
         .then(async (result) => {
-          // 读取最新资产状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已写入 imageUrl）
+          // 读取最新资产状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成写回）
+          // 注意必须同时检查 status：重新生成场景下资产带有旧图，仅看 imageUrl 会误杀本次恢复结果
           const latestAsset = episodeRef.current.assets.find((a) => a.id === asset.id);
-          if (latestAsset?.imageUrl) {
-            // 已有图片，仅清理残留 taskId，不覆盖已写入的（可能是 COS 持久 URL）
+          if (latestAsset?.status === "ready" && latestAsset.imageUrl) {
+            // 已被其他路径完成，仅清理残留 taskId，不覆盖已写入的（可能是 COS 持久 URL）
             onUpdateAsset(asset.id, "imageTaskId", "");
             return;
           }
           onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
           onUpdateAsset(asset.id, "status", "ready");
           onUpdateAsset(asset.id, "imageTaskId", "");
+          let finalAssetUrl = result.imageUrl;
           // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
           try {
             if (await isCosConfigured()) {
               const { url } = await transferAsset(result.imageUrl, "ai-script/assets");
               onUpdateAsset(asset.id, "imageUrl", url);
+              finalAssetUrl = url;
             }
           } catch (e) {
             console.error("资产转存失败：", (e as Error).message);
           }
+          void recordMediaAsset({
+            mediaType: "image",
+            url: finalAssetUrl,
+            entityType: asset.type,
+            entityName: asset.name || "未命名资产",
+            prompt: asset.description || "",
+            source: "asset",
+            seriesId: episode.seriesId,
+            seriesTitle: seriesTitle ?? "",
+            episodeId: episode.id,
+            episodeTitle: episode.title,
+          });
         })
         .catch((err) => {
           // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
-          // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId
-          const isAborted = signal?.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
+          // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId。
+          // 不依赖共享 signal.aborted：卸载后所有并发恢复轮询共享 signal 会被 abort，
+          // 真实失败也会被误判为取消而静默。
+          const isAborted = (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
           if (!isAborted) {
             onUpdateAsset(asset.id, "status", "failed");
             onUpdateAsset(asset.id, "imageTaskId", "");
@@ -217,14 +311,16 @@ export default function AssetPreparation({
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageConfigured, imageModels]);
+  }, [imageConfigured, imageOptions]);
 
   // 图片生成弹框状态（单资产生成时使用）
   const [genTargetAssetId, setGenTargetAssetId] = useState<string | null>(null);
   const [genConfigOpen, setGenConfigOpen] = useState(false);
   const [genInitialPrompt, setGenInitialPrompt] = useState("");
   const [genStyleTemplate, setGenStyleTemplate] = useState<string | null>(null);
+  const [genTemplateReferenceImage, setGenTemplateReferenceImage] = useState<string | null>(null);
   const [genImageConfig, setGenImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
   const [genInitialRefImages, setGenInitialRefImages] = useState<string[]>([]);
 
   // 人物设定文本（系列级优先，否则回退全局）
@@ -240,7 +336,7 @@ export default function AssetPreparation({
     }
   }, [characterSettings]);
 
-  // 自动预填：进入 Step3 时，若有人物设定且尚无资产，自动预填人物资产卡片
+  // 自动预填：进入 Step3 时，若尚无资产，按分镜 @标签从设定中预填人物/物品/场景资产卡片
   const didPrefill = useRef(false);
   useEffect(() => {
     if (didPrefill.current) return;
@@ -248,22 +344,7 @@ export default function AssetPreparation({
     if (chars.length === 0) return;
     if (preparationAssets.length > 0) return;
     didPrefill.current = true;
-    const prefilled: Asset[] = chars
-      .filter((c) => c.name.trim())
-      .map((c) => {
-        const descParts: string[] = [];
-        if (c.personality.trim()) descParts.push(`性格：${c.personality.trim()}`);
-        if (c.appearance.trim()) descParts.push(`外貌：${c.appearance.trim()}`);
-        return {
-          id: uuid(),
-          name: c.name.trim(),
-          type: "character" as AssetType,
-          description: descParts.join("；"),
-          imagePrompt: c.appearance.trim(),
-          imageUrl: c.imageUrl ?? "",
-          status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
-        };
-      });
+    const prefilled = buildAssetsFromSettings(tags, new Set(), characterSettings, objectSettings, sceneSettings);
     if (prefilled.length > 0) {
       // 保留已有的截屏/故事板等非资产准备类型资产
       const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
@@ -400,16 +481,20 @@ export default function AssetPreparation({
     onSaveSceneSettings([...(sceneSettings ?? []), newScene]);
   }
 
-  /** 一键生成：把所有标签交给 LLM，返回分类 + 图片提示词，覆盖现有资产 */
+  /** 一键生成：仅为未匹配到资产的标签生成提示词并创建资产，已有资产保持不变 */
   async function handleGenerateAll() {
     if (tags.length === 0) {
       showError("没有可用的标签，请先在第二步做智能标注");
       return;
     }
+    if (missingTags.length === 0) {
+      showError("所有标签均已匹配到资产，无需生成");
+      return;
+    }
     setGenerating(true);
     try {
       const styleText = styleToText(await getActiveStyle(seriesStyleSettings));
-      const raw = await callLLM(assetMessages(tags, episode.expandedContent, styleText, characterText), {
+      const raw = await callLLM(assetMessages(missingTags, episode.expandedContent, styleText, characterText), {
         responseFormat: "json_object",
         temperature: 0.5,
       });
@@ -418,7 +503,7 @@ export default function AssetPreparation({
         showError("未能解析出资产，请重试");
         return;
       }
-      // 保留已有的 imageUrl / status，按 name 匹配；同时匹配人物/物品设定中的图片
+      // 匹配人物/物品/场景设定中的图片，为新生成的资产预填参考图
       const charImageByName = new Map<string, string>();
       for (const c of getLatestVersions(characterSettings ?? [])) {
         if (c.imageUrl) charImageByName.set(c.name.trim(), c.imageUrl);
@@ -431,33 +516,46 @@ export default function AssetPreparation({
       for (const s of getLatestSceneVersions(sceneSettings ?? [])) {
         if (s.imageUrl) sceneImageByName.set(s.name.trim(), s.imageUrl);
       }
-      const prevByName = new Map(episode.assets.map((a) => [a.name, a]));
-      const next: Asset[] = rawAssets
-        .filter((r) => r.name)
+      // 仅为未匹配标签创建新资产；跳过与已有资产重名的项，防止 LLM 输出偏差导致重复
+      const newAssets: Asset[] = rawAssets
+        .filter((r) => r.name && !existingNames.has(r.name!.trim()))
         .map((r) => {
-          const prev = prevByName.get(r.name!);
-          const charImage = charImageByName.get(r.name!.trim());
-          const objImage = objectImageByName.get(r.name!.trim());
-          const sceneImage = sceneImageByName.get(r.name!.trim());
-          const imageUrl = prev?.imageUrl ?? charImage ?? objImage ?? sceneImage ?? "";
+          const name = r.name!.trim();
+          const imageUrl = charImageByName.get(name) ?? objectImageByName.get(name) ?? sceneImageByName.get(name) ?? "";
           return {
-            id: prev?.id ?? crypto.randomUUID(),
-            name: r.name!,
+            id: crypto.randomUUID(),
+            name,
             type: normalizeAssetType(r.type),
             description: r.description ?? "",
-            imagePrompt: r.description ?? "",
             imageUrl,
-            status: imageUrl ? "ready" : (prev?.status ?? "pending"),
+            status: (imageUrl ? "ready" : "pending") as AssetStatus,
           };
         });
-      // 保留已有的截屏/故事板等非资产准备类型资产
-      const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
-      onReplaceAssets([...next, ...preserved]);
+      if (newAssets.length === 0) {
+        showError("未能生成新的资产，请重试");
+        return;
+      }
+      // 保留全部已有资产，仅追加新生成的资产
+      onReplaceAssets([...episode.assets, ...newAssets]);
     } catch (e) {
       showError((e as Error).message);
     } finally {
       setGenerating(false);
     }
+  }
+
+  /** 从设定中匹配添加：根据当前未建立资产的标签，按名字匹配人物/物品/场景设定并批量添加 */
+  function handleMatchFromSettings() {
+    if (missingTags.length === 0) {
+      showError("所有标签均已匹配到资产，无需添加");
+      return;
+    }
+    const newAssets = buildAssetsFromSettings(missingTags, existingNames, characterSettings, objectSettings, sceneSettings);
+    if (newAssets.length === 0) {
+      showError("未在设定中匹配到这些标签对应的人物/物品/场景");
+      return;
+    }
+    onReplaceAssets([...episode.assets, ...newAssets]);
   }
 
   /** 重新生成单个资产的外貌/外观描述（流式） */
@@ -471,7 +569,6 @@ export default function AssetPreparation({
       for await (const chunk of streamLLM(messages, { temperature: 0.7 })) {
         acc += chunk;
         onUpdateAsset(asset.id, "description", acc);
-        onUpdateAsset(asset.id, "imagePrompt", acc);
       }
     } catch (e) {
       showError(`「${asset.name}」重新生成失败：${(e as Error).message}`);
@@ -486,20 +583,18 @@ export default function AssetPreparation({
 
   /** 打开图片生成弹框（先做必要校验） */
   async function openGenerateImageDialog(asset: Asset) {
-    const prompt = asset.imagePrompt.trim() || asset.description.trim() || asset.name.trim();
     if (!imageConfigured) {
       showError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
       return;
     }
-    if (asset.description.trim() && asset.imagePrompt.trim() !== asset.description.trim()) {
-      onUpdateAsset(asset.id, "imagePrompt", asset.description.trim());
-    }
+    const prompt = asset.description.trim() || asset.name.trim();
     const template = await getAssetTemplate(asset.type, seriesStyleSettings);
     setGenStyleTemplate(template);
+    const refImage = await getAssetReferenceImage(asset.type, seriesStyleSettings);
+    setGenTemplateReferenceImage(refImage ?? null);
     setGenInitialPrompt(prompt);
     setGenImageConfig({
-      ...DEFAULT_ASSET_IMAGE_CONFIG,
-      model: getDefaultModelValue(imageModels) ?? DEFAULT_ASSET_IMAGE_CONFIG.model,
+      ...defaultImageConfig,
       ...(asset.imageConfig ?? {}),
     });
     setGenInitialRefImages(asset.imageConfig?.referenceImages ?? []);
@@ -508,42 +603,45 @@ export default function AssetPreparation({
   }
 
   /** 单个资产生成图片 + 自动转存 COS */
-  async function generateImageForAsset(asset: Asset, params?: ImageGenerationParams) {
+  async function generateImageForAsset(asset: Asset, params: ImageGenerationParams) {
     setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
     onUpdateAsset(asset.id, "status", "pending");
     try {
-      let prompt: string;
-      let images: string[] | undefined;
-      let config: AssetImageConfig;
-      if (params) {
-        // 弹框确认：提示词已由弹框处理（含风格模板），直接使用
-        prompt = params.prompt;
-        images = params.images.length > 0 ? params.images : undefined;
-        config = params.config;
-      } else {
-        // 批量模式：用资产存储的提示词 + 配置
-        const template = getAssetTemplate(asset.type, seriesStyleSettings);
-        prompt = template ? `${asset.imagePrompt}，${template}` : asset.imagePrompt;
-        config = {
-          ...DEFAULT_ASSET_IMAGE_CONFIG,
-          model: getDefaultModelValue(imageModels) ?? DEFAULT_ASSET_IMAGE_CONFIG.model,
-          ...(asset.imageConfig ?? {}),
-        };
-      }
-      const result = await generateImage(prompt, config, images, imageModels, (jobId) => {
-        // 异步任务创建后立即持久化 jobId，刷新页面后可恢复轮询
+      // 弹框确认：提示词已由弹框处理（含风格模板），直接使用
+      const prompt = params.prompt;
+      const images = params.images.length > 0 ? params.images : undefined;
+      const config = params.config;
+      const result = await generateImage(prompt, config, images, (jobId) => {
+        // 异步任务创建后立即持久化 jobId + imageTaskProvider，刷新页面后可恢复轮询（按 provider 路由凭证）
         onUpdateAsset(asset.id, "imageTaskId", jobId);
+        if (config.provider) onUpdateAsset(asset.id, "imageTaskProvider", config.provider);
+        // 立即落盘：jobId 写入即保存，避免 1.5s 防抖未触发就切路由/刷新导致恢复信息丢失
+        onPersistNow?.();
       }, abortRef.current?.signal);
       onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
       onUpdateAsset(asset.id, "status", "ready");
       onUpdateAsset(asset.id, "imageTaskId", "");
 
       // 自动转存到 COS（Seedream 图片 URL 只有 24h 有效期）
-      await transferImageToCos(asset, result.imageUrl);
+      const finalUrl = await transferImageToCos(asset, result.imageUrl);
+      void recordMediaAsset({
+        mediaType: "image",
+        url: finalUrl,
+        entityType: asset.type,
+        entityName: asset.name || "未命名资产",
+        prompt: asset.description || "",
+        source: "asset",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
     } catch (e) {
       // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复；
-      // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId
-      const isAborted = abortRef.current?.signal.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId。
+      // 注意：不依赖共享 abortRef.signal.aborted 判断——一旦组件卸载所有并发轮询共享的 signal 被 abort，
+      // 真实失败（如上游返回 failed）也会被误判为"已取消"而静默，导致既不报错也不回写图片。
+      const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         onUpdateAsset(asset.id, "status", "failed");
         onUpdateAsset(asset.id, "imageTaskId", "");
@@ -558,51 +656,51 @@ export default function AssetPreparation({
     }
   }
 
-  /** 将 Seedream 生成的图片 URL 转存到存储（24h 过期保护） */
-  async function transferImageToCos(asset: Asset, sourceUrl: string) {
-    if (!cosConfigured) return;
+  /** 将 Seedream 生成的图片 URL 转存到存储（24h 过期保护），返回最终 URL */
+  async function transferImageToCos(asset: Asset, sourceUrl: string): Promise<string> {
+    if (!cosConfigured) return sourceUrl;
     try {
       const { url } = await transferAsset(sourceUrl, "ai-script/assets");
       onUpdateAsset(asset.id, "imageUrl", url);
+      return url;
     } catch {
       // 转存失败不阻断流程，保留原始 URL（24h 内仍可访问）
+      return sourceUrl;
     }
   }
 
-  /** 批量生成所有资产的图片 */
-  async function handleGenerateAllImages() {
-    if (!imageConfigured) {
-      showError("未配置图片生成 API，请先前往「图片 API 设置」页配置");
+  /** 本地上传图片到 COS 并回填到资产（已有图也可重新上传覆盖） */
+  async function handleUploadImage(asset: Asset, file: File) {
+    if (!cosConfigured) {
+      showError("未配置 COS 存储，请先前往「设置」配置腾讯云 COS");
       return;
     }
-    const pending = preparationAssets.filter((a) => {
-      if (!a.imagePrompt || a.status === "ready") return false;
-      // 已关联人物设定的人物资产用人物图片，不参与 AI 生图
-      if (a.type === "character" && (characterVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
-        return false;
-      }
-      // 已关联物品设定的物品资产用物品图片，不参与 AI 生图
-      if (a.type === "object" && (objectVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
-        return false;
-      }
-      // 已关联场景设定的场景资产用场景图片，不参与 AI 生图
-      if (a.type === "scene" && (sceneVersionsByName.get(a.name.trim())?.length ?? 0) > 0) {
-        return false;
-      }
-      return true;
-    });
-    if (pending.length === 0) {
-      showError("没有待生成图片的资产");
-      return;
-    }
-    // 顺序生成，避免触发上游限流
-    for (const asset of pending) {
-      try {
-        await generateImageForAsset(asset);
-      } catch (e) {
-        // generateImageForAsset 内部已设 failed + showError
-        break;
-      }
+    setUploadingIds((prev) => new Set(prev).add(asset.id));
+    try {
+      const url = await uploadRefFile(file, `asset-${asset.name || asset.id}`);
+      onUpdateAsset(asset.id, "imageUrl", url);
+      onUpdateAsset(asset.id, "status", "ready");
+      onUpdateAsset(asset.id, "imageTaskId", "");
+      void recordMediaAsset({
+        mediaType: "image",
+        url,
+        entityType: asset.type,
+        entityName: asset.name || "未命名资产",
+        prompt: asset.description || "",
+        source: "manual",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
+    } catch (e) {
+      showError(`「${asset.name}」图片上传失败：${(e as Error).message}`);
+    } finally {
+      setUploadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(asset.id);
+        return next;
+      });
     }
   }
 
@@ -622,7 +720,6 @@ export default function AssetPreparation({
       name,
       type: newAssetType,
       description: "",
-      imagePrompt: "",
       imageUrl: "",
       status: "pending",
     };
@@ -640,45 +737,33 @@ export default function AssetPreparation({
     if (newAssetType === "character") {
       const c = getLatestVersions(characterSettings ?? []).find((x) => x.id === selectedSettingId);
       if (!c) return;
-      const descParts: string[] = [];
-      if (c.personality.trim()) descParts.push(`性格：${c.personality.trim()}`);
-      if (c.appearance.trim()) descParts.push(`外貌：${c.appearance.trim()}`);
       newAsset = {
         id: crypto.randomUUID(),
         name: c.name.trim(),
         type: "character",
-        description: descParts.join("；"),
-        imagePrompt: c.appearance.trim(),
+        description: c.appearance.trim(),
         imageUrl: c.imageUrl ?? "",
         status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
       };
     } else if (newAssetType === "object") {
       const o = getLatestObjectVersions(objectSettings ?? []).find((x) => x.id === selectedSettingId);
       if (!o) return;
-      const descParts: string[] = [];
-      if (o.appearance.trim()) descParts.push(`外观：${o.appearance.trim()}`);
-      if (o.purpose.trim()) descParts.push(`功能：${o.purpose.trim()}`);
       newAsset = {
         id: crypto.randomUUID(),
         name: o.name.trim(),
         type: "object",
-        description: descParts.join("；"),
-        imagePrompt: o.appearance.trim(),
+        description: o.appearance.trim(),
         imageUrl: o.imageUrl ?? "",
         status: (o.imageUrl ? "ready" : "pending") as AssetStatus,
       };
     } else {
       const s = getLatestSceneVersions(sceneSettings ?? []).find((x) => x.id === selectedSettingId);
       if (!s) return;
-      const descParts: string[] = [];
-      if (s.appearance.trim()) descParts.push(`外观：${s.appearance.trim()}`);
-      if (s.lightingMood.trim()) descParts.push(`氛围：${s.lightingMood.trim()}`);
       newAsset = {
         id: crypto.randomUUID(),
         name: s.name.trim(),
         type: "scene",
-        description: descParts.join("；"),
-        imagePrompt: s.appearance.trim(),
+        description: s.appearance.trim(),
         imageUrl: s.imageUrl ?? "",
         status: (s.imageUrl ? "ready" : "pending") as AssetStatus,
       };
@@ -729,17 +814,20 @@ export default function AssetPreparation({
           <Button
             variant="secondary"
             size="sm"
-            onClick={handleGenerateAllImages}
-            disabled={preparationAssets.length === 0 || !imageConfigured}
+            onClick={handleMatchFromSettings}
+            disabled={missingTags.length === 0}
+            title={missingTags.length === 0 ? "没有未匹配的标签" : "根据未匹配标签，从设定中批量添加人物/物品/场景"}
           >
-            批量生成图片
+            从设定中匹配添加
           </Button>
           <Button
+            size="sm"
             onClick={handleGenerateAll}
             loading={generating}
-            disabled={tags.length === 0}
+            disabled={tags.length === 0 || missingTags.length === 0}
+            title={missingTags.length === 0 ? "所有标签均已匹配到资产" : undefined}
           >
-            {generating ? "生成中…" : "一键生成资产信息"}
+            {generating ? "生成中…" : missingTags.length === 0 ? "已全部生成" : "一键生成资产信息"}
           </Button>
         </div>
       </div>
@@ -822,6 +910,8 @@ export default function AssetPreparation({
               seriesId: episode.seriesId,
               isGenerating: generatingImageIds.has(asset.id),
               onGenerateImage: () => openGenerateImageDialog(asset),
+              isUploading: uploadingIds.has(asset.id),
+              onUploadImage: cosConfigured ? (file: File) => handleUploadImage(asset, file) : undefined,
               isRegenerating: regeneratingIds.has(asset.id),
               onRegenerate: () => handleRegenerateAsset(asset),
             };
@@ -864,9 +954,8 @@ export default function AssetPreparation({
               onClick={() => { setShowAddCard(true); }}
               className="group flex aspect-[4/3] min-h-[220px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white/60 text-slate-400 transition-colors hover:border-brand-400 hover:text-brand-500"
             >
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" className="opacity-50 group-hover:opacity-80 transition-opacity">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
                 <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-                <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.4" opacity="0.35" />
               </svg>
               <span className="text-xs font-medium">添加资产</span>
             </button>
@@ -992,11 +1081,11 @@ export default function AssetPreparation({
         onClose={() => setGenConfigOpen(false)}
         initialPrompt={genInitialPrompt}
         styleTemplate={genStyleTemplate ?? undefined}
+        templateReferenceImage={genTemplateReferenceImage ?? undefined}
         initialConfig={genImageConfig}
         images={genInitialRefImages}
         onImagesChange={setGenInitialRefImages}
-        provider={imageProvider}
-        imageModels={imageModels}
+        imageOptions={imageOptions}
         loading={genTargetAssetId ? generatingImageIds.has(genTargetAssetId) : false}
         onConfirm={async (params) => {
           setGenConfigOpen(false);
@@ -1005,6 +1094,8 @@ export default function AssetPreparation({
           const targetAsset = episode.assets.find((a) => a.id === genTargetAssetId);
 
           // 上传 base64 参考图到 COS，获取 URL 用于持久化
+          // 注意：params.images 可能含风格模板参考图（http URL），持久化时需过滤，避免污染资产 referenceImages
+          const refImageForFilter = genTemplateReferenceImage;
           let refUrls: string[] = [];
           if (params.images.length > 0) {
             if (cosConfigured) {
@@ -1021,6 +1112,10 @@ export default function AssetPreparation({
             } else {
               refUrls = params.images;
             }
+          }
+          // 数据隔离：剔除风格模板参考图，仅持久化用户自添加的参考图
+          if (refImageForFilter) {
+            refUrls = refUrls.filter((u) => u !== refImageForFilter);
           }
 
           if (genTargetAssetId) {

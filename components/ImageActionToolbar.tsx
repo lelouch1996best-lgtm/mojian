@@ -8,11 +8,11 @@ interface ImageActionToolbarProps {
   /** 是否正在重新生成 */
   isRegenerating?: boolean;
   /** 上传/替换图片回调 */
-  onUpload: () => void;
+  onUpload?: () => void;
   /** 是否正在上传 */
   isUploading?: boolean;
   /** 删除回调 */
-  onDelete: () => void;
+  onDelete?: () => void;
 }
 
 export default function ImageActionToolbar({
@@ -43,44 +43,48 @@ export default function ImageActionToolbar({
         </ToolbarButton>
       )}
 
-      <ToolbarButton
-        onClick={onUpload}
-        title="上传替换图片"
-        disabled={isUploading}
-        loading={isUploading}
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-          <path
-            d="M12 16V4m0 0l-4 4m4-4l4 4"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path
-            d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          />
-        </svg>
-      </ToolbarButton>
+      {onUpload && (
+        <ToolbarButton
+          onClick={onUpload}
+          title="上传替换图片"
+          disabled={isUploading}
+          loading={isUploading}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M12 16V4m0 0l-4 4m4-4l4 4"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            />
+          </svg>
+        </ToolbarButton>
+      )}
 
-      <ToolbarButton
-        onClick={onDelete}
-        title="删除此版本"
-        danger
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-          <path
-            d="M4 7h16M10 11v6M14 11v6M5 7l1 13a2 2 0 002 2h8a2 2 0 002-2l1-13M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </ToolbarButton>
+      {onDelete && (
+        <ToolbarButton
+          onClick={onDelete}
+          title="删除此版本"
+          danger
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M4 7h16M10 11v6M14 11v6M5 7l1 13a2 2 0 002 2h8a2 2 0 002-2l1-13M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </ToolbarButton>
+      )}
     </div>
   );
 }

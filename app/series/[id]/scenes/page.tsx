@@ -4,15 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
 import { useConfirm, useErrorDialog } from "@/components/ui/ConfirmDialog";
-import { getSeries, saveSeries } from "@/lib/storage";
-import { emptySceneProfile } from "@/lib/scene-settings";
-import { debounce, uuid } from "@/lib/utils";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration } from "@/lib/image-client";
-import { getImageModels, getDefaultModelValue, type ModelEntry } from "@/lib/model-presets";
-import { getAssetTemplate } from "@/lib/style-settings";
+import { getSeries, saveSeries, recordMediaAsset } from "@/lib/storage";
+import { emptySceneProfile, isSceneProfileValid } from "@/lib/scene-settings";
+import { debounce, uuid, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
+import { useUnloadPersist } from "@/lib/use-unload-persist";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, getAllConfiguredImageModels } from "@/lib/image-client";
+import { type ModelOption } from "@/lib/model-presets";
+import { getAssetTemplate, getAssetReferenceImage } from "@/lib/style-settings";
 import { isCosConfigured, transferAsset, uploadBase64, uploadRefBase64 } from "@/lib/cos-client";
 import { ImageGenerationDialog } from "@/components/ImageGenerationDialog";
-import type { AssetImageConfig, ImageGenSettings, SceneProfile, Series } from "@/lib/types";
+import { AppearanceGenerateDialog } from "@/components/AppearanceGenerateDialog";
+import { getSettings as getLlmSettings } from "@/lib/llm-client";
+import type { AssetImageConfig, SceneProfile, Series } from "@/lib/types";
 import { SceneCard } from "./SceneCard";
 
 export default function SceneSettingsPage() {
@@ -32,27 +35,30 @@ export default function SceneSettingsPage() {
   const [imageConfigured, setImageConfigured] = useState(false);
   const [cosConfigured, setCosConfigured] = useState(false);
   const [imageConfig, setImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
-  const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
-  const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供模型选择弹框使用）
+  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   const [genTargetId, setGenTargetId] = useState<string | null>(null);
   const [configOpen, setConfigOpen] = useState(false);
   const [genInitialPrompt, setGenInitialPrompt] = useState("");
   const [styleTemplate, setStyleTemplate] = useState<string | null>(null);
+  const [templateReferenceImage, setTemplateReferenceImage] = useState<string | null>(null);
   const [refImages, setRefImages] = useState<string[]>([]);
+  const [llmConfigured, setLlmConfigured] = useState(false);
+  const [appearanceDialogOpen, setAppearanceDialogOpen] = useState(false);
+  const [appearanceDialogTargetId, setAppearanceDialogTargetId] = useState<string | null>(null);
+  const [appearanceDialogInitialPrompt, setAppearanceDialogInitialPrompt] = useState("");
 
   useEffect(() => {
-    getImageSettings().then(async (s) => {
+    (async () => {
+      const s = await getImageSettings();
       setImageConfigured(!!s?.apiKey);
-      const provider = s?.provider ?? "ark";
-      if (s?.provider) setImageProvider(s.provider);
-      const models = await getImageModels(provider);
-      setImageModels(models);
-      const defaultModel = getDefaultModelValue(models);
-      if (defaultModel) {
-        setImageConfig((prev) => ({ ...prev, model: defaultModel }));
-      }
-    });
+      setImageOptions(await getAllConfiguredImageModels());
+      // 弹框初始参数 = 用户自定义默认生成参数（已含默认模型 + 所属供应商）
+      const defaultCfg = await getDefaultAssetImageConfig();
+      setImageConfig({ ...defaultCfg });
+    })();
     isCosConfigured().then(setCosConfigured);
+    getLlmSettings().then((s) => setLlmConfigured(!!s?.apiKey));
   }, []);
 
   const refresh = useCallback(async () => {
@@ -74,13 +80,13 @@ export default function SceneSettingsPage() {
     debounce(async (scs: SceneProfile[]) => {
       const s = seriesRef.current;
       if (!s) return;
-      const valid = scs.filter((o) => o.name.trim());
+      const valid = scs.filter((o) => isSceneProfileValid(o));
       const updated: Series = { ...s, sceneSettings: valid };
       await saveSeries(updated);
       seriesRef.current = updated;
       setSavedHint(true);
       setTimeout(() => setSavedHint(false), 1500);
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -107,29 +113,16 @@ export default function SceneSettingsPage() {
   const scenesRef = useRef(scenes);
   scenesRef.current = scenes;
 
-  // 页面卸载（切路由/刷新/关闭）时兜底保存，防止防抖 persist 未触发导致 imageTaskId 丢失
-  useEffect(() => {
-    const handler = () => {
-      const s = seriesRef.current;
-      const scs = scenesRef.current;
-      if (!s) return;
-      const valid = scs.filter((o) => o.name.trim());
-      const updatedSeries = { ...s, sceneSettings: valid };
-      fetch("/api/data/series", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
-        },
-        body: JSON.stringify(updatedSeries),
-        keepalive: true,
-      });
-    };
-    window.addEventListener("beforeunload", handler);
-    return () => window.removeEventListener("beforeunload", handler);
-  }, []);
+  // 卸载兜底落盘：刷新/关闭走 beforeunload，SPA 路由离开走组件卸载 cleanup，
+  // 防止 1500ms 防抖未触发导致进行中的图片任务状态（imageTaskId）丢失。
+  useUnloadPersist(() => {
+    const s = seriesRef.current;
+    if (!s) return null;
+    const valid = scenesRef.current.filter((o) => isSceneProfileValid(o));
+    return { ...s, sceneSettings: valid };
+  }, "/api/data/series");
 
-  // 切页/刷新回来后，立即根据 imageTaskId 恢复生图中占位（不等待 imageConfigured/imageModels 加载完成）。
+  // 切页/刷新回来后，立即根据 imageTaskId 恢复生图中占位（不等待 imageConfigured/imageOptions 加载完成）。
   // 仅以 imageTaskId 为准（重新生成时旧 imageUrl 仍在，但不阻断占位恢复）。
   const didRestoreLoading = useRef(false);
   useEffect(() => {
@@ -150,7 +143,7 @@ export default function SceneSettingsPage() {
   const resumeRef = useRef(false);
   useEffect(() => {
     if (resumeRef.current) return;
-    if (!imageConfigured || imageModels.length === 0) return;
+    if (!imageConfigured || imageOptions.length === 0) return;
     resumeRef.current = true;
     const signal = abortRef.current?.signal;
 
@@ -159,7 +152,7 @@ export default function SceneSettingsPage() {
       // 进入恢复时立即显示占位（重新生成场景下旧 imageUrl 仍在，但 imageTaskId 表明有进行中任务）
       setGeneratingImageIds((prev) => new Set(prev).add(sc.id));
 
-      resumeImageGeneration(sc.imageTaskId, undefined, signal)
+      resumeImageGeneration(sc.imageTaskId, sc.imageTaskProvider, undefined, signal)
         .then(async (result) => {
           // 读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成并写入新 imageUrl）
           const latest = scenesRef.current.find((o) => o.id === sc.id);
@@ -186,12 +179,22 @@ export default function SceneSettingsPage() {
             seriesRef.current = updatedSeries;
             setSavedHint(true);
             setTimeout(() => setSavedHint(false), 1500);
+            void recordMediaAsset({
+              mediaType: "image",
+              url: imageUrl,
+              entityType: "scene",
+              entityName: sc.name || "未命名场景",
+              source: "profile-scene",
+              seriesId: s.id,
+              seriesTitle: s.title,
+            });
           }
         })
         .catch((err) => {
           // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
-          // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误
-          const isAborted = signal?.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
+          // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误。
+          // 不依赖共享 signal.aborted：卸载后并发恢复轮询共享 signal 会被 abort，真实失败也会被误判为取消而静默。
+          const isAborted = (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
           if (!isAborted) {
             setScenes((prev) => prev.map((o) => (o.id === sc.id ? { ...o, imageTaskId: undefined } : o)));
             showError(`「${sc.name}」图片生成失败：${(err as Error).message}`);
@@ -202,7 +205,7 @@ export default function SceneSettingsPage() {
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageConfigured, imageModels]);
+  }, [imageConfigured, imageOptions]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, SceneProfile[]>();
@@ -260,11 +263,47 @@ export default function SceneSettingsPage() {
     }
     const template = await getAssetTemplate("scene", series?.styleSettings ?? null);
     setStyleTemplate(template);
+    const refImage = await getAssetReferenceImage("scene", series?.styleSettings ?? null);
+    setTemplateReferenceImage(refImage ?? null);
     const prompt = sc.appearance.trim() || sc.name.trim();
     setGenInitialPrompt(prompt);
     setGenTargetId(sc.id);
     setRefImages(sc.referenceImages ?? []);
     setConfigOpen(true);
+  }
+
+  /** 构建随机外观生成的提示词（含外观本身，便于在简短外观基础上扩展） */
+  function buildAppearancePrompt(sc: SceneProfile): string {
+    const lines: string[] = [];
+    if (sc.name.trim()) lines.push(`名称：${sc.name.trim()}`);
+    if (sc.category.trim()) lines.push(`分类：${sc.category.trim()}`);
+    if (sc.appearance.trim()) lines.push(`外观描述：${sc.appearance.trim()}`);
+    if (sc.lightingMood.trim()) lines.push(`光影氛围：${sc.lightingMood.trim()}`);
+    if (sc.origin.trim()) lines.push(`来源背景：${sc.origin.trim()}`);
+    return lines.join("\n");
+  }
+
+  /** 打开随机外观生成弹框（先做必要校验） */
+  function openRandomAppearanceDialog(sc: SceneProfile) {
+    if (!llmConfigured) {
+      showError("未配置 LLM，请先在「设置」中配置大模型 API");
+      return;
+    }
+    if (!sc.category.trim()) {
+      showError("请先填写「分类」后再随机生成外观");
+      return;
+    }
+    setAppearanceDialogInitialPrompt(buildAppearancePrompt(sc));
+    setAppearanceDialogTargetId(sc.id);
+    setAppearanceDialogOpen(true);
+  }
+
+  /** 应用随机生成的外观结果到卡片 */
+  function handleApplyAppearance(result: string) {
+    if (!appearanceDialogTargetId) return;
+    setScenes((prev) => prev.map((o) => (o.id === appearanceDialogTargetId ? { ...o, appearance: result } : o)));
+    setAppearanceDialogOpen(false);
+    setAppearanceDialogTargetId(null);
   }
 
   /** 上传参考图文件到存储，返回 URL 列表（存储未配置时回退 base64） */
@@ -287,6 +326,16 @@ export default function SceneSettingsPage() {
       });
       const url = await uploadRefBase64(base64, `ref-scene-${genTargetId ?? "asset"}-${Date.now()}`);
       urls.push(url);
+      const targetName = scenes.find((o) => o.id === genTargetId)?.name;
+      void recordMediaAsset({
+        mediaType: "image",
+        url,
+        entityType: "other",
+        entityName: targetName ? `${targetName} - 参考图` : f.name,
+        source: "manual",
+        seriesId: series?.id ?? "",
+        seriesTitle: series?.title ?? "",
+      });
     }
     return urls;
   }
@@ -309,10 +358,10 @@ export default function SceneSettingsPage() {
     setGeneratingImageIds((prev) => new Set(prev).add(sc.id));
     try {
       const { prompt, images, config } = params;
-      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, imageModels, async (jobId) => {
-        // 异步任务创建后立即持久化 jobId（切页/刷新后可恢复轮询）
+      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, async (jobId) => {
+        // 异步任务创建后立即持久化 jobId + imageTaskProvider（切页/刷新后可恢复轮询，按 provider 路由凭证）
         // 用 keepalive fetch 同步落库，避免 SPA 路由切换取消普通 fetch 导致 jobId 丢失
-        const updated = scenesRef.current.map((o) => (o.id === sc.id ? { ...o, imageTaskId: jobId } : o));
+        const updated = scenesRef.current.map((o) => (o.id === sc.id ? { ...o, imageTaskId: jobId, imageTaskProvider: config.provider } : o));
         setScenes(updated);
         const s = seriesRef.current;
         if (s) {
@@ -349,11 +398,22 @@ export default function SceneSettingsPage() {
         seriesRef.current = updatedSeries;
         setSavedHint(true);
         setTimeout(() => setSavedHint(false), 1500);
+        void recordMediaAsset({
+          mediaType: "image",
+          url: imageUrl,
+          entityType: "scene",
+          entityName: sc.name || "未命名场景",
+          prompt,
+          source: "profile-scene",
+          seriesId: series.id,
+          seriesTitle: series.title,
+        });
       }
     } catch (e) {
       // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复；
-      // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误
-      const isAborted = abortRef.current?.signal.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误。
+      // 不依赖共享 signal.aborted：卸载后所有并发轮询共享 signal 会被 abort，真实失败也会被误判为取消而静默。
+      const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         setScenes((prev) => prev.map((o) => (o.id === sc.id ? { ...o, imageTaskId: undefined } : o)));
         showError(`「${sc.name}」图片生成失败：${(e as Error).message}`);
@@ -398,6 +458,15 @@ export default function SceneSettingsPage() {
         seriesRef.current = updatedSeries;
         setSavedHint(true);
         setTimeout(() => setSavedHint(false), 1500);
+        void recordMediaAsset({
+          mediaType: "image",
+          url,
+          entityType: "scene",
+          entityName: sc.name || "未命名场景",
+          source: "profile-scene",
+          seriesId: series.id,
+          seriesTitle: series.title,
+        });
       }
     } catch (e) {
       showError(`「${sc.name}」图片上传失败：${(e as Error).message}`);
@@ -502,7 +571,8 @@ export default function SceneSettingsPage() {
                       onGenerateImage={() => openGenerateImageDialog(sc)}
                       isGenerating={generatingImageIds.has(sc.id)}
                       onUploadImage={(file) => handleUploadImage(sc, file)}
-                      isUploading={uploadingImageIds.has(sc.id)} />
+                      isUploading={uploadingImageIds.has(sc.id)}
+                      onRandomAppearance={() => openRandomAppearanceDialog(sc)} />
                   ))}
                 </div>
               </div>
@@ -526,12 +596,12 @@ export default function SceneSettingsPage() {
         onClose={() => setConfigOpen(false)}
         initialPrompt={genInitialPrompt}
         styleTemplate={styleTemplate ?? undefined}
+        templateReferenceImage={templateReferenceImage ?? undefined}
         initialConfig={imageConfig}
         images={refImages}
         onImagesChange={handleRefImagesChange}
         onUploadFiles={handleUploadRefFiles}
-        provider={imageProvider}
-        imageModels={imageModels}
+        imageOptions={imageOptions}
         loading={genTargetId ? generatingImageIds.has(genTargetId) : false}
         onConfirm={(params) => {
           setImageConfig(params.config);
@@ -539,6 +609,14 @@ export default function SceneSettingsPage() {
           const target = scenes.find((o) => o.id === genTargetId);
           if (target) void handleGenerateImage(target, params);
         }}
+      />
+
+      <AppearanceGenerateDialog
+        open={appearanceDialogOpen}
+        onClose={() => { setAppearanceDialogOpen(false); setAppearanceDialogTargetId(null); }}
+        onApply={handleApplyAppearance}
+        initialPrompt={appearanceDialogInitialPrompt}
+        entityType="scene"
       />
     </main>
   );

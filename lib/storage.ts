@@ -1,50 +1,5 @@
-import type { CharacterProfile, Episode, ObjectProfile, SceneProfile, Series } from "@/lib/types";
+import type { Episode, MediaAssetInput, Series } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
-import { normalizeStyleSettings } from "@/lib/style-settings";
-
-/** 兼容旧 Series 数据：补全缺失字段（worldSettings / characterSettings / objectSettings / styleSettings 等） */
-export function normalizeSeries(s: Series): Series {
-  return {
-    ...s,
-    worldSettings: s.worldSettings ?? { background: "", theme: "", style: "" },
-    characterSettings: (s.characterSettings ?? []).map(normalizeCharacterProfile),
-    objectSettings: (s.objectSettings ?? []).map(normalizeObjectProfile),
-    sceneSettings: (s.sceneSettings ?? []).map(normalizeSceneProfile),
-    styleSettings: normalizeStyleSettings(s.styleSettings),
-    episodeOrder: s.episodeOrder ?? [],
-    order: s.order ?? 0,
-  };
-}
-
-/** 兼容旧 CharacterProfile 数据：补全 characterId / version / versionLabel */
-function normalizeCharacterProfile(c: CharacterProfile): CharacterProfile {
-  return {
-    ...c,
-    characterId: c.characterId || c.id,
-    version: c.version ?? 1,
-    versionLabel: c.versionLabel ?? "",
-  };
-}
-
-/** 兼容旧 ObjectProfile 数据：补全 objectId / version / versionLabel */
-function normalizeObjectProfile(o: ObjectProfile): ObjectProfile {
-  return {
-    ...o,
-    objectId: o.objectId || o.id,
-    version: o.version ?? 1,
-    versionLabel: o.versionLabel ?? "",
-  };
-}
-
-/** 兼容旧 SceneProfile 数据：补全 sceneId / version / versionLabel */
-function normalizeSceneProfile(s: SceneProfile): SceneProfile {
-  return {
-    ...s,
-    sceneId: s.sceneId || s.id,
-    version: s.version ?? 1,
-    versionLabel: s.versionLabel ?? "",
-  };
-}
 
 // ========== Episode API ==========
 
@@ -78,13 +33,12 @@ export async function getEpisodesBySeries(seriesId: string): Promise<Episode[]> 
 
 export async function listSeries(): Promise<Series[]> {
   const list = await apiClient.listSeries();
-  return list.map(normalizeSeries).sort((a, b) => a.order - b.order);
+  return list.sort((a, b) => a.order - b.order);
 }
 
 export async function getSeries(id: string): Promise<Series | null> {
   try {
-    const s = await apiClient.getSeries(id);
-    return normalizeSeries(s);
+    return await apiClient.getSeries(id);
   } catch {
     return null;
   }
@@ -101,4 +55,18 @@ export async function saveSeries(s: Series): Promise<{ ok: boolean; error?: stri
 
 export async function deleteSeries(id: string): Promise<void> {
   await apiClient.deleteSeries(id);
+}
+
+// ========== Media Asset Recorder ==========
+
+/**
+ * 把生成的媒体记录到独立账本表 media_assets。
+ * 失败仅 warn，不阻断主流程（业务表照常写入）。
+ */
+export async function recordMediaAsset(input: MediaAssetInput): Promise<void> {
+  try {
+    await apiClient.addMediaAsset(input);
+  } catch (e) {
+    console.warn("[media-assets] 记录失败，不影响主流程:", e);
+  }
 }

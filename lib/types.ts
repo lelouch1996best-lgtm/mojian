@@ -70,6 +70,8 @@ export interface CharacterProfile {
   voiceId?: string;
   /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
   imageTaskId?: string;
+  /** 创建该图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
+  imageTaskProvider?: ImageGenSettings["provider"];
 }
 
 /** 单个物品设定档案 -- 系列级，跨集共享。同一物品可有多个版本（如不同形态/等级）。 */
@@ -97,6 +99,8 @@ export interface ObjectProfile {
   referenceImages?: string[];
   /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
   imageTaskId?: string;
+  /** 创建该图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
+  imageTaskProvider?: ImageGenSettings["provider"];
 }
 
 /** 单个场景设定档案 —— 系列级，跨集共享。同一场景可有多个版本（如白天/夜晚/战火后）。 */
@@ -124,6 +128,8 @@ export interface SceneProfile {
   referenceImages?: string[];
   /** 异步图片生成任务 ID（支持轮询的供应商用，切页/刷新后可恢复轮询） */
   imageTaskId?: string;
+  /** 创建该图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
+  imageTaskProvider?: ImageGenSettings["provider"];
 }
 
 /** 剧集系列（企划）—— 每个系列下有独立的多集剧集、世界设定、风格设定 */
@@ -161,15 +167,25 @@ export interface StylePreset {
   objectTemplate: string;
   /** 故事板图片提示词模板（可含 {镜头信息} 占位符，生成时替换为当前镜头信息块） */
   storyboardTemplate: string;
+  /** 人物参考图 URL（COS 持久 URL，生图时作为图片1风格参考） */
+  characterReferenceImage?: string;
+  /** 场景参考图 URL（生图时作为图片1风格参考） */
+  sceneReferenceImage?: string;
+  /** 物品参考图 URL（生图时作为图片1风格参考） */
+  objectReferenceImage?: string;
+  /** 各参考图进行中的异步生图任务 ID（切页/刷新后恢复轮询用，完成后清空） */
+  characterRefImageTaskId?: string;
+  sceneRefImageTaskId?: string;
+  objectRefImageTaskId?: string;
+  /** 各参考图生图任务的供应商（按创建任务时的供应商路由凭证恢复轮询） */
+  characterRefImageTaskProvider?: ImageGenSettings["provider"];
+  sceneRefImageTaskProvider?: ImageGenSettings["provider"];
+  objectRefImageTaskProvider?: ImageGenSettings["provider"];
 }
 
 /** 风格配置（全局，存服务端数据库） */
 export interface StyleSettings {
   selectedStyleId: string;
-  /** 用户自定义覆盖（key = styleId，仅针对内置预设） */
-  overrides: Record<string, Partial<Omit<StylePreset, "id">>>;
-  /** 用户自添加的自定义风格预设（完整数据，独立于内置预设） */
-  customPresets?: StylePreset[];
 }
 
 /** 分镜表单行 —— 进号不存储，由数组下标 +1 派生 */
@@ -185,6 +201,8 @@ export interface Shot {
   finalPrompt: string; // Step4 视频提示词（AI 生成，可编辑）
   videoUrl: string; // 生成的视频 URL（mp4，24h 有效）
   videoStatus: VideoStatus; // 视频生成状态
+  /** 视频生成失败/超时时的错误原因（供错误标签悬浮展示；非错误状态时清除） */
+  videoError?: string;
   videoTaskId: string; // 视频生成任务 ID（用于轮询）
   /** 创建该视频任务时使用的供应商（恢复轮询时按此选择查询端点与凭证；旧数据缺省时回退当前设置） */
   videoTaskProvider?: VideoGenSettings["provider"];
@@ -196,6 +214,8 @@ export interface Shot {
   storyboardUrl?: string;
   /** 故事板图片生成任务 ID（支持轮询的供应商用，刷新/切页后可恢复轮询） */
   imageTaskId?: string;
+  /** 创建该故事板图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
+  imageTaskProvider?: ImageGenSettings["provider"];
 }
 
 /** 资产类型 */
@@ -209,12 +229,13 @@ export interface Asset {
   id: string;
   name: string; // @标签 内的名字，如 "小明"
   type: AssetType; // 人物/场景/物品
-  description: string; // LLM 生成的资产描述（同时用作图片提示词）
-  imagePrompt: string; // 图片生成提示词，与 description 保持一致
+  description: string; // 资产外观描述，同时用作图片生成提示词
   imageUrl: string; // 生成的图片 URL（暂空，待接入图片 API）
   status: AssetStatus;
   /** 异步图片生成任务 ID（支持轮询的供应商用，刷新页面后可恢复轮询） */
   imageTaskId?: string;
+  /** 创建该图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
+  imageTaskProvider?: ImageGenSettings["provider"];
   /** 卡片级图片生成配置；缺省时回退 DEFAULT_ASSET_IMAGE_CONFIG */
   imageConfig?: AssetImageConfig;
   /** 故事板资产关联的镜头 ID（仅在 type === "storyboard" 时使用） */
@@ -232,6 +253,16 @@ export interface Episode {
   expandedContent: string; // Step1 扩写结果（可编辑）
   shots: Shot[]; // Step2 分镜数组
   assets: Asset[]; // Step3 资产数组
+}
+
+/** AI 扩写可选的前序剧集上下文（由剧集页计算，供扩写弹窗勾选） */
+export interface PreviousEpisodeContext {
+  id: string;
+  /** 在系列中的真实集序（从 1 开始） */
+  orderIndex: number;
+  title: string;
+  /** 该集的扩写内容（已 trim，保证非空） */
+  content: string;
 }
 
 export type LLMMessage = {
@@ -270,7 +301,7 @@ export interface RawShot {
 
 /** 图片生成 API 配置（多供应商，全局仅管理供应商和模型，生成参数在卡片级配置） */
 export interface ImageGenSettings {
-  provider: "ark" | "ark-plan" | "openai" | "apimart" | "custom";
+  provider: "ark" | "ark-plan" | "apimart" | "custom";
   baseURL: string;
   apiKey: string;
   model: string;
@@ -280,6 +311,8 @@ export interface ImageGenSettings {
 export interface AssetImageConfig {
   /** 图片生成模型（卡片级选择，缺省回退 DEFAULT_ASSET_IMAGE_CONFIG.model） */
   model: string;
+  /** 该模型所属供应商（生成时按此路由 API Key / baseURL；缺省回退当前激活供应商） */
+  provider?: ImageGenSettings["provider"];
   /** 分辨率档位（方式2）：1K/2K/3K/4K，通过 size 字段传输 */
   resolution: string;
   /** 宽高比（方式2）：1:1/4:3/3:4/16:9/9:16/3:2/2:3/21:9，拼接到提示词中 */
@@ -385,11 +418,13 @@ export type VideoGenerationMode =
   | "multimodal-ref"; // 多模态参考生视频（仅 2.0）
 
 export type VideoResolution = "480p" | "720p" | "1080p" | "4k";
-export type VideoRatio = "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive";
+export type VideoRatio = "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive" | "3:2" | "2:3";
 
 /** 单个镜头的视频生成配置（卡片级，覆盖硬编码默认） */
 export interface ShotVideoConfig {
   model: string;
+  /** 该模型所属供应商（生成时按此路由 API Key / baseURL；缺省回退当前激活供应商） */
+  provider?: VideoGenSettings["provider"];
   mode: VideoGenerationMode;
   resolution: VideoResolution;
   ratio: VideoRatio;
@@ -503,8 +538,10 @@ export interface VideoApimartUpstreamPayload {
   prompt: string;
   /** 宽高比，如 "16:9" */
   size?: string;
-  /** 480p/720p/1080p/4k */
+  /** 480p/720p/1080p/4k（Seedance 2.0 系列） */
   resolution?: string;
+  /** 视频质量，480p/720p（Grok Imagine 1.5，与 resolution 互斥） */
+  quality?: string;
   duration?: number;
   seed?: number;
   generate_audio?: boolean;
@@ -569,8 +606,71 @@ export interface AssetLibraryItem {
   /** 人物/物品/场景名，或分镜画面描述 */
   entityName: string;
   source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene";
-  /** imagePrompt / finalPrompt */
+  /** description / finalPrompt */
   prompt?: string;
   /** 排序用，取所在 episode/series 的 updatedAt */
   createdAt: number;
+}
+
+/** 媒体资产记录（独立账本，与 series/episodes 无外键关联） */
+export interface MediaAsset {
+  id: string;
+  mediaType: "image" | "video" | "audio";
+  url: string;
+  entityType: "character" | "scene" | "object" | "shot" | "screenshot" | "storyboard" | "other";
+  entityName: string;
+  prompt: string;
+  source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene" | "manual" | "screenshot";
+  /** 来源企划 ID（纯文本标注，非外键） */
+  seriesId: string;
+  seriesTitle: string;
+  episodeId: string;
+  episodeTitle: string;
+  /** 记录创建时间（媒体真实入库时间） */
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 新增媒体资产记录的入参 */
+export interface MediaAssetInput {
+  mediaType: MediaAsset["mediaType"];
+  url: string;
+  entityType: MediaAsset["entityType"];
+  entityName?: string;
+  prompt?: string;
+  source: MediaAsset["source"];
+  seriesId?: string;
+  seriesTitle?: string;
+  episodeId?: string;
+  episodeTitle?: string;
+}
+
+/** 预设库资源类型 */
+export type PresetType = "image" | "video" | "audio" | "text";
+
+/** 预设库资源项（用户自管理，媒体类上传 / 文本类在线编辑） */
+export interface PresetItem {
+  id: string;
+  name: string;
+  type: PresetType;
+  url: string;
+  content: string;
+  tags: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 预设库标签（全局共享） */
+export interface PresetTag {
+  id: string;
+  name: string;
+  createdAt: number;
+}
+
+/** 预设库选择回传项（媒体含 url，文本含 content） */
+export interface PickedPresetItem {
+  id: string;
+  name: string;
+  url?: string;
+  content?: string;
 }

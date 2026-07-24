@@ -7,9 +7,8 @@ import AiOptimizeButton from "./ui/AiOptimizeButton";
 import { useConfirm } from "./ui/ConfirmDialog";
 import AssetPicker, { type PickedAssetItem } from "./AssetPicker";
 import { ImageConfigFields } from "./ImageConfigFields";
-import { getImageModelCapability } from "@/lib/model-presets";
-import type { AssetImageConfig, ImageGenSettings } from "@/lib/types";
-import type { ModelEntry } from "@/lib/model-presets";
+import { getImageModelCapability, findModelOption, type ModelOption } from "@/lib/model-presets";
+import type { AssetImageConfig } from "@/lib/types";
 
 /** 弹框确认时回传的完整生成参数 */
 export interface ImageGenerationParams {
@@ -31,6 +30,9 @@ function buildMentionRegex(values: string[]): RegExp | null {
   const escaped = sorted.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`@(${escaped.join("|")})`, "g");
 }
+
+/** 模板参考图模式下的固定提示词（参考图作为图片1，由 @图片1 提及引用） */
+const STYLE_REFERENCE_PHRASE = "请严格参考此@图片1风格。生成图片。";
 
 /** 将提示词中的 @提及 标记去除 @ 前缀（仅在发送给模型时调用） */
 function resolveMentions(text: string, values: string[]): string {
@@ -76,14 +78,14 @@ export function ImageGenerationDialog({
   onConfirm,
   initialPrompt,
   styleTemplate,
+  templateReferenceImage,
   initialConfig,
   images,
   onImagesChange,
   imageLabels,
   onImageLabelsChange,
   onUploadFiles,
-  provider,
-  imageModels,
+  imageOptions,
   title = "图片生成",
   confirmText = "生成图片",
   loading = false,
@@ -97,6 +99,8 @@ export function ImageGenerationDialog({
   onConfirm: (params: ImageGenerationParams) => void;
   initialPrompt: string;
   styleTemplate?: string;
+  /** 风格模板的参考图 URL；存在时默认启用参考图模式（提示词拼接固定句，参考图作为图片1） */
+  templateReferenceImage?: string;
   initialConfig: AssetImageConfig;
   /** 参考图列表（受控：由父组件持有，弹框关闭后不丢失） */
   images: string[];
@@ -108,8 +112,8 @@ export function ImageGenerationDialog({
   onImageLabelsChange?: (labels: string[]) => void;
   /** 文件上传回调（上传到 COS 并返回 URL 列表）；未提供时回退为 base64 data URI */
   onUploadFiles?: (files: File[]) => Promise<string[]>;
-  provider: ImageGenSettings["provider"];
-  imageModels: ModelEntry[];
+  /** 所有已配置供应商的图片模型聚合列表（模型选择弹框 + 能力查询使用） */
+  imageOptions: ModelOption[];
   title?: string;
   confirmText?: string;
   loading?: boolean;
@@ -125,6 +129,7 @@ export function ImageGenerationDialog({
   const [prompt, setPrompt] = useState(initialPrompt);
   const [config, setConfig] = useState<AssetImageConfig>(initialConfig);
   const [useTemplate, setUseTemplate] = useState(!!styleTemplate);
+  const [useImageRef, setUseImageRef] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [imgError, setImgError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -255,22 +260,60 @@ export function ImageGenerationDialog({
   );
 
 
-  const maxRefImages = getImageModelCapability(config.model, imageModels, provider).maxRefImages;
+  // 所选模型条目（按 provider+model 精确匹配，回退首个 model 值匹配）
+  const selectedImageOption = findModelOption(imageOptions, config.provider, config.model);
+  const maxRefImages = getImageModelCapability(
+    config.model,
+    selectedImageOption ? [selectedImageOption.entry] : undefined,
+    config.provider
+  ).maxRefImages;
 
-  // @ 提及标签：优先使用资产原名（imageLabels），无则回退 图片N
-  const mentionValues = images.map((_, i) => imageLabels?.[i] || `图片${i + 1}`);
+  // 模板参考图模式：模板参考图不进入父组件 images，仅在弹框内组合为「有效图片」
+  // 有效图片首位为模板参考图（标签 图片1），其后为父组件传入的参考图（位置标签顺延）
+  const baseLabels = imageLabels ?? images.map(() => "");
+  const effectiveImages = useImageRef && templateReferenceImage
+    ? [templateReferenceImage, ...images]
+    : images;
+  const effectiveLabels = useImageRef && templateReferenceImage
+    ? ["图片1", ...baseLabels]
+    : baseLabels;
+  // @ 提及标签：优先使用资产原名（effectiveLabels），无则回退 图片N
+  const mentionValues = effectiveImages.map((_, i) => effectiveLabels[i] || `图片${i + 1}`);
+
+  // 风格后缀（固定顺序：文字模板在前，参考图固定句在后），两者可同时启用
+  const refSuffix = `${STYLE_REFERENCE_PHRASE}`;
+  const tplSuffix = styleTemplate ? `，${styleTemplate}` : "";
+
+  /** 剥离已知的文字模板后缀与参考图固定句后缀，返回用户编辑的主体提示词 */
+  function stripKnownSuffixes(p: string): string {
+    let base = p;
+    if (base.endsWith(refSuffix)) base = base.slice(0, -refSuffix.length);
+    if (tplSuffix && base.endsWith(tplSuffix)) base = base.slice(0, -tplSuffix.length);
+    return base;
+  }
+
+  /** 基于主体提示词，按开关状态重新拼接后缀（文字模板 → 参考图固定句） */
+  function rebuildWithSuffixes(base: string, useTpl: boolean, useRef: boolean): string {
+    let p = base;
+    if (useTpl && tplSuffix) p = `${p}${tplSuffix}`;
+    if (useRef) p = `${p}${refSuffix}`;
+    return p;
+  }
 
   useEffect(() => {
     if (open) {
-      const use = !!styleTemplate;
-      setUseTemplate(use);
-      setPrompt(use && styleTemplate ? `${initialPrompt}，${styleTemplate}` : initialPrompt);
+      // 文字模板与参考图可同时启用；有参考图时默认启用参考图模式，有文字模板时默认启用文字模板
+      const useRef = !!templateReferenceImage;
+      const useTpl = !!styleTemplate;
+      setUseImageRef(useRef);
+      setUseTemplate(useTpl);
+      setPrompt(rebuildWithSuffixes(initialPrompt, useTpl, useRef));
       setConfig(initialConfig);
       setShowAdvanced(false);
       setImgError(null);
       setMentionQuery(null);
     }
-  }, [open, initialPrompt, initialConfig, styleTemplate]);
+  }, [open, initialPrompt, initialConfig, styleTemplate, templateReferenceImage]);
 
   // 弹框打开时重置滚动位置
   useEffect(() => {
@@ -328,7 +371,7 @@ export function ImageGenerationDialog({
     if (!files || files.length === 0) return;
     setImgError(null);
     const allowed = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif", "image/tiff", "image/heic", "image/heif"];
-    const slots = maxRefImages - images.length;
+    const slots = maxRefImages - effectiveImages.length;
     if (slots <= 0) {
       setImgError(`该模型最多 ${maxRefImages} 张参考图`);
       return;
@@ -370,12 +413,18 @@ export function ImageGenerationDialog({
     }
   }
 
-  function removeImage(index: number) {
-    removeImageAt(index);
+  function removeImage(effectiveIndex: number) {
+    // 参考图模式下首位为模板参考图，由 toggle 控制，不可单独移除
+    if (useImageRef && templateReferenceImage) {
+      if (effectiveIndex === 0) return;
+      removeImageAt(effectiveIndex - 1);
+    } else {
+      removeImageAt(effectiveIndex);
+    }
   }
 
-  // ===== @ 提及：候选选项（基于已上传参考图，优先使用资产原名） =====
-  const mentionOptions = images.map((src, i) => ({
+  // ===== @ 提及：候选选项（基于有效参考图，优先使用资产原名） =====
+  const mentionOptions = effectiveImages.map((src, i) => ({
     label: mentionValues[i],
     value: mentionValues[i],
     src,
@@ -505,8 +554,8 @@ export function ImageGenerationDialog({
     const base = keepMentionPrefix ? prompt : resolveMentions(prompt, mentionValues);
     const resolved = base.trim();
 
-    const usedFlags = images.map((_, i) => resolved.includes(mentionValues[i]));
-    const hasUnused = images.length > 0 && usedFlags.some((used) => !used);
+    const usedFlags = effectiveImages.map((_, i) => resolved.includes(mentionValues[i]));
+    const hasUnused = effectiveImages.length > 0 && usedFlags.some((used) => !used);
 
     if (hasUnused) {
       const unusedLabels = mentionValues.filter((_, i) => !usedFlags[i]);
@@ -520,24 +569,24 @@ export function ImageGenerationDialog({
     }
 
     let finalPrompt = resolved;
-    let finalImages = images;
-    let finalImageLabels = imageLabels;
+    let finalImages = effectiveImages;
+    let finalImageLabels = effectiveLabels;
 
     if (hasUnused) {
       const filteredImages: string[] = [];
       const filteredLabels: string[] = [];
       const oldToNewIndex: number[] = [];
-      images.forEach((img, i) => {
+      effectiveImages.forEach((img, i) => {
         if (usedFlags[i]) {
           oldToNewIndex[i] = filteredImages.length;
           filteredImages.push(img);
-          filteredLabels.push(imageLabels?.[i] ?? "");
+          filteredLabels.push(effectiveLabels[i] ?? "");
         } else {
           oldToNewIndex[i] = -1;
         }
       });
 
-      for (let oldIdx = images.length - 1; oldIdx >= 0; oldIdx--) {
+      for (let oldIdx = effectiveImages.length - 1; oldIdx >= 0; oldIdx--) {
         const newIdx = oldToNewIndex[oldIdx];
         if (newIdx === -1) continue;
         const oldLabel = mentionValues[oldIdx];
@@ -552,9 +601,7 @@ export function ImageGenerationDialog({
       }
 
       finalImages = filteredImages;
-      if (imageLabels) {
-        finalImageLabels = filteredLabels;
-      }
+      finalImageLabels = filteredLabels;
     }
 
     onConfirm({
@@ -614,7 +661,7 @@ export function ImageGenerationDialog({
           <div className="mb-1 flex items-center justify-between">
             <label className="text-xs font-medium text-slate-600">
               提示词
-              {images.length > 0 && (
+              {effectiveImages.length > 0 && (
                 <span className="ml-1 text-slate-400">（输入 @ 可引用参考图）</span>
               )}
             </label>
@@ -674,6 +721,26 @@ export function ImageGenerationDialog({
               ))}
             </div>
           )}
+          {templateReferenceImage && (
+            <label className="mt-1.5 flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={useImageRef}
+                onChange={(e) => {
+                  const use = e.target.checked;
+                  setUseImageRef(use);
+                  setPrompt((prev) => rebuildWithSuffixes(stripKnownSuffixes(prev), useTemplate, use));
+                }}
+                className="h-3.5 w-3.5 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
+              />
+              <span className="text-xs text-slate-500">
+                使用参考图（风格参考）
+                {useImageRef && (
+                  <span className="ml-1 text-slate-400">（参考图作为图片1，提示词已拼接固定句）</span>
+                )}
+              </span>
+            </label>
+          )}
           {styleTemplate && (
             <label className="mt-1.5 flex cursor-pointer items-center gap-1.5">
               <input
@@ -682,19 +749,12 @@ export function ImageGenerationDialog({
                 onChange={(e) => {
                   const use = e.target.checked;
                   setUseTemplate(use);
-                  setPrompt((prev) => {
-                    if (!styleTemplate) return prev;
-                    const suffix = `，${styleTemplate}`;
-                    if (use) {
-                      return prev.endsWith(suffix) ? prev : `${prev}${suffix}`;
-                    }
-                    return prev.endsWith(suffix) ? prev.slice(0, -suffix.length) : prev;
-                  });
+                  setPrompt((prev) => rebuildWithSuffixes(stripKnownSuffixes(prev), use, useImageRef));
                 }}
                 className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
               />
               <span className="text-xs text-slate-500">
-                附带风格设定模板
+                使用模板提示词
                 {useTemplate && (
                   <span className="ml-1 truncate text-slate-400" title={styleTemplate}>
                     （{styleTemplate.slice(0, 40)}…）
@@ -712,29 +772,43 @@ export function ImageGenerationDialog({
             <label className="text-xs font-medium text-slate-600">
               参考图 <span className="text-slate-400">（可选，支持单图/多图生图）</span>
             </label>
-            <span className="text-xs text-slate-400">{images.length}/{maxRefImages}</span>
+            <span className="text-xs text-slate-400">{effectiveImages.length}/{maxRefImages}</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {images.map((src, i) => (
-              <div key={i} className="group relative h-16 w-16 overflow-hidden rounded-md border border-slate-200" title={mentionValues[i]}>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={src} alt={mentionValues[i]} className="h-full w-full object-cover" />
-                <span className="absolute bottom-0 left-0 right-0 truncate bg-black/55 px-1 text-[10px] text-white">
-                  {mentionValues[i]}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => removeImage(i)}
-                  className="absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-bl-md bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100"
-                  title="移除"
+            {effectiveImages.map((src, i) => {
+              const isTemplateRef = useImageRef && templateReferenceImage && i === 0;
+              return (
+                <div
+                  key={i}
+                  className={`group relative h-16 w-16 overflow-hidden rounded-md border ${isTemplateRef ? "border-amber-400 ring-1 ring-amber-300" : "border-slate-200"}`}
+                  title={mentionValues[i]}
                 >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-                    <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                  </svg>
-                </button>
-              </div>
-            ))}
-            {images.length < maxRefImages && (
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt={mentionValues[i]} className="h-full w-full object-cover" />
+                  {isTemplateRef && (
+                    <span className="absolute left-0 top-0 rounded-br bg-amber-500 px-1 text-[9px] font-medium text-white">
+                      风格参考
+                    </span>
+                  )}
+                  <span className="absolute bottom-0 left-0 right-0 truncate bg-black/55 px-1 text-[10px] text-white">
+                    {mentionValues[i]}
+                  </span>
+                  {!isTemplateRef && (
+                    <button
+                      type="button"
+                      onClick={() => removeImage(i)}
+                      className="absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-bl-md bg-black/50 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                      title="移除"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {effectiveImages.length < maxRefImages && (
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -759,7 +833,7 @@ export function ImageGenerationDialog({
                 )}
               </button>
             )}
-            {images.length < maxRefImages && (
+            {effectiveImages.length < maxRefImages && (
               <button
                 type="button"
                 onClick={() => setPickerOpen(true)}
@@ -809,7 +883,7 @@ export function ImageGenerationDialog({
             {showAdvanced ? "收起高级参数" : "高级参数"}
             {!showAdvanced && (
               <span className="max-w-[220px] truncate text-slate-500">
-                {imageModels.find((m) => m.value === config.model)?.label ?? config.model} · {config.resolution} · {config.aspectRatio}
+                {selectedImageOption?.entry.label ?? config.model} · {config.resolution} · {config.aspectRatio}
               </span>
             )}
           </button>
@@ -818,8 +892,7 @@ export function ImageGenerationDialog({
               <ImageConfigFields
                 value={config}
                 onChange={update}
-                provider={provider}
-                imageModels={imageModels}
+                imageOptions={imageOptions}
               />
             </div>
           )}
@@ -858,7 +931,7 @@ export function ImageGenerationDialog({
         mediaType="image"
         multiple
         selectedUrls={images}
-        max={maxRefImages}
+        max={maxRefImages - (useImageRef && templateReferenceImage ? 1 : 0)}
         onConfirm={(items: PickedAssetItem[]) => {
           if (items.length > 0) {
             appendImages(

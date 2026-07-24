@@ -62,7 +62,7 @@ export function emptySeries(order = 1, title = "未命名企划"): Series {
     characterSettings: [],
     objectSettings: [],
     sceneSettings: [],
-    styleSettings: { selectedStyleId: "realistic", overrides: {}, customPresets: [] },
+    styleSettings: { selectedStyleId: "cn-drama" },
     episodeOrder: [],
   };
 }
@@ -74,7 +74,6 @@ export function emptyAsset(name: string, type: AssetType = "character"): Asset {
     name,
     type,
     description: "",
-    imagePrompt: "",
     imageUrl: "",
     status: "pending",
   };
@@ -153,6 +152,9 @@ export function extractShots(text: string): RawShot[] {
 
   return [];
 }
+
+/** 自动保存防抖间隔（ms） */
+export const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 /** 简易防抖 */
 export function debounce<T extends (...args: never[]) => void>(fn: T, wait = 300): T {
@@ -269,24 +271,6 @@ export function replaceAssetTagsWithImageNos(
     }
   }
   return result;
-}
-
-/** 兼容旧 Episode 数据：补全缺失字段（assets / shot 视频字段 等） */
-export function normalizeEpisode(ep: Episode, defaultSeriesId = ""): Episode {
-  return {
-    ...ep,
-    seriesId: ep.seriesId || defaultSeriesId,
-    step: ep.step ?? 1,
-    assets: ep.assets ?? [],
-    shots: (ep.shots ?? []).map((s) => ({
-      ...s,
-      finalPrompt: s.finalPrompt ?? "",
-      videoUrl: s.videoUrl ?? "",
-      videoStatus: s.videoStatus ?? "idle",
-      videoTaskId: s.videoTaskId ?? "",
-      relatedAssetIds: s.relatedAssetIds ?? [],
-    })),
-  };
 }
 
 /** 从 LLM 返回文本中提取标注 items：{index, text}[] */

@@ -41,8 +41,6 @@ export const DEFAULT_AUDIO_SETTINGS: AudioGenSettings = {
 export async function getAudioSettings(): Promise<AudioGenSettings | null> {
   try {
     const s = await apiClient.getSetting<AudioGenSettings>("audio");
-    if (!s) return null;
-    if (!s.provider) return { ...DEFAULT_AUDIO_SETTINGS, ...s, provider: "mimo" };
     return s;
   } catch { return null; }
 }
@@ -62,14 +60,8 @@ export async function isAudioConfigured(): Promise<boolean> {
 /** 获取各音频 provider 缓存的配置（切换供应商时自动恢复，含 baseURL） */
 export async function getAudioProviderKeys(): Promise<ProviderCache> {
   try {
-    const raw = await apiClient.getSetting<Record<string, unknown>>("audio_provider_keys");
-    if (!raw) return {};
-    const result: ProviderCache = {};
-    for (const [k, v] of Object.entries(raw)) {
-      if (typeof v === "string") result[k] = { apiKey: v };
-      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
-    }
-    return result;
+    const raw = await apiClient.getSetting<ProviderCache>("audio_provider_keys");
+    return raw ?? {};
   } catch {
     return {};
   }

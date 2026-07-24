@@ -61,22 +61,39 @@ export function hasCharacterSettings(c: CharacterProfile[] | null | undefined): 
   return c.some((ch) => ch.name?.trim());
 }
 
-/**
- * 从人物列表中，按 characterId 分组，取每组 version 最大的。
- * 兼容旧数据（无 characterId 的视为各自独立）。
- */
+/** 检查单个人物档案是否有任何有效内容（名称/文本字段/图片/音色/参考图/生图任务任一存在）。
+ *  用于自动保存时过滤完全空白的占位记录，避免只上传图片未填名称时记录被误删。 */
+export function isCharacterProfileValid(c: CharacterProfile | null | undefined): boolean {
+  if (!c) return false;
+  return Boolean(
+    c.name?.trim() ||
+      c.role?.trim() ||
+      c.genderAge?.trim() ||
+      c.appearance?.trim() ||
+      c.personality?.trim() ||
+      c.background?.trim() ||
+      c.relationships?.trim() ||
+      c.versionLabel?.trim() ||
+      c.imageUrl ||
+      c.voiceUrl ||
+      (c.referenceImages && c.referenceImages.length > 0) ||
+      c.imageTaskId
+  );
+}
+
+/** 从人物列表中，按 characterId 分组，取每组 version 最大的 */
 export function getLatestVersions(c: CharacterProfile[]): CharacterProfile[] {
   if (!c || c.length === 0) return [];
   const groupMap = new Map<string, CharacterProfile[]>();
   for (const ch of c) {
-    const gid = ch.characterId || ch.id;
+    const gid = ch.characterId;
     const arr = groupMap.get(gid);
     if (arr) arr.push(ch);
     else groupMap.set(gid, [ch]);
   }
   const result: CharacterProfile[] = [];
   groupMap.forEach((arr: CharacterProfile[]) => {
-    arr.sort((a: CharacterProfile, b: CharacterProfile) => (b.version ?? 1) - (a.version ?? 1));
+    arr.sort((a: CharacterProfile, b: CharacterProfile) => b.version - a.version);
     result.push(arr[0]);
   });
   return result;

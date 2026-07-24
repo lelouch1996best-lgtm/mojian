@@ -1,6 +1,6 @@
 "use client";
 
-import EditableCell from "./EditableCell";
+import EditableCell, { type AtMentionOption } from "./EditableCell";
 import { removeTagPrefix } from "@/lib/utils";
 import type { Shot } from "@/lib/types";
 
@@ -12,6 +12,8 @@ interface StoryboardRowProps {
   onUpdate: (field: keyof Shot, value: string) => void;
   onDelete: () => void;
   onMove: (direction: "up" | "down") => void;
+  /** 画面描述中 @ 补全可用的已添加标签列表 */
+  atMentionOptions?: AtMentionOption[];
 }
 
 const SHOT_TYPES = ["特写", "近景", "中景", "全景", "远景"];
@@ -25,6 +27,7 @@ export default function StoryboardRow({
   onUpdate,
   onDelete,
   onMove,
+  atMentionOptions,
 }: StoryboardRowProps) {
   return (
     <tr className="border-b border-slate-100 align-top hover:bg-slate-50/50">
@@ -43,7 +46,7 @@ export default function StoryboardRow({
         />
       </td>
 
-      {/* 画面描述 —— 显示态渲染 @标签 为蓝色 */}
+      {/* 画面描述 -- 显示态渲染 @标签 为蓝色 */}
       <td className="px-1 py-2" style={{ minWidth: "200px" }}>
         <EditableCell
           value={shot.visualDescription}
@@ -55,6 +58,8 @@ export default function StoryboardRow({
           multiline
           minWidth="200px"
           renderTags
+          atMentionOptions={atMentionOptions}
+          allowCreateTag
         />
       </td>
 

@@ -11,7 +11,7 @@ import type {
   ProviderCacheEntry,
 } from "./types";
 import { apiClient } from "./api-client";
-import { getImageModelCapability, type ModelEntry } from "./model-presets";
+import { getImageModelCapability, getImageModels, type ModelEntry, type ModelOption } from "./model-presets";
 
 /** 图片供应商预设 */
 export interface ImageProviderPreset {
@@ -64,16 +64,6 @@ export const IMAGE_PROVIDER_PRESETS: Record<ImageGenSettings["provider"], ImageP
     supportsOutputFormat: true,
     supportsWatermark: true,
   },
-  openai: {
-    baseURL: "https://img-cn.65535.space/v1",
-    model: "gpt-image-2",
-    label: "65535",
-    keyPrefix: "sk-",
-    hint: "OpenAI 兼容图片生成 API。前往对应平台获取 API Key 并开通 gpt-image-2 模型。支持 1024x1024 / 1024x1536 / 1536x1024 / 3840x2160 / auto 尺寸，low/medium/high/auto 画质。底层为异步队列，支持任务轮询。第三方中转平台兼容此格式，仅需修改 baseURL。",
-    sizes: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
-    supportsOutputFormat: false,
-    supportsWatermark: false,
-  },
   apimart: {
     baseURL: "https://api.apib.ai/v1",
     model: "gpt-image-2",
@@ -100,9 +90,10 @@ export const DEFAULT_IMAGE_SETTINGS: ImageGenSettings = {
   model: "doubao-seedream-5-0-260128",
 };
 
-/** 卡片级图片生成默认配置 */
+/** 卡片级图片生成默认配置（代码兜底值；用户可在设置页自定义默认生成参数） */
 export const DEFAULT_ASSET_IMAGE_CONFIG: AssetImageConfig = {
-  model: "doubao-seedream-5-0-260128",
+  model: "",
+  provider: "ark",
   resolution: "2K",
   aspectRatio: "16:9",
   outputFormat: "png",
@@ -113,12 +104,36 @@ export const DEFAULT_ASSET_IMAGE_CONFIG: AssetImageConfig = {
   quality: "auto",
 };
 
+/**
+ * 用户自定义的图片生成默认参数（设置页「图片生成 API」区域维护）。
+ * 每次打开图片生成弹框时以其为基础（模型字段仍优先取模型列表中的「默认」星标）。
+ * 缺省/读取失败时回退 DEFAULT_ASSET_IMAGE_CONFIG。
+ */
+export async function getDefaultAssetImageConfig(): Promise<AssetImageConfig> {
+  try {
+    const stored = await apiClient.getSetting<Partial<AssetImageConfig>>("default_image_config");
+    if (stored) return { ...DEFAULT_ASSET_IMAGE_CONFIG, ...stored };
+  } catch { /* fall through */ }
+  return DEFAULT_ASSET_IMAGE_CONFIG;
+}
+
+export async function saveDefaultAssetImageConfig(cfg: AssetImageConfig): Promise<void> {
+  await apiClient.saveSetting("default_image_config", cfg);
+}
+
+/**
+ * 若用户尚未设置默认图片模型（存储值 model 为空），则把当前生成所用模型+供应商持久化为默认。
+ * 仅在「首次生成」时落盘一次；用户已在「默认生成参数」中主动选择模型时为空操作。
+ */
+export async function saveDefaultAssetImageConfigIfEmpty(config: AssetImageConfig): Promise<void> {
+  const current = await getDefaultAssetImageConfig();
+  if (current.model) return;
+  await saveDefaultAssetImageConfig({ ...current, model: config.model, provider: config.provider });
+}
+
 export async function getImageSettings(): Promise<ImageGenSettings | null> {
   try {
     const s = await apiClient.getSetting<ImageGenSettings>("image");
-    if (!s) return null;
-    // 向后兼容：旧数据缺少 provider 字段时默认 ark
-    if (!s.provider) return { ...DEFAULT_IMAGE_SETTINGS, ...s, provider: "ark" };
     return s;
   } catch { return null; }
 }
@@ -134,15 +149,8 @@ export async function saveImageSettings(s: ImageGenSettings): Promise<void> {
 /** 获取各图片 provider 缓存的配置（切换供应商时自动恢复，含 baseURL/model） */
 export async function getImageProviderKeys(): Promise<ProviderCache> {
   try {
-    const raw = await apiClient.getSetting<Record<string, unknown>>("image_provider_keys");
-    if (!raw) return {};
-    const result: ProviderCache = {};
-    for (const [k, v] of Object.entries(raw)) {
-      // 向后兼容：旧数据是 Record<string, string>（仅 apiKey）
-      if (typeof v === "string") result[k] = { apiKey: v };
-      else if (v && typeof v === "object") result[k] = v as ProviderCacheEntry;
-    }
-    return result;
+    const raw = await apiClient.getSetting<ProviderCache>("image_provider_keys");
+    return raw ?? {};
   } catch {
     return {};
   }
@@ -165,13 +173,62 @@ export async function clearImageProviderKey(provider: string): Promise<void> {
 }
 
 /**
+ * 按指定 provider 解析生成/查询所需的凭证。
+ * - 与当前设置一致：直接用当前设置的 apiKey/baseURL；
+ * - 否则（所选模型供应商与当前不同）：从 image_provider_keys 缓存读取（设置页已落盘）；
+ * - 缓存也缺失时回退当前设置凭证。
+ * 用于跨供应商生成/恢复轮询：按「所选模型所属供应商」正确选择 API Key / baseURL。
+ */
+export async function resolveImageCredentials(
+  provider?: ImageGenSettings["provider"]
+): Promise<{ provider: ImageGenSettings["provider"]; apiKey: string; baseURL: string } | null> {
+  const current = await getImageSettings();
+  const p = provider ?? current?.provider;
+  if (!p) return null;
+  let apiKey = current?.apiKey;
+  let baseURL = current?.baseURL;
+  if (current && p !== current.provider) {
+    const cache = await getImageProviderKeys();
+    apiKey = cache[p]?.apiKey ?? apiKey;
+    baseURL = cache[p]?.baseURL ?? baseURL;
+  }
+  if (!apiKey || !baseURL) return null;
+  return { provider: p, apiKey, baseURL };
+}
+
+/**
+ * 聚合所有「已配置 API Key」的图片供应商的全部模型（供模型选择弹框使用）。
+ * - 已配置 = 当前激活供应商有 apiKey，或在 image_provider_keys 缓存中有 apiKey 的供应商；
+ * - 每个模型条目携带其供应商与供应商显示名，便于按供应商分组展示与生成时路由凭证。
+ * 新增供应商 / 修改模型参数 / 新增模型后，调用本函数即可取到最新全集。
+ */
+export async function getAllConfiguredImageModels(): Promise<ModelOption[]> {
+  const current = await getImageSettings();
+  const cache = await getImageProviderKeys();
+  const configuredProviders = new Set<string>();
+  if (current?.apiKey) configuredProviders.add(current.provider);
+  for (const [p, entry] of Object.entries(cache)) {
+    if (entry?.apiKey) configuredProviders.add(p);
+  }
+  const options: ModelOption[] = [];
+  for (const p of Array.from(configuredProviders)) {
+    const preset = IMAGE_PROVIDER_PRESETS[p as ImageGenSettings["provider"]];
+    if (!preset) continue;
+    const models = await getImageModels(p as ImageGenSettings["provider"]);
+    for (const entry of models) {
+      options.push({ provider: p, providerLabel: preset.label, entry });
+    }
+  }
+  return options;
+}
+
+/**
  * 调用图片生成 API。
  * - 支持轮询的模型（cap.supportsPolling）：异步创建任务 → 立即回调 onJobCreated 持久化 jobId → 轮询至完成
  * - 不支持轮询的模型：同步等待上游返回（最多 5 分钟）
  * @param prompt 图片生成提示词
- * @param config 卡片级图片生成配置（尺寸/格式/水印等），缺省时使用 DEFAULT_ASSET_IMAGE_CONFIG
+ * @param config 卡片级图片生成配置（尺寸/格式/水印等，含所选模型供应商 provider），缺省时使用 DEFAULT_ASSET_IMAGE_CONFIG
  * @param images 参考图列表（URL 或 base64 data URI），用于单图/多图生图
- * @param models 用户自定义模型列表（用于能力查询）
  * @param onJobCreated 异步任务创建后的回调（收到 jobId 后可持久化，用于刷新页面恢复轮询）
  * @param signal AbortSignal，用于取消轮询（切页/卸载时传入，避免孤儿轮询与恢复轮询产生重复）
  * @returns ImageProxyResponse，imageUrl 可能是 URL 或 data URI
@@ -180,22 +237,30 @@ export async function generateImage(
   prompt: string,
   config?: Partial<AssetImageConfig>,
   images?: string[],
-  models?: ModelEntry[],
   onJobCreated?: (jobId: string) => void,
   signal?: AbortSignal
 ): Promise<ImageProxyResponse> {
-  const s = await getImageSettings();
-  if (!s || !s.apiKey) {
+  const cfg = { ...DEFAULT_ASSET_IMAGE_CONFIG, ...config };
+  // 未选择模型（且无任何已配置供应商可回退）时，明确提示先配置，避免发出空 model 的请求
+  if (!cfg.model) {
+    throw new Error("未选择图片生成模型，请先在「设置 -> 默认生成参数」中选择默认模型，或先配置图片生成 API");
+  }
+  // 首次生成时把当前选用模型落盘为默认（用户未主动设置默认模型时生效一次）
+  await saveDefaultAssetImageConfigIfEmpty(cfg);
+  // 按所选模型所属供应商解析凭证（跨供应商生成）；缺省回退当前激活供应商
+  const creds = await resolveImageCredentials(cfg.provider);
+  if (!creds || !creds.apiKey) {
     throw new Error("未配置图片生成 API，请先在「图片 API 设置」中填写");
   }
-  const cfg = { ...DEFAULT_ASSET_IMAGE_CONFIG, ...config };
-  const model = cfg.model || s.model;
-  const cap = getImageModelCapability(model, models, s.provider);
-  const isApimart = s.provider === "apimart";
+  const model = cfg.model || IMAGE_PROVIDER_PRESETS[creds.provider]?.model || "";
+  // 能力查询使用该供应商的模型列表（同一模型名在不同供应商下能力可能不同，如 gpt-image-2）
+  const providerModels = await getImageModels(creds.provider);
+  const cap = getImageModelCapability(model, providerModels, creds.provider);
+  const isApimart = creds.provider === "apimart";
   const body: ImageProxyRequest = {
-    provider: s.provider,
-    apiKey: s.apiKey,
-    baseURL: s.baseURL,
+    provider: creds.provider,
+    apiKey: creds.apiKey,
+    baseURL: creds.baseURL,
     model,
     prompt: isApimart ? prompt : appendAspectRatioToPrompt(prompt, cfg.aspectRatio),
     size: isApimart ? (cfg.aspectRatio === "auto" ? "1:1" : cfg.aspectRatio) : cfg.resolution,
@@ -232,7 +297,7 @@ export async function generateImage(
     // 立即回调，让调用方持久化 jobId（刷新页面后可恢复轮询）
     onJobCreated?.(created.jobId);
     // 轮询至完成（传入 signal，切页/卸载时取消轮询，保留 jobId 供恢复）
-    const final = await pollImageTask(created.jobId, s.apiKey, s.baseURL, undefined, 3000, 5 * 60 * 1000, signal, s.provider);
+    const final = await pollImageTask(created.jobId, creds.apiKey, creds.baseURL, undefined, 3000, 5 * 60 * 1000, signal, creds.provider);
     if (final.status === "done" && final.imageUrl) {
       return { imageUrl: final.imageUrl, model };
     }
@@ -305,13 +370,14 @@ export async function pollImageTask(
   intervalMs = 3000,
   timeoutMs = 5 * 60 * 1000,
   signal?: AbortSignal,
-  provider: ImageGenSettings["provider"] = "openai"
+  provider: ImageGenSettings["provider"] = "apimart"
 ): Promise<ImageQueryProxyResponse> {
   const start = Date.now();
+  // 进入循环前若已取消，直接返回（保留 jobId 供恢复轮询）
+  if (signal?.aborted) {
+    return { status: "expired", error: "已取消" };
+  }
   while (Date.now() - start < timeoutMs) {
-    if (signal?.aborted) {
-      return { status: "expired", error: "已取消" };
-    }
     const result = await queryImageTask(jobId, apiKey, baseURL, provider);
     onUpdate?.(result);
     if (result.status === "done" || result.status === "failed") {
@@ -325,6 +391,16 @@ export async function pollImageTask(
         resolve();
       }, { once: true });
     });
+    // 取消信号到达后，再做最后一次查询：上游任务可能此刻已完成，
+    // 优先返回真实结果，避免切页/卸载中止轮询导致已生成图片被丢弃。
+    if (signal?.aborted) {
+      const final = await queryImageTask(jobId, apiKey, baseURL, provider);
+      onUpdate?.(final);
+      if (final.status === "done" || final.status === "failed") {
+        return final;
+      }
+      return { status: "expired", error: "已取消" };
+    }
   }
   return { status: "expired", error: "轮询超时" };
 }
@@ -332,20 +408,22 @@ export async function pollImageTask(
 /**
  * 恢复图片生成轮询（页面刷新后，对已创建但未完成的任务恢复轮询）。
  * @param jobId 已持久化的任务 ID
+ * @param provider 创建该任务时使用的供应商（按此解析凭证，支持跨供应商恢复；缺省回退当前激活供应商）
  * @param onUpdate 状态回调（可选）
  * @param signal AbortSignal（可选）
  * @returns 成功时返回 ImageProxyResponse，失败/超时抛出错误
  */
 export async function resumeImageGeneration(
   jobId: string,
+  provider?: ImageGenSettings["provider"],
   onUpdate?: (r: ImageQueryProxyResponse) => void,
   signal?: AbortSignal
 ): Promise<ImageProxyResponse> {
-  const s = await getImageSettings();
-  if (!s || !s.apiKey) {
+  const creds = await resolveImageCredentials(provider);
+  if (!creds || !creds.apiKey) {
     throw new Error("未配置图片生成 API，请先在「图片 API 设置」中填写");
   }
-  const final = await pollImageTask(jobId, s.apiKey, s.baseURL, onUpdate, 3000, 5 * 60 * 1000, signal, s.provider);
+  const final = await pollImageTask(jobId, creds.apiKey, creds.baseURL, onUpdate, 3000, 5 * 60 * 1000, signal, creds.provider);
   if (final.status === "done" && final.imageUrl) {
     return { imageUrl: final.imageUrl };
   }
@@ -354,9 +432,11 @@ export async function resumeImageGeneration(
 
 /**
  * 获取当前模型是否支持轮询（供 UI 判断是否需要恢复轮询）。
+ * 能力查询走代码注册表（IMAGE_MODEL_CAPABILITIES_BY_PROVIDER / IMAGE_MODEL_CAPABILITIES），
+ * 覆盖同一模型名在不同供应商下的差异（如 gpt-image-2）。
  */
-export function isPollingSupported(model: string, models?: ModelEntry[], provider?: string): boolean {
-  return getImageModelCapability(model, models, provider).supportsPolling ?? false;
+export function isPollingSupported(model: string, provider?: string): boolean {
+  return getImageModelCapability(model, undefined, provider).supportsPolling ?? false;
 }
 
 /** 测试连接：用最简单的提示词生成一张图 */

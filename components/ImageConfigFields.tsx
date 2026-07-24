@@ -2,27 +2,30 @@
 
 import { useEffect } from "react";
 import { IMAGE_ASPECT_RATIOS } from "@/lib/image-client";
-import { getImageModelCapability } from "@/lib/model-presets";
-import type { AssetImageConfig, ImageGenSettings } from "@/lib/types";
-import type { ModelEntry } from "@/lib/model-presets";
+import { getImageModelCapability, type ModelOption } from "@/lib/model-presets";
+import type { AssetImageConfig } from "@/lib/types";
+import { ModelPicker } from "./ModelPicker";
 
 /**
  * 图片生成参数表单（模型 / 分辨率 / 宽高比 / 输出格式 / 水印 / 联网搜索 / 提示词优化 / 返回格式）。
  * 纯受控字段，嵌入弹框的「高级参数」折叠区，供「资产生成」与各设定页复用。
  * 字段可见性由 getImageModelCapability() 按模型能力动态控制（参照 docs/image.md 参数支持矩阵）。
+ * 模型选择聚合所有已配置供应商的模型（ModelPicker），选中后写入 model + provider，生成时按 provider 路由。
  */
 export function ImageConfigFields({
   value,
   onChange,
-  provider,
-  imageModels,
+  imageOptions,
 }: {
   value: AssetImageConfig;
   onChange: (patch: Partial<AssetImageConfig>) => void;
-  provider: ImageGenSettings["provider"];
-  imageModels: ModelEntry[];
+  imageOptions: ModelOption[];
 }) {
-  const cap = getImageModelCapability(value.model, imageModels, provider);
+  // 能力查询使用所选模型所属供应商的模型列表（同一模型名在不同供应商下能力可能不同，如 gpt-image-2）
+  const providerModels = imageOptions
+    .filter((o) => o.provider === value.provider)
+    .map((o) => o.entry);
+  const cap = getImageModelCapability(value.model, providerModels, value.provider);
 
   // 切换模型后，收敛不支持的配置项
   useEffect(() => {
@@ -50,27 +53,12 @@ export function ImageConfigFields({
       {/* 模型 */}
       <div>
         <label className="mb-0.5 block text-xs text-slate-400">模型</label>
-        {imageModels.length > 0 ? (
-          <select
-            value={value.model}
-            onChange={(e) => onChange({ model: e.target.value })}
-            className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-brand-500 focus:outline-none"
-          >
-            {imageModels.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label ? `${m.label}（${m.value}）` : m.value}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            type="text"
-            value={value.model}
-            onChange={(e) => onChange({ model: e.target.value })}
-            placeholder="模型 ID，如 doubao-seedream-5-0-260128"
-            className="w-full rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-brand-500 focus:outline-none"
-          />
-        )}
+        <ModelPicker
+          options={imageOptions}
+          provider={value.provider}
+          model={value.model}
+          onSelect={(p, m) => onChange({ model: m, provider: p as AssetImageConfig["provider"] })}
+        />
       </div>
       {/* 分辨率（方式2，通过 size 字段传输） */}
       <div>

@@ -6,7 +6,7 @@ import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import ImageLightbox from "@/components/ImageLightbox";
-import { debounce } from "@/lib/utils";
+import { debounce, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import {
   getSettings,
   saveSettings,
@@ -21,10 +21,15 @@ import {
   saveImageSettings,
   testImageConnection,
   IMAGE_PROVIDER_PRESETS,
+  IMAGE_ASPECT_RATIOS,
   DEFAULT_IMAGE_SETTINGS,
+  DEFAULT_ASSET_IMAGE_CONFIG,
+  getDefaultAssetImageConfig,
+  saveDefaultAssetImageConfig,
   getImageProviderKeys,
   saveImageProviderKey,
   clearImageProviderKey,
+  getAllConfiguredImageModels,
 } from "@/lib/image-client";
 import {
   getVideoSettings,
@@ -34,6 +39,7 @@ import {
   getVideoProviderKeys,
   saveVideoProviderKey,
   clearVideoProviderKey,
+  getAllConfiguredVideoModels,
 } from "@/lib/video-client";
 import {
   getAudioSettings,
@@ -47,22 +53,27 @@ import {
 import {
   getLLMModels,
   saveLLMModels,
-  resetLLMModels,
+  refreshBuiltInLLMModels,
   getImageModels,
   saveImageModels,
-  resetImageModels,
+  refreshBuiltInImageModels,
   getVideoModels,
   saveVideoModels,
-  resetVideoModels,
+  refreshBuiltInVideoModels,
   getAudioModels,
   saveAudioModels,
-  resetAudioModels,
-  initAllModels,
+  refreshBuiltInAudioModels,
+  getCodeDefaultImageCapability,
+  getCodeDefaultVideoCapability,
+  getDefaultShotVideoConfig,
+  saveDefaultShotVideoConfig,
   DEFAULT_LLM_MODELS,
   DEFAULT_IMAGE_MODELS,
   DEFAULT_VIDEO_MODELS,
   DEFAULT_AUDIO_MODELS,
+  DEFAULT_SHOT_VIDEO_CONFIG,
   type ModelEntry,
+  type ModelOption,
   type ImageModelCapability,
   type VideoModelCapability,
 } from "@/lib/model-presets";
@@ -70,7 +81,8 @@ import {
   getCosSettings,
   saveCosSettings,
 } from "@/lib/cos-client";
-import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings } from "@/lib/types";
+import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
+import { ModelPicker } from "@/components/ModelPicker";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -109,6 +121,8 @@ export default function SettingsPage() {
 
   // ---- 图片模型管理 ----
   const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供默认模型选择弹框使用）
+  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   const [showImageManager, setShowImageManager] = useState(false);
   const [newImageValue, setNewImageValue] = useState("");
   const [newImageLabel, setNewImageLabel] = useState("");
@@ -122,6 +136,8 @@ export default function SettingsPage() {
 
   // ---- 视频模型管理 ----
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」视频供应商的全部模型（聚合，供默认模型选择弹框使用）
+  const [videoOptions, setVideoOptions] = useState<ModelOption[]>([]);
   const [showVideoManager, setShowVideoManager] = useState(false);
   const [newVideoValue, setNewVideoValue] = useState("");
   const [newVideoLabel, setNewVideoLabel] = useState("");
@@ -153,8 +169,13 @@ export default function SettingsPage() {
     message: string;
   } | null>(null);
 
-  // ---- 初始化模型 ----
-  const [initializing, setInitializing] = useState(false);
+  // ---- 默认生成参数（用户自定义） ----
+  const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [defaultVideoConfig, setDefaultVideoConfig] = useState<ShotVideoConfig>(DEFAULT_SHOT_VIDEO_CONFIG);
+  const [showDefaultImageConfig, setShowDefaultImageConfig] = useState(false);
+  const [showDefaultVideoConfig, setShowDefaultVideoConfig] = useState(false);
+
+  // ---- 保存提示 ----
   const [savedHint, setSavedHint] = useState(false);
   const savedHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -205,9 +226,13 @@ export default function SettingsPage() {
 
     // 图片模型列表
     setImageModels(await getImageModels(imgProvider));
+    setImageOptions(await getAllConfiguredImageModels());
     setShowImageManager(false);
     setNewImageValue("");
     setNewImageLabel("");
+
+    // 图片默认生成参数
+    setDefaultImageConfig(await getDefaultAssetImageConfig());
 
     // 视频
     const vs = await getVideoSettings();
@@ -220,9 +245,13 @@ export default function SettingsPage() {
 
     // 视频模型列表
     setVideoModels(await getVideoModels(vidProvider));
+    setVideoOptions(await getAllConfiguredVideoModels());
     setShowVideoManager(false);
     setNewVideoValue("");
     setNewVideoLabel("");
+
+    // 视频默认生成参数
+    setDefaultVideoConfig(await getDefaultShotVideoConfig());
 
     // 音频
     const aus = await getAudioSettings();
@@ -314,19 +343,19 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleResetLLMModels() {
-    const defaults = await resetLLMModels(provider);
-    setLLMModels(defaults);
-    if (!defaults.some((m) => m.value === model) && defaults.length > 0) {
-      setModel(defaults[0].value);
+  async function handleRefreshLLMModels() {
+    const merged = await refreshBuiltInLLMModels(provider);
+    setLLMModels(merged);
+    if (!merged.some((m) => m.value === model) && merged.length > 0) {
+      setModel(merged[0].value);
     }
   }
 
-  /** 初始化当前 LLM 供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  /** 初始化当前 LLM 供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
   async function handleInitLLMProvider() {
     const p = provider;
     if (!await confirm({
-      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，内置模型列表将刷新为代码最新（自定义模型保留）。",
       confirmText: "初始化",
     })) return;
     const preset = PROVIDER_PRESETS[p];
@@ -342,9 +371,9 @@ export default function SettingsPage() {
     setModel(fbModel);
     setApiKey("");
     setTestResult(null);
-    // 联动重置模型列表
-    const defaults = await resetLLMModels(p);
-    setLLMModels(defaults);
+    // 联动刷新内置模型列表
+    const merged = await refreshBuiltInLLMModels(p);
+    setLLMModels(merged);
     setShowLLMManager(false);
   }
 
@@ -368,8 +397,9 @@ export default function SettingsPage() {
     const newSettings = { ...imgSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, model: cached?.model ?? fbModel, apiKey: cached?.apiKey ?? "" };
     setImgSettings(newSettings);
     setImgTestResult(null);
-    // 切换 provider 时重新加载模型列表
+    // 切换 provider 时重新加载模型列表与聚合选项
     setImageModels(await getImageModels(p));
+    setImageOptions(await getAllConfiguredImageModels());
     setShowImageManager(false);
     setNewImageValue("");
     setNewImageLabel("");
@@ -422,19 +452,30 @@ export default function SettingsPage() {
     await saveImageModels(imgSettings.provider, updated);
   }
 
-  async function handleResetImageModels() {
-    const defaults = await resetImageModels(imgSettings.provider);
-    setImageModels(defaults);
-    if (!defaults.some((m) => m.value === imgSettings.model) && defaults.length > 0) {
-      updateImg("model", defaults[0].value);
+  /** 将某个图片模型的能力参数恢复为代码默认值（仅当前模型） */
+  async function handleInitImageModelCapability(value: string) {
+    const cap = getCodeDefaultImageCapability(imgSettings.provider, value);
+    if (!cap) return;
+    const updated = imageModels.map((m) =>
+      m.value === value ? { ...m, capability: cap } : m
+    );
+    setImageModels(updated);
+    await saveImageModels(imgSettings.provider, updated);
+  }
+
+  async function handleRefreshImageModels() {
+    const merged = await refreshBuiltInImageModels(imgSettings.provider);
+    setImageModels(merged);
+    if (!merged.some((m) => m.value === imgSettings.model) && merged.length > 0) {
+      updateImg("model", merged[0].value);
     }
   }
 
-  /** 初始化当前供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  /** 初始化当前供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
   async function handleInitImageProvider() {
     const p = imgSettings.provider;
     if (!await confirm({
-      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      message: "确定要初始化当前供应商为默认配置吗？baseURL / 模型将恢复为预设值，API Key 将被清空，内置模型列表将刷新为代码最新（自定义模型保留）。",
       confirmText: "初始化",
     })) return;
     const preset = IMAGE_PROVIDER_PRESETS[p];
@@ -448,16 +489,11 @@ export default function SettingsPage() {
     // 重置供应商配置到预设默认
     setImgSettings({ ...imgSettings, provider: p, baseURL: fbBase, model: fbModel, apiKey: "" });
     setImgTestResult(null);
-    // 联动重置模型列表
-    const defaults = await resetImageModels(p);
-    setImageModels(defaults);
+    // 联动刷新内置模型列表
+    const merged = await refreshBuiltInImageModels(p);
+    setImageModels(merged);
+    setImageOptions(await getAllConfiguredImageModels());
     setShowImageManager(false);
-  }
-
-  async function handleSetDefaultImageModel(value: string) {
-    const updated = imageModels.map((m) => ({ ...m, isDefault: m.value === value }));
-    setImageModels(updated);
-    await saveImageModels(imgSettings.provider, updated);
   }
 
   // ---- 视频 API handlers ----
@@ -478,8 +514,9 @@ export default function SettingsPage() {
     // 一次性设置新 provider + 恢复的配置，优先用缓存保留用户编辑，无缓存回退到预设/空
     const newSettings = { ...vidSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "" };
     setVidSettings(newSettings);
-    // 切换 provider 时重新加载模型列表
+    // 切换 provider 时重新加载模型列表与聚合选项
     setVideoModels(await getVideoModels(p));
+    setVideoOptions(await getAllConfiguredVideoModels());
     setShowVideoManager(false);
     setNewVideoValue("");
     setNewVideoLabel("");
@@ -516,16 +553,27 @@ export default function SettingsPage() {
     await saveVideoModels(vidSettings.provider, updated);
   }
 
-  async function handleResetVideoModels() {
-    const defaults = await resetVideoModels(vidSettings.provider);
-    setVideoModels(defaults);
+  /** 将某个视频模型的能力参数恢复为代码默认值（仅当前模型） */
+  async function handleInitVideoModelCapability(value: string) {
+    const cap = getCodeDefaultVideoCapability(vidSettings.provider, value);
+    if (!cap) return;
+    const updated = videoModels.map((m) =>
+      m.value === value ? { ...m, videoCapability: cap } : m
+    );
+    setVideoModels(updated);
+    await saveVideoModels(vidSettings.provider, updated);
   }
 
-  /** 初始化当前视频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  async function handleRefreshVideoModels() {
+    const merged = await refreshBuiltInVideoModels(vidSettings.provider);
+    setVideoModels(merged);
+  }
+
+  /** 初始化当前视频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
   async function handleInitVideoProvider() {
     const p = vidSettings.provider;
     if (!await confirm({
-      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，内置模型列表将刷新为代码最新（自定义模型保留）。",
       confirmText: "初始化",
     })) return;
     const preset = VIDEO_PROVIDER_PRESETS[p];
@@ -537,16 +585,11 @@ export default function SettingsPage() {
     await clearVideoProviderKey(p);
     // 重置供应商配置到预设默认
     setVidSettings({ ...vidSettings, provider: p, baseURL: fbBase, apiKey: "" });
-    // 联动重置模型列表
-    const defaults = await resetVideoModels(p);
-    setVideoModels(defaults);
+    // 联动刷新内置模型列表
+    const merged = await refreshBuiltInVideoModels(p);
+    setVideoModels(merged);
+    setVideoOptions(await getAllConfiguredVideoModels());
     setShowVideoManager(false);
-  }
-
-  async function handleSetDefaultVideoModel(value: string) {
-    const updated = videoModels.map((m) => ({ ...m, isDefault: m.value === value }));
-    setVideoModels(updated);
-    await saveVideoModels(vidSettings.provider, updated);
   }
 
   // ---- 音频 API ----
@@ -593,16 +636,16 @@ export default function SettingsPage() {
     await saveAudioModels(audSettings.provider, updated);
   }
 
-  async function handleResetAudioModels() {
-    const defaults = await resetAudioModels(audSettings.provider);
-    setAudioModels(defaults);
+  async function handleRefreshAudioModels() {
+    const merged = await refreshBuiltInAudioModels(audSettings.provider);
+    setAudioModels(merged);
   }
 
-  /** 初始化当前音频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、重置模型列表 */
+  /** 初始化当前音频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
   async function handleInitAudioProvider() {
     const p = audSettings.provider;
     if (!await confirm({
-      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，自定义模型列表也会被重置。",
+      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，内置模型列表将刷新为代码最新（自定义模型保留）。",
       confirmText: "初始化",
     })) return;
     const preset = AUDIO_PROVIDER_PRESETS[p];
@@ -614,9 +657,9 @@ export default function SettingsPage() {
     await clearAudioProviderKey(p);
     // 重置供应商配置到预设默认
     setAudSettings({ ...audSettings, provider: p, baseURL: fbBase, apiKey: "" });
-    // 联动重置模型列表
-    const defaults = await resetAudioModels(p);
-    setAudioModels(defaults);
+    // 联动刷新内置模型列表
+    const merged = await refreshBuiltInAudioModels(p);
+    setAudioModels(merged);
     setShowAudioManager(false);
   }
 
@@ -624,6 +667,21 @@ export default function SettingsPage() {
     const updated = audioModels.map((m) => ({ ...m, isDefault: m.value === value }));
     setAudioModels(updated);
     await saveAudioModels(audSettings.provider, updated);
+  }
+
+  // ---- 默认生成参数（用户自定义，即改即存） ----
+  async function updateDefaultImageConfig(patch: Partial<AssetImageConfig>) {
+    const next = { ...defaultImageConfig, ...patch };
+    setDefaultImageConfig(next);
+    await saveDefaultAssetImageConfig(next);
+    showSavedHint();
+  }
+
+  async function updateDefaultVideoConfig(patch: Partial<ShotVideoConfig>) {
+    const next = { ...defaultVideoConfig, ...patch };
+    setDefaultVideoConfig(next);
+    await saveDefaultShotVideoConfig(next);
+    showSavedHint();
   }
 
   // ---- COS handlers ----
@@ -673,7 +731,7 @@ export default function SettingsPage() {
       await saveProviderKey(p, { apiKey: k, baseURL: b, model: m });
       setProviderKeys((prev) => ({ ...prev, [p]: { apiKey: k, baseURL: b, model: m } }));
       showSavedHint();
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -685,7 +743,7 @@ export default function SettingsPage() {
       await saveImageProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model });
       setImageProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model } }));
       showSavedHint();
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -697,7 +755,7 @@ export default function SettingsPage() {
       await saveVideoProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
       setVideoProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -709,7 +767,7 @@ export default function SettingsPage() {
       await saveAudioProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
       setAudioProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -719,7 +777,7 @@ export default function SettingsPage() {
       await saveCosSettings(s);
       setCosConfigured(true);
       showSavedHint();
-    }, 500),
+    }, AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -753,42 +811,6 @@ export default function SettingsPage() {
     persistCos(cosSettings);
   }, [cosSettings, persistCos]);
 
-  /** 初始化：用代码中的默认模型覆盖数据库 */
-  async function handleInitModels() {
-    if (!await confirm({
-      message:
-        "确定要用代码中的默认模型配置覆盖数据库中的所有模型列表吗？\n\n" +
-        "将覆盖：\n" +
-        "• 所有 LLM 服务商的模型列表\n" +
-        "• 图片生成模型列表\n" +
-        "• 视频生成模型列表\n\n" +
-        "自定义添加的模型将被清除。",
-      confirmText: "初始化",
-    })) {
-      return;
-    }
-    setInitializing(true);
-    try {
-      await initAllModels();
-      // 刷新 UI 中的模型列表
-      const llmDefaults = await getLLMModels(provider);
-      const imgDefaults = await getImageModels(imgSettings.provider);
-      const vidDefaults = await getVideoModels(vidSettings.provider);
-      setLLMModels(llmDefaults);
-      setImageModels(imgDefaults);
-      setVideoModels(vidDefaults);
-      // 如果当前选中的模型不在默认列表中，切换到第一个
-      if (!llmDefaults.some((m) => m.value === model) && llmDefaults.length > 0) {
-        setModel(llmDefaults[0].value);
-      }
-      if (!imgDefaults.some((m) => m.value === imgSettings.model) && imgDefaults.length > 0) {
-        updateImg("model", imgDefaults[0].value);
-      }
-    } finally {
-      setInitializing(false);
-    }
-  }
-
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-8 sm:px-6">
       {/* 页头 */}
@@ -812,14 +834,6 @@ export default function SettingsPage() {
           <h1 className="text-xl font-bold text-slate-800">API 设置</h1>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={handleInitModels}
-            loading={initializing}
-          >
-            初始化模型列表
-          </Button>
           {savedHint && <span className="text-xs text-emerald-600">已保存 ✓</span>}
         </div>
       </header>
@@ -922,6 +936,7 @@ export default function SettingsPage() {
                 <ModelManagerPanel
                   models={llmModels}
                   modelType="llm"
+                  provider={provider}
                   builtInValues={new Set((DEFAULT_LLM_MODELS[provider] ?? []).map((m) => m.value))}
                   newValue={newLLMValue}
                   newLabel={newLLMLabel}
@@ -929,7 +944,7 @@ export default function SettingsPage() {
                   onNewLabelChange={setNewLLMLabel}
                   onAdd={handleAddLLMModel}
                   onDelete={handleDeleteLLMModel}
-                  onReset={handleResetLLMModels}
+                  onRefresh={handleRefreshLLMModels}
                   currentModel={model}
                 />
               )}
@@ -1031,6 +1046,7 @@ export default function SettingsPage() {
                   <ModelManagerPanel
                     models={imageModels}
                     modelType="image"
+                    provider={imgSettings.provider}
                     builtInValues={new Set((DEFAULT_IMAGE_MODELS[imgSettings.provider] ?? []).map((m) => m.value))}
                     newValue={newImageValue}
                     newLabel={newImageLabel}
@@ -1038,10 +1054,30 @@ export default function SettingsPage() {
                     onNewLabelChange={setNewImageLabel}
                     onAdd={handleAddImageModel}
                     onDelete={handleDeleteImageModel}
-                    onReset={handleResetImageModels}
+                    onRefresh={handleRefreshImageModels}
                     onUpdateCapability={handleUpdateImageCapability}
-                    onSetDefault={handleSetDefaultImageModel}
+                    onInitCapability={handleInitImageModelCapability}
                   />
+                )}
+              </div>
+
+              {/* --- 默认生成参数（用户自定义，每次打开图片生成弹框时使用） --- */}
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <label className="text-sm font-medium text-slate-700">默认生成参数</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowDefaultImageConfig(!showDefaultImageConfig)}
+                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                  >
+                    {showDefaultImageConfig ? "收起" : "展开"}
+                  </button>
+                </div>
+                <p className="mb-1.5 text-xs text-slate-400">每次打开图片生成弹框时使用的默认参数（资产卡片已单独调整的参数不受影响）。默认模型可在下方跨供应商选择，生成时按所选模型所属供应商自动路由凭证。</p>
+                {showDefaultImageConfig && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50">
+                    <DefaultImageConfigEditor config={defaultImageConfig} onChange={updateDefaultImageConfig} imageOptions={imageOptions} />
+                  </div>
                 )}
               </div>
 
@@ -1157,6 +1193,7 @@ export default function SettingsPage() {
                   <ModelManagerPanel
                     models={videoModels}
                     modelType="video"
+                    provider={vidSettings.provider}
                     builtInValues={new Set((DEFAULT_VIDEO_MODELS[vidSettings.provider] ?? []).map((m) => m.value))}
                     newValue={newVideoValue}
                     newLabel={newVideoLabel}
@@ -1164,10 +1201,30 @@ export default function SettingsPage() {
                     onNewLabelChange={setNewVideoLabel}
                     onAdd={handleAddVideoModel}
                     onDelete={handleDeleteVideoModel}
-                    onReset={handleResetVideoModels}
+                    onRefresh={handleRefreshVideoModels}
                     onUpdateVideoCapability={handleUpdateVideoCapability}
-                    onSetDefault={handleSetDefaultVideoModel}
+                    onInitCapability={handleInitVideoModelCapability}
                   />
+                )}
+              </div>
+
+              {/* --- 默认生成参数（用户自定义，新增镜头卡片时使用） --- */}
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <label className="text-sm font-medium text-slate-700">默认生成参数</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowDefaultVideoConfig(!showDefaultVideoConfig)}
+                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                  >
+                    {showDefaultVideoConfig ? "收起" : "展开"}
+                  </button>
+                </div>
+                <p className="mb-1.5 text-xs text-slate-400">每个新增镜头卡片使用的默认视频参数（已调整过参数的镜头卡片不受影响）。默认模型可在下方跨供应商选择，生成时按所选模型所属供应商自动路由凭证。</p>
+                {showDefaultVideoConfig && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50">
+                    <DefaultVideoConfigEditor config={defaultVideoConfig} onChange={updateDefaultVideoConfig} videoOptions={videoOptions} />
+                  </div>
                 )}
               </div>
 
@@ -1261,6 +1318,7 @@ export default function SettingsPage() {
                   <ModelManagerPanel
                     models={audioModels}
                     modelType="audio"
+                    provider={audSettings.provider}
                     builtInValues={new Set((DEFAULT_AUDIO_MODELS[audSettings.provider] ?? []).map((m) => m.value))}
                     newValue={newAudioValue}
                     newLabel={newAudioLabel}
@@ -1268,7 +1326,7 @@ export default function SettingsPage() {
                     onNewLabelChange={setNewAudioLabel}
                     onAdd={handleAddAudioModel}
                     onDelete={handleDeleteAudioModel}
-                    onReset={handleResetAudioModels}
+                    onRefresh={handleRefreshAudioModels}
                     onSetDefault={handleSetDefaultAudioModel}
                   />
                 )}
@@ -1394,6 +1452,7 @@ const ALL_RESOLUTIONS = ["1K", "2K", "3K", "4K", "auto", "1024x1024", "1024x1536
 function ModelManagerPanel({
   models,
   modelType,
+  provider,
   builtInValues,
   newValue,
   newLabel,
@@ -1401,14 +1460,16 @@ function ModelManagerPanel({
   onNewLabelChange,
   onAdd,
   onDelete,
-  onReset,
+  onRefresh,
   onUpdateCapability,
   onUpdateVideoCapability,
+  onInitCapability,
   onSetDefault,
   currentModel,
 }: {
   models: ModelEntry[];
   modelType?: "llm" | "image" | "video" | "audio";
+  provider?: string;
   builtInValues?: Set<string>;
   newValue: string;
   newLabel: string;
@@ -1416,9 +1477,11 @@ function ModelManagerPanel({
   onNewLabelChange: (v: string) => void;
   onAdd: () => void;
   onDelete: (value: string) => void;
-  onReset: () => void;
+  onRefresh: () => void;
   onUpdateCapability?: (value: string, capability: Partial<ImageModelCapability>) => void;
   onUpdateVideoCapability?: (value: string, capability: Partial<VideoModelCapability>) => void;
+  /** 将某个模型的能力参数恢复为代码默认值（仅图片/视频区域传入） */
+  onInitCapability?: (value: string) => void;
   onSetDefault?: (value: string) => void;
   currentModel?: string;
 }) {
@@ -1428,7 +1491,9 @@ function ModelManagerPanel({
   const isImage = modelType === "image";
   const isVideo = modelType === "video";
   const hasCapability = isImage || isVideo;
-  const canSetDefault = (isImage || isVideo) && !!onSetDefault;
+  // 默认模型改为在「默认生成参数」编辑器中通过跨供应商 ModelPicker 设置；
+  // 模型管理面板的星标仅保留给音频（音频仍沿用当前供应商的默认星标机制）
+  const canSetDefault = modelType === "audio" && !!onSetDefault;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -1478,7 +1543,7 @@ function ModelManagerPanel({
                         当前
                       </span>
                     )}
-                    {m.isDefault && (
+                    {m.isDefault && modelType === "audio" && (
                       <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700">
                         默认
                       </span>
@@ -1534,27 +1599,38 @@ function ModelManagerPanel({
                     </button>
                   </div>
                 </div>
-                {/* 内置模型只读提示 */}
-                {isBuiltIn && expanded && (
-                  <div className="mx-2.5 mb-1 rounded-md bg-amber-50 px-2.5 py-1 text-[11px] text-amber-700">
-                    内置模型参数不可修改，仅查看
-                  </div>
-                )}
-                {/* 图片模型能力配置 */}
+                {/* 图片模型能力配置（内置模型同样可编辑，编辑结果随列表落库） */}
                 {isImage && expanded && onUpdateCapability && (
                   <ImageCapabilityEditor
                     capability={cap}
-                    readOnly={isBuiltIn}
                     onChange={(patch) => onUpdateCapability(m.value, patch)}
                   />
                 )}
-                {/* 视频模型能力配置 */}
+                {/* 视频模型能力配置（内置模型同样可编辑，编辑结果随列表落库） */}
                 {isVideo && expanded && onUpdateVideoCapability && (
                   <VideoCapabilityEditor
                     capability={vcap}
-                    readOnly={isBuiltIn}
                     onChange={(patch) => onUpdateVideoCapability(m.value, patch)}
                   />
+                )}
+                {/* 初始化模型参数：恢复该模型为代码默认能力（仅代码中存在该模型时可用） */}
+                {expanded && onInitCapability && provider &&
+                  (isImage
+                    ? getCodeDefaultImageCapability(provider, m.value) !== undefined
+                    : isVideo && getCodeDefaultVideoCapability(provider, m.value) !== undefined) && (
+                  <div className="mx-2.5 mb-2 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (await confirm({ message: "确定要将该模型的参数恢复为代码默认值吗？", confirmText: "初始化" })) {
+                          onInitCapability(m.value);
+                        }
+                      }}
+                      className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                    >
+                      初始化模型参数
+                    </button>
+                  </div>
                 )}
               </div>
             );
@@ -1598,22 +1674,22 @@ function ModelManagerPanel({
         )}
       </div>
 
-      {/* 恢复默认 */}
-      <div className="border-t border-slate-200 pt-2">
-        <button
-          type="button"
+      {/* 刷新内置模型列表 */}
+      <div className="border-t border-slate-200 pt-2 flex justify-end">
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={async () => {
             if (await confirm({
-              message: "确定要恢复为默认模型列表吗？自定义的模型将被清除。",
-              confirmText: "初始化",
+              message: "将用代码中最新的内置模型替换当前内置模型（内置模型上手动修改的参数会恢复默认），你添加的自定义模型会保留。确定刷新吗？",
+              confirmText: "刷新",
             })) {
-              onReset();
+              onRefresh();
             }
           }}
-          className="text-xs text-slate-400 hover:text-slate-600 transition-colors"
         >
-          初始化模型列表
-        </button>
+          刷新内置模型列表
+        </Button>
       </div>
     </div>
   );
@@ -1896,6 +1972,266 @@ function Field({
         {hint && <span className="text-xs text-slate-400">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+/** 默认参数编辑器共用的胶囊按钮样式 */
+function defaultCfgPill(active: boolean) {
+  return `rounded-full px-2 py-0.5 text-xs transition-colors ${
+    active
+      ? "bg-violet-100 text-violet-700"
+      : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+  }`;
+}
+
+/** 图片默认生成参数编辑器（设置页；无能力门控的静态全集选项，应用时按所选模型能力收敛） */
+function DefaultImageConfigEditor({
+  config,
+  onChange,
+  imageOptions,
+}: {
+  config: AssetImageConfig;
+  onChange: (patch: Partial<AssetImageConfig>) => void;
+  /** 所有已配置供应商的图片模型聚合列表（默认模型选择弹框使用） */
+  imageOptions: ModelOption[];
+}) {
+  const boolRow = (
+    label: string,
+    key: "watermark" | "webSearch",
+    hintOn: string,
+    hintOff: string
+  ) => (
+    <div className="flex items-center gap-2" key={key}>
+      <span className="w-20 shrink-0 text-slate-500">{label}</span>
+      <div className="flex gap-1">
+        {([true, false] as const).map((v) => (
+          <button
+            key={String(v)}
+            type="button"
+            onClick={() => onChange({ [key]: v })}
+            className={defaultCfgPill((config[key] ?? false) === v)}
+          >
+            {v ? hintOn : hintOff}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const enumRow = <K extends "outputFormat" | "optimizePromptMode" | "quality" | "responseFormat">(
+    label: string,
+    key: K,
+    options: { value: NonNullable<AssetImageConfig[K]>; label: string }[]
+  ) => (
+    <div className="flex items-center gap-2" key={key}>
+      <span className="w-20 shrink-0 text-slate-500">{label}</span>
+      <div className="flex flex-wrap gap-1">
+        {options.map((o) => (
+          <button
+            key={String(o.value)}
+            type="button"
+            onClick={() => onChange({ [key]: o.value })}
+            className={defaultCfgPill(config[key] === o.value)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">默认模型</span>
+        <ModelPicker
+          options={imageOptions}
+          provider={config.provider}
+          model={config.model}
+          onSelect={(p, m) => onChange({ model: m, provider: p as AssetImageConfig["provider"] })}
+          buttonClassName="max-w-[280px]"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">分辨率</span>
+        <div className="flex flex-wrap gap-1">
+          {ALL_RESOLUTIONS.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChange({ resolution: r })}
+              className={defaultCfgPill(config.resolution === r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">宽高比</span>
+        <div className="flex flex-wrap gap-1">
+          {IMAGE_ASPECT_RATIOS.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChange({ aspectRatio: r })}
+              className={defaultCfgPill(config.aspectRatio === r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+      {enumRow("输出格式", "outputFormat", [
+        { value: "png", label: "PNG" },
+        { value: "jpeg", label: "JPEG" },
+      ])}
+      {enumRow("画质", "quality", [
+        { value: "low", label: "低" },
+        { value: "medium", label: "中" },
+        { value: "high", label: "高" },
+        { value: "auto", label: "自动" },
+      ])}
+      {enumRow("提示词优化", "optimizePromptMode", [
+        { value: "standard", label: "标准" },
+        { value: "fast", label: "快速" },
+      ])}
+      {enumRow("返回格式", "responseFormat", [
+        { value: "url", label: "URL" },
+        { value: "b64_json", label: "Base64" },
+      ])}
+      {boolRow("水印", "watermark", "开启", "关闭")}
+      {boolRow("联网搜索", "webSearch", "开启", "关闭")}
+    </div>
+  );
+}
+
+/** 视频默认生成参数编辑器（设置页；无能力门控的静态全集选项，应用时按所选模型能力收敛） */
+function DefaultVideoConfigEditor({
+  config,
+  onChange,
+  videoOptions,
+}: {
+  config: ShotVideoConfig;
+  onChange: (patch: Partial<ShotVideoConfig>) => void;
+  /** 所有已配置供应商的视频模型聚合列表（默认模型选择弹框使用） */
+  videoOptions: ModelOption[];
+}) {
+  const boolRow = (
+    label: string,
+    key: "watermark" | "generateAudio" | "cameraFixed" | "returnLastFrame" | "webSearch" | "draft",
+    hintOn: string,
+    hintOff: string
+  ) => (
+    <div className="flex items-center gap-2" key={key}>
+      <span className="w-20 shrink-0 text-slate-500">{label}</span>
+      <div className="flex gap-1">
+        {([true, false] as const).map((v) => (
+          <button
+            key={String(v)}
+            type="button"
+            onClick={() => onChange({ [key]: v })}
+            className={defaultCfgPill((config[key] ?? false) === v)}
+          >
+            {v ? hintOn : hintOff}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
+  const numRow = (
+    label: string,
+    key: "duration" | "seed" | "priority",
+    hint: string
+  ) => (
+    <div className="flex items-center gap-2" key={key}>
+      <span className="w-20 shrink-0 text-slate-500">{label}</span>
+      <input
+        type="number"
+        value={config[key]}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (!Number.isNaN(v)) onChange({ [key]: v });
+        }}
+        className="w-24 rounded border border-slate-300 px-2 py-0.5 focus:outline-none focus:border-violet-400"
+      />
+      <span className="text-slate-400">{hint}</span>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">默认模型</span>
+        <ModelPicker
+          options={videoOptions}
+          provider={config.provider}
+          model={config.model}
+          onSelect={(p, m) => onChange({ model: m, provider: p as ShotVideoConfig["provider"] })}
+          buttonClassName="max-w-[280px]"
+        />
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">生成模式</span>
+        <div className="flex flex-wrap gap-1">
+          {([
+            { value: "text2video", label: "文生视频" },
+            { value: "first-frame", label: "首帧" },
+            { value: "first-last-frame", label: "首尾帧" },
+            { value: "multimodal-ref", label: "全能参考" },
+          ] as const).map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => onChange({ mode: o.value })}
+              className={defaultCfgPill(config.mode === o.value)}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">分辨率</span>
+        <div className="flex flex-wrap gap-1">
+          {(["480p", "720p", "1080p", "4k"] as const).map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChange({ resolution: r })}
+              className={defaultCfgPill(config.resolution === r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 text-slate-500">宽高比</span>
+        <div className="flex flex-wrap gap-1">
+          {(["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] as const).map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => onChange({ ratio: r })}
+              className={defaultCfgPill(config.ratio === r)}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+      {numRow("时长", "duration", "秒，-1 = 自动")}
+      {numRow("优先级", "priority", "0-9，数字越小优先级越高")}
+      {numRow("Seed", "seed", "-1 = 随机")}
+      {boolRow("有声生成", "generateAudio", "有声", "无声")}
+      {boolRow("水印", "watermark", "开启", "关闭")}
+      {boolRow("固定摄像头", "cameraFixed", "开启", "关闭")}
+      {boolRow("返回尾帧", "returnLastFrame", "开启", "关闭")}
+      {boolRow("联网搜索", "webSearch", "开启", "关闭")}
+      {boolRow("样片模式", "draft", "样片", "正式")}
     </div>
   );
 }

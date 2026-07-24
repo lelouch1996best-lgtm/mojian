@@ -7,7 +7,7 @@ import Button from "@/components/ui/Button";
 import ImageLightbox from "@/components/ImageLightbox";
 import { apiClient } from "@/lib/api-client";
 import { ASSET_TYPE_LABELS } from "@/lib/utils";
-import type { AssetLibraryItem } from "@/lib/types";
+import type { MediaAsset } from "@/lib/types";
 
 /** 资产库选中项（含 URL 与名称，用于 @ 提及保留原始资产名） */
 export interface PickedAssetItem {
@@ -41,8 +41,9 @@ const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "storyboard", label: "故事板" },
 ];
 
-function entityTypeLabel(t: AssetLibraryItem["entityType"]): string {
+function entityTypeLabel(t: MediaAsset["entityType"]): string {
   if (t === "shot") return "镜头";
+  if (t === "other") return "其他";
   return ASSET_TYPE_LABELS[t] ?? t;
 }
 
@@ -55,12 +56,12 @@ export default function AssetPicker({
   onConfirm,
   max,
 }: AssetPickerProps) {
-  const [items, setItems] = useState<AssetLibraryItem[]>([]);
+  const [items, setItems] = useState<MediaAsset[]>([]);
   const [loading, setLoading] = useState(false);
   const [seriesId, setSeriesId] = useState("");
   const [entityType, setEntityType] = useState<EntityTypeFilter>("all");
   const [pickedIds, setPickedIds] = useState<string[]>([]);
-  const [videoPreview, setVideoPreview] = useState<AssetLibraryItem | null>(null);
+  const [videoPreview, setVideoPreview] = useState<MediaAsset | null>(null);
 
   // ===== 弹窗 Portal / 拖拽 / 缩放 =====
   const [mounted, setMounted] = useState(false);
@@ -160,7 +161,7 @@ export default function AssetPicker({
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await apiClient.listAssetLibrary();
+      const list = await apiClient.listMediaAssets();
       setItems(list.filter((it) => it.mediaType === mediaType));
     } catch {
       setItems([]);
@@ -219,7 +220,7 @@ export default function AssetPicker({
   const totalSelected = selectedUrls.length + pickedIds.length;
   const remaining = Math.max(0, effectiveMax - totalSelected);
 
-  function togglePick(item: AssetLibraryItem) {
+  function togglePick(item: MediaAsset) {
     if (pickedIdSet.has(item.id)) {
       setPickedIds(pickedIds.filter((id) => id !== item.id));
       return;
@@ -450,7 +451,7 @@ function AssetPickCard({
   onToggle,
   onPreviewVideo,
 }: {
-  item: AssetLibraryItem;
+  item: MediaAsset;
   picked: boolean;
   alreadySelected: boolean;
   disabled: boolean;

@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ImageLightbox from "./ImageLightbox";
+import ImageActionToolbar from "./ImageActionToolbar";
 import TaggedText from "./TaggedText";
 import EditableCell from "./EditableCell";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
@@ -18,6 +19,10 @@ interface SceneAssetCardProps {
   onDelete?: () => void;
   isGenerating?: boolean;
   onGenerateImage?: () => void;
+  /** 未提取时：本地上传图片回调（已有图也可重新上传） */
+  onUploadImage?: (file: File) => void;
+  /** 未提取时：是否正在上传图片 */
+  isUploading?: boolean;
   /** 未提取时：重新生成外观回调 */
   onRegenerate?: () => void;
   /** 未提取时：是否正在重新生成外观 */
@@ -33,12 +38,15 @@ export default function SceneAssetCard({
   onDelete,
   isGenerating = false,
   onGenerateImage,
+  onUploadImage,
+  isUploading = false,
   onRegenerate,
   isRegenerating = false,
   onExtract,
   seriesId,
 }: SceneAssetCardProps) {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
@@ -56,7 +64,6 @@ export default function SceneAssetCard({
     if (selected.imageUrl !== asset.imageUrl) {
       onUpdate("imageUrl", selected.imageUrl ?? "");
       onUpdate("description", selected.appearance.trim());
-      onUpdate("imagePrompt", selected.appearance.trim());
       onUpdate("status", selected.imageUrl ? "ready" : "pending");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -68,7 +75,6 @@ export default function SceneAssetCard({
     if (!v) return;
     onUpdate("imageUrl", v.imageUrl ?? "");
     onUpdate("description", v.appearance.trim());
-    onUpdate("imagePrompt", v.appearance.trim());
     onUpdate("status", v.imageUrl ? "ready" : "pending");
   }
 
@@ -87,7 +93,7 @@ export default function SceneAssetCard({
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
       {/* 图片区 */}
-      <div className="relative flex aspect-[4/3] items-center justify-center bg-slate-50">
+      <div className="group relative flex aspect-[4/3] items-center justify-center bg-slate-50">
         {extracted ? (
           selected!.imageUrl ? (
             <ImageLightbox src={selected!.imageUrl} alt={asset.name} className="h-full w-full">
@@ -110,26 +116,73 @@ export default function SceneAssetCard({
             <img src={asset.imageUrl} alt={asset.name} className="h-full w-full object-cover" />
           </ImageLightbox>
         ) : isGenerating ? (
-          <div className="flex flex-col items-center gap-2 text-slate-400">
+          <div className="flex flex-col items-center gap-1 text-slate-400">
             <Spinner size={28} />
             <span className="text-xs">生成中…</span>
           </div>
+        ) : isUploading ? (
+          <div className="flex flex-col items-center gap-1 text-slate-400">
+            <Spinner size={28} />
+            <span className="text-xs">上传中…</span>
+          </div>
         ) : (
-          <div className="flex flex-col items-center gap-1 text-slate-300">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
-              <path d="M3 7l9-4 9 4-9 4-9-4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-              <path d="M3 7v10l9 4 9-4V7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-              <path d="M12 11v10" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-            </svg>
-            <span className="text-xs">图片待生成</span>
+          <div className="flex items-center gap-6 text-slate-300">
+            {onGenerateImage && (
+              <button
+                onClick={onGenerateImage}
+                className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
+              >
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                  <path d="M3 7l9-4 9 4-9 4-9-4z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                  <path d="M3 7v10l9 4 9-4V7" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                  <path d="M12 11v10" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                </svg>
+                <span className="text-xs">生成图片</span>
+              </button>
+            )}
+            {onUploadImage && (
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
+              >
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+                <span className="text-xs">上传图片</span>
+              </button>
+            )}
           </div>
         )}
+        {isGenerating && asset.imageUrl && !extracted && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm">
+            <Spinner size={24} />
+            <span className="text-xs text-white">重新生成中…</span>
+          </div>
+        )}
+        {isUploading && asset.imageUrl && !extracted && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-1 bg-black/40 backdrop-blur-sm">
+            <Spinner size={24} />
+            <span className="text-xs text-white">上传中…</span>
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif,image/bmp"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) onUploadImage?.(file);
+            e.target.value = "";
+          }}
+        />
         {extracted && selected && (
           <span className="absolute left-2 top-2 rounded bg-black/30 px-1.5 py-0.5 text-xs text-white backdrop-blur">
             {selected.versionLabel || `v${selected.version ?? 1}`}
           </span>
         )}
-        {onDelete && (
+        {onDelete && (!asset.imageUrl || extracted) && (
           <button
             type="button"
             onClick={onDelete}
@@ -140,6 +193,15 @@ export default function SceneAssetCard({
               <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
             </svg>
           </button>
+        )}
+        {!extracted && asset.imageUrl && !isGenerating && !isUploading && (
+          <ImageActionToolbar
+            onRegenerate={onGenerateImage}
+            isRegenerating={isGenerating}
+            onUpload={onUploadImage ? () => fileInputRef.current?.click() : undefined}
+            isUploading={isUploading}
+            onDelete={onDelete}
+          />
         )}
       </div>
 
@@ -224,24 +286,12 @@ export default function SceneAssetCard({
             </div>
 
             <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-              {onGenerateImage && (
-                <Button
-                  size="sm"
-                  variant={asset.imageUrl ? "ghost" : "secondary"}
-                  className="flex-1"
-                  onClick={onGenerateImage}
-                  loading={isGenerating}
-                  disabled={isGenerating}
-                >
-                  {asset.imageUrl ? "重新生成" : "生成图片"}
-                </Button>
-              )}
               {onExtract && (
                 <Button
                   size="sm"
                   variant="ghost"
                   onClick={onExtract}
-                  disabled={isGenerating}
+                  disabled={isGenerating || isUploading}
                   title="提取到场景设定，可关联多版本图片"
                 >
                   提取到场景设定

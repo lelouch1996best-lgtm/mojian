@@ -1,11 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import ImageLightbox from "@/components/ImageLightbox";
 import Spinner from "@/components/ui/Spinner";
+import { ImageGenerationDialog } from "./ImageGenerationDialog";
 import { apiClient } from "@/lib/api-client";
 import { ASSET_TYPE_LABELS, formatTime } from "@/lib/utils";
-import type { AssetLibraryItem } from "@/lib/types";
+import { isCosConfigured, transferAsset, uploadRefFile } from "@/lib/cos-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
+import { type ModelOption } from "@/lib/model-presets";
+import type { AssetImageConfig, MediaAsset, MediaAssetInput } from "@/lib/types";
 
 type MediaTypeFilter = "all" | "image" | "video" | "audio";
 type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard";
@@ -26,13 +31,30 @@ const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "storyboard", label: "故事板" },
 ];
 
-function entityTypeLabel(t: AssetLibraryItem["entityType"]): string {
+/** 添加资产弹窗用的实体类型选项 */
+const ADD_ENTITY_TYPE_OPTIONS: { value: MediaAsset["entityType"]; label: string }[] = [
+  { value: "character", label: "人物" },
+  { value: "object", label: "物品" },
+  { value: "scene", label: "场景" },
+  { value: "screenshot", label: "截屏" },
+  { value: "storyboard", label: "故事板" },
+];
+
+const ADD_MEDIA_TYPE_OPTIONS: { value: MediaAsset["mediaType"]; label: string }[] = [
+  { value: "image", label: "图片" },
+  { value: "video", label: "视频" },
+  { value: "audio", label: "音频" },
+];
+
+function entityTypeLabel(t: MediaAsset["entityType"]): string {
   if (t === "shot") return "镜头";
+  if (t === "other") return "其他";
   return ASSET_TYPE_LABELS[t] ?? t;
 }
 
-function sourceLabel(item: AssetLibraryItem): string {
-  if (item.source === "asset" || item.source === "shot") {
+function sourceLabel(item: MediaAsset): string {
+  if (item.source === "manual") return "手动添加";
+  if (item.source === "asset" || item.source === "shot" || item.source === "screenshot") {
     return item.episodeTitle || "未命名剧集";
   }
   return "企划设定";
@@ -75,22 +97,35 @@ async function copyUrl(url: string) {
 }
 
 export default function AssetLibrary() {
-  const [items, setItems] = useState<AssetLibraryItem[]>([]);
+  const router = useRouter();
+  const [items, setItems] = useState<MediaAsset[]>([]);
   const [loading, setLoading] = useState(true);
   const [seriesId, setSeriesId] = useState("");
   const [mediaType, setMediaType] = useState<MediaTypeFilter>("all");
   const [entityType, setEntityType] = useState<EntityTypeFilter>("all");
-  const [videoPreview, setVideoPreview] = useState<AssetLibraryItem | null>(null);
+  const [videoPreview, setVideoPreview] = useState<MediaAsset | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<null | { ids: string[]; names: string[] }>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [allSeries, setAllSeries] = useState<{ id: string; title: string }[]>([]);
+
+  useEffect(() => {
+    apiClient.listSeries().then((list) => {
+      setAllSeries(
+        (list ?? [])
+          .map((s) => ({ id: s.id, title: s.title || "未命名企划" }))
+          .sort((a, b) => a.title.localeCompare(b.title, "zh"))
+      );
+    }).catch(() => setAllSeries([]));
+  }, []);
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await apiClient.listAssetLibrary();
+      const list = await apiClient.listMediaAssets();
       setItems(list);
     } catch {
       setItems([]);
@@ -119,13 +154,14 @@ export default function AssetLibrary() {
 
   const seriesOptions = useMemo(() => {
     const map = new Map<string, string>();
+    for (const s of allSeries) map.set(s.id, s.title);
     for (const item of items) {
-      if (!map.has(item.seriesId)) {
+      if (item.seriesId && !map.has(item.seriesId)) {
         map.set(item.seriesId, item.seriesTitle || "未命名企划");
       }
     }
     return Array.from(map, ([id, title]) => ({ id, title }));
-  }, [items]);
+  }, [allSeries, items]);
 
   const filtered = useMemo(() => {
     return items.filter((item) => {
@@ -141,7 +177,7 @@ export default function AssetLibrary() {
   // 媒体类型为"视频"时，实体类型筛选无意义（视频 entityType 恒为 shot），禁用
   const entityTypeDisabled = mediaType === "video";
 
-  async function handleCopy(item: AssetLibraryItem) {
+  async function handleCopy(item: MediaAsset) {
     await copyUrl(item.url);
     setCopiedId(item.id);
     setTimeout(() => setCopiedId((cur) => (cur === item.id ? null : cur)), 1500);
@@ -167,7 +203,7 @@ export default function AssetLibrary() {
   async function performDelete(ids: string[]) {
     setDeleting(true);
     try {
-      await apiClient.deleteAssetLibraryItems(ids);
+      await apiClient.deleteMediaAssets(ids);
       setSelected((prev) => {
         const next = new Set(prev);
         for (const id of ids) next.delete(id);
@@ -182,7 +218,7 @@ export default function AssetLibrary() {
     }
   }
 
-  function requestDeleteSingle(item: AssetLibraryItem) {
+  function requestDeleteSingle(item: MediaAsset) {
     setConfirmDelete({ ids: [item.id], names: [item.entityName] });
   }
 
@@ -195,6 +231,60 @@ export default function AssetLibrary() {
 
   return (
     <div>
+      {/* 顶部 header：返回 + 标题 + 操作按钮（同一水平线） */}
+      <div className="mb-6 flex flex-wrap items-center gap-3">
+        <button
+          onClick={() => router.back()}
+          className="text-slate-400 hover:text-slate-600"
+          title="返回"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M15 18l-6-6 6-6"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        <h1 className="text-xl font-bold text-slate-800">资产库</h1>
+
+        <div className="ml-auto flex flex-wrap items-center gap-2 text-sm text-slate-500">
+          <button
+            onClick={() => setAddOpen(true)}
+            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          >
+            + 添加资产
+          </button>
+          <button
+            onClick={() => { setSelectMode(!selectMode); clearSelection(); }}
+            className={`rounded-lg px-4 py-2 text-sm font-semibold shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 ${
+              selectMode
+                ? "bg-slate-800 text-white hover:bg-slate-900"
+                : "bg-brand-100 text-brand-700 hover:bg-brand-200"
+            }`}
+          >
+            {selectMode ? "退出多选" : "多选"}
+          </button>
+          {selectMode && (
+            <>
+              <span className="text-slate-500">已选 {selected.size} 项</span>
+              <button onClick={selectAllVisible} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50">全选</button>
+              <button onClick={clearSelection} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50">清空</button>
+              <button
+                onClick={requestDeleteSelected}
+                disabled={selected.size === 0 || deleting}
+                className="rounded-lg bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                删除选中
+              </button>
+            </>
+          )}
+          {!selectMode && <span className="text-slate-400">共 {filtered.length} 项</span>}
+        </div>
+      </div>
+
       {/* 过滤栏 */}
       <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
         <div className="flex items-center gap-2">
@@ -238,32 +328,6 @@ export default function AssetLibrary() {
               {opt.label}
             </FilterPill>
           ))}
-        </div>
-
-        <div className="ml-auto flex items-center gap-2 text-sm text-slate-400">
-          <button
-            onClick={() => { setSelectMode(!selectMode); clearSelection(); }}
-            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
-              selectMode ? "bg-brand-600 text-white" : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-            }`}
-          >
-            {selectMode ? "退出多选" : "多选"}
-          </button>
-          {selectMode && (
-            <>
-              <span>已选 {selected.size} 项</span>
-              <button onClick={selectAllVisible} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50">全选</button>
-              <button onClick={clearSelection} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50">清空</button>
-              <button
-                onClick={requestDeleteSelected}
-                disabled={selected.size === 0 || deleting}
-                className="rounded-lg bg-red-500 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                删除选中
-              </button>
-            </>
-          )}
-          {!selectMode && <span>共 {filtered.length} 项</span>}
         </div>
       </div>
 
@@ -368,7 +432,7 @@ export default function AssetLibrary() {
           >
             <h3 className="mb-2 text-base font-semibold text-slate-800">确认删除</h3>
             <p className="mb-1 text-sm text-slate-600">
-              将删除 {confirmDelete.ids.length} 个资产，本地存储模式下会同时删除本地文件。此操作不可撤销。
+              将从资产库移除 {confirmDelete.ids.length} 个资产记录（仅删除账本记录，不影响已生成的原始文件）。此操作不可撤销。
             </p>
             {confirmDelete.ids.length <= 3 && (
               <ul className="mb-3 max-h-32 space-y-0.5 overflow-y-auto text-xs text-slate-500">
@@ -395,6 +459,18 @@ export default function AssetLibrary() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* 添加资产弹窗 */}
+      {addOpen && (
+        <AddAssetDialog
+          seriesOptions={seriesOptions}
+          onClose={() => setAddOpen(false)}
+          onCreated={() => {
+            setAddOpen(false);
+            refresh();
+          }}
+        />
       )}
     </div>
   );
@@ -437,7 +513,7 @@ function AssetCard({
   onCopy,
   onDelete,
 }: {
-  item: AssetLibraryItem;
+  item: MediaAsset;
   copied: boolean;
   selectMode: boolean;
   selected: boolean;
@@ -624,5 +700,390 @@ function AssetCard({
         </div>
       </div>
     </div>
+  );
+}
+
+/** 添加资产弹窗：支持上传本地文件或粘贴 URL，写入 media_assets 账本 */
+function AddAssetDialog({
+  seriesOptions,
+  onClose,
+  onCreated,
+}: {
+  seriesOptions: { id: string; title: string }[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [mediaType, setMediaType] = useState<MediaAsset["mediaType"]>("image");
+  const [entityType, setEntityType] = useState<MediaAsset["entityType"]>("character");
+  const [mode, setMode] = useState<"upload" | "url" | "generate">("upload");
+  const [name, setName] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+  const [seriesId, setSeriesId] = useState(seriesOptions[0]?.id ?? "");
+  const [file, setFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [cosReady, setCosReady] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 图片生成相关状态
+  const [imageConfigured, setImageConfigured] = useState(false);
+  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供模型选择弹框使用）
+  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
+  const [genOpen, setGenOpen] = useState(false);
+  const [genInitialPrompt, setGenInitialPrompt] = useState("");
+  const [genImageConfig, setGenImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
+  const [genRefImages, setGenRefImages] = useState<string[]>([]);
+  const [generatedUrl, setGeneratedUrl] = useState("");
+  const [generatedPrompt, setGeneratedPrompt] = useState("");
+  const [generating, setGenerating] = useState(false);
+
+  // 卸载时取消进行中的生成轮询，避免孤儿轮询
+  const abortRef = useRef<AbortController | null>(null);
+  if (abortRef.current === null) abortRef.current = new AbortController();
+  useEffect(() => {
+    const ac = abortRef.current!;
+    return () => ac.abort();
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      const s = await getImageSettings();
+      setImageConfigured(!!s?.apiKey);
+      setImageOptions(await getAllConfiguredImageModels());
+    })();
+    isCosConfigured().then(setCosReady);
+    // 用户自定义的图片默认生成参数（每次打开弹框时作为基础）
+    getDefaultAssetImageConfig().then(setDefaultImageConfig);
+  }, []);
+
+  function changeMode(next: "upload" | "url" | "generate") {
+    setMode(next);
+    if (next === "generate") setMediaType("image");
+    setGeneratedUrl("");
+    setGeneratedPrompt("");
+  }
+
+  function openGenerateDialog() {
+    setGenInitialPrompt(name.trim());
+    setGenImageConfig({
+      ...defaultImageConfig,
+    });
+    setGenOpen(true);
+  }
+
+  async function handleGenerateConfirm(params: {
+    prompt: string;
+    images: string[];
+    config: AssetImageConfig;
+  }) {
+    setGenOpen(false);
+    setGenerating(true);
+    setError(null);
+    try {
+      const result = await generateImage(
+        params.prompt,
+        params.config,
+        params.images.length > 0 ? params.images : undefined,
+        undefined,
+        abortRef.current?.signal
+      );
+      let finalUrl = result.imageUrl;
+      if (cosReady) {
+        try {
+          const { url } = await transferAsset(result.imageUrl, "ai-script/assets");
+          finalUrl = url;
+        } catch {
+          finalUrl = result.imageUrl;
+        }
+      }
+      setGeneratedUrl(finalUrl);
+      setGeneratedPrompt(params.prompt);
+      setGenInitialPrompt(params.prompt);
+    } catch (e) {
+      // 与其他生图入口保持一致的取消判定：不依赖共享 signal.aborted（避免真实失败被误判为取消而静默）
+      const isAborted =
+        (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      if (!isAborted) setError("图片生成失败：" + (e as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function handleSubmit() {
+    setError(null);
+    if (!name.trim()) {
+      setError("请填写资产名称");
+      return;
+    }
+
+    let url = "";
+    let prompt = "";
+    if (mode === "upload") {
+      if (!file) {
+        setError("请选择要上传的文件");
+        return;
+      }
+      if (!cosReady) {
+        setError("请先配置存储方式后再上传文件");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        url = await uploadRefFile(file, name.trim() || `asset-${Date.now()}`);
+      } catch (e) {
+        setError("文件上传失败：" + (e as Error).message);
+        setSubmitting(false);
+        return;
+      }
+    } else if (mode === "generate") {
+      if (!generatedUrl) {
+        setError("请先生成图片");
+        return;
+      }
+      url = generatedUrl;
+      prompt = generatedPrompt.trim();
+    } else {
+      url = urlInput.trim();
+      if (!url) {
+        setError("请填写资源 URL");
+        return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        setError("URL 需以 http(s):// 开头");
+        return;
+      }
+    }
+
+    const series = seriesOptions.find((s) => s.id === seriesId);
+    const input: MediaAssetInput = {
+      mediaType,
+      url,
+      entityType,
+      entityName: name.trim(),
+      prompt,
+      source: "manual",
+      seriesId: series?.id,
+      seriesTitle: series?.title,
+    };
+
+    setSubmitting(true);
+    try {
+      await apiClient.addMediaAsset(input);
+      onCreated();
+    } catch (e) {
+      setError("添加失败：" + (e as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const accept =
+    mediaType === "image" ? "image/*" : mediaType === "video" ? "video/*" : "audio/*";
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+        onClick={(e) => {
+          if (e.target === e.currentTarget && !submitting) onClose();
+        }}
+      >
+        <div
+          className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl"
+          onClick={(e) => e.stopPropagation()}
+        >
+        <h3 className="mb-4 text-base font-semibold text-slate-800">添加资产</h3>
+
+        <div className="space-y-4">
+          {/* 媒体类型 */}
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-sm text-slate-500">媒体类型</span>
+            <div className="flex gap-1.5">
+              {ADD_MEDIA_TYPE_OPTIONS.map((opt) => (
+                <FilterPill
+                  key={opt.value}
+                  active={mediaType === opt.value}
+                  onClick={() => setMediaType(opt.value)}
+                  disabled={mode === "generate"}
+                >
+                  {opt.label}
+                </FilterPill>
+              ))}
+            </div>
+          </div>
+
+          {/* 来源方式 */}
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-sm text-slate-500">来源方式</span>
+            <div className="flex gap-1.5">
+              <FilterPill active={mode === "upload"} onClick={() => changeMode("upload")}>
+                上传本地文件
+              </FilterPill>
+              <FilterPill active={mode === "url"} onClick={() => changeMode("url")}>
+                粘贴 URL
+              </FilterPill>
+              <FilterPill active={mode === "generate"} onClick={() => changeMode("generate")}>
+                AI 生成
+              </FilterPill>
+            </div>
+          </div>
+
+          {/* 文件 / URL / 生成 */}
+          {mode === "upload" ? (
+            <div className="flex items-center gap-2">
+              <span className="w-16 shrink-0 text-sm text-slate-500">文件</span>
+              <div className="flex flex-1 items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={accept}
+                  disabled={!cosReady}
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!cosReady}
+                  className="rounded-lg bg-brand-50 px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+                >
+                  选择文件
+                </button>
+                {file ? (
+                  <span className="truncate text-sm text-slate-600">{file.name}</span>
+                ) : (
+                  <span className="text-sm text-slate-400">未选择文件</span>
+                )}
+                {!cosReady && (
+                  <span className="text-xs text-amber-600">需先配置存储方式</span>
+                )}
+              </div>
+            </div>
+          ) : mode === "generate" ? (
+            <div className="flex items-start gap-2">
+              <span className="mt-1.5 w-16 shrink-0 text-sm text-slate-500">图片</span>
+              <div className="flex-1 space-y-2">
+                {!imageConfigured && (
+                  <p className="text-xs text-amber-600">
+                    未配置图片生成 API，请先前往「图片 API 设置」页配置
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={openGenerateDialog}
+                    disabled={!imageConfigured || generating}
+                    className="rounded-lg bg-brand-50 px-3 py-1.5 text-sm font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-40"
+                  >
+                    {generatedUrl ? "重新生成" : "生成图片"}
+                  </button>
+                  {generating && (
+                    <span className="flex items-center gap-1 text-xs text-slate-500">
+                      <Spinner size={14} /> 生成中…
+                    </span>
+                  )}
+                </div>
+                {generatedUrl && !generating && (
+                  <img
+                    src={generatedUrl}
+                    alt="生成预览"
+                    className="h-32 w-auto rounded-lg border border-slate-200 object-cover"
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="w-16 shrink-0 text-sm text-slate-500">URL</span>
+              <input
+                type="text"
+                value={urlInput}
+                onChange={(e) => setUrlInput(e.target.value)}
+                placeholder="建议粘贴 COS 持久 URL"
+                className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+            </div>
+          )}
+
+          {/* 名称 */}
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-sm text-slate-500">名称</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="资产名称"
+              className="flex-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </div>
+
+          {/* 实体类型 */}
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-sm text-slate-500">类型</span>
+            <select
+              value={entityType}
+              onChange={(e) => setEntityType(e.target.value as MediaAsset["entityType"])}
+              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            >
+              {ADD_ENTITY_TYPE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* 所属企划 */}
+          <div className="flex items-center gap-2">
+            <span className="w-16 shrink-0 text-sm text-slate-500">所属企划</span>
+            <select
+              value={seriesId}
+              onChange={(e) => setSeriesId(e.target.value)}
+              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            >
+              {seriesOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            disabled={submitting}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || (mode === "generate" && (generating || !generatedUrl))}
+            className="rounded-lg bg-brand-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-40"
+          >
+            {submitting ? "添加中…" : "添加"}
+          </button>
+        </div>
+      </div>
+      </div>
+
+      <ImageGenerationDialog
+        open={genOpen}
+        onClose={() => setGenOpen(false)}
+        initialPrompt={genInitialPrompt}
+        initialConfig={genImageConfig}
+        images={genRefImages}
+        onImagesChange={setGenRefImages}
+        imageOptions={imageOptions}
+        loading={generating}
+        onConfirm={handleGenerateConfirm}
+      />
+    </>
   );
 }

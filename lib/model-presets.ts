@@ -29,6 +29,34 @@ export interface ModelEntry {
   audioCapability?: Partial<AudioModelCapability>;
 }
 
+/** 跨供应商聚合的模型选项（图片/视频模型选择弹框使用） */
+export interface ModelOption {
+  /** 供应商标识 */
+  provider: string;
+  /** 供应商显示名（来自各客户端的 *_PROVIDER_PRESETS） */
+  providerLabel: string;
+  /** 模型条目 */
+  entry: ModelEntry;
+}
+
+/**
+ * 在聚合模型选项中按 (provider, modelValue) 查找条目。
+ * 优先精确匹配 provider+model（同一模型名可能存在于多个供应商，如 gpt-image-2），
+ * provider 缺省时回退到首个 model 值匹配。
+ */
+export function findModelOption(
+  options: ModelOption[],
+  provider?: string,
+  modelValue?: string
+): ModelOption | undefined {
+  if (!modelValue) return undefined;
+  if (provider) {
+    const byProvider = options.find((o) => o.provider === provider && o.entry.value === modelValue);
+    if (byProvider) return byProvider;
+  }
+  return options.find((o) => o.entry.value === modelValue);
+}
+
 /** 从模型列表中获取默认模型 value（优先 isDefault，否则取第一个） */
 export function getDefaultModelValue(models: ModelEntry[]): string | undefined {
   return models.find((m) => m.isDefault)?.value ?? models[0]?.value;
@@ -172,19 +200,6 @@ export const DEFAULT_IMAGE_MODELS: Record<ImageGenSettings["provider"], ModelEnt
         resolutions: ["1K", "2K", "4K"], outputFormat: false, webSearch: false,
         optimizePrompt: true, optimizePromptFast: true, sequentialImageGen: true,
         watermark: true, responseFormat: true, maxRefImages: 14,
-      },
-    },
-  ],
-  openai: [
-    {
-      value: "gpt-image-2", label: "GPT-Image-2",
-      hint: "OpenAI 最新图像生成模型，超强文字渲染，最高4K，支持 low/medium/high/auto 画质",
-      isDefault: true,
-      capability: {
-        resolutions: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
-        outputFormat: false, webSearch: false,
-        optimizePrompt: false, optimizePromptFast: false, sequentialImageGen: false,
-        watermark: false, responseFormat: true, quality: true, supportsPolling: true, maxRefImages: 10,
       },
     },
   ],
@@ -381,6 +396,18 @@ export const DEFAULT_VIDEO_MODELS: Record<VideoGenSettings["provider"], ModelEnt
         returnLastFrame: true, watermark: false,
       },
     },
+    {
+      value: "grok-imagine-1.5-video-apimart", label: "Grok Imagine 1.5（APIMart）",
+      hint: "APIMart Grok 视频，文生/图生，480p/720p，6-30s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "multimodal-ref"],
+        resolutions: ["480p", "720p"],
+        ratios: ["16:9", "9:16", "1:1", "3:2", "2:3"],
+        durationRange: [6, 30], durationAuto: false, audio: false, draft: false,
+        seed: false, cameraFixed: false, webSearch: false, priority: false,
+        returnLastFrame: false, watermark: false,
+      },
+    },
   ],
   custom: [],
 };
@@ -436,7 +463,7 @@ export interface ImageModelCapability {
   responseFormat: boolean;
   /** 支持画质选择（quality，仅 gpt-image-2） */
   quality?: boolean;
-  /** 是否支持异步轮询（供应商异步队列模式，如 65535 的 X-Async-Mode） */
+  /** 是否支持异步轮询（供应商异步任务模式，如 APIMart 的 task_id 轮询） */
   supportsPolling?: boolean;
   /** 最大参考图数量 */
   maxRefImages: number;
@@ -507,23 +534,10 @@ export const IMAGE_MODEL_CAPABILITIES: Record<string, ImageModelCapability> = {
     responseFormat: true,
     maxRefImages: 14,
   },
-  "gpt-image-2": {
-    resolutions: ["auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"],
-    outputFormat: false,
-    webSearch: false,
-    optimizePrompt: false,
-    optimizePromptFast: false,
-    sequentialImageGen: false,
-    watermark: false,
-    responseFormat: true,
-    quality: true,
-    supportsPolling: true,
-    maxRefImages: 10,
-  },
 };
 
 /** 供应商级模型能力覆盖（键格式 `${provider}:${modelValue}`）。
- *  用于同一模型名在不同供应商下能力不同的情况（如 gpt-image-2 在 65535 与 APIMart 下参数不同）。
+ *  用于同一模型名在不同供应商下能力不同的情况（如 gpt-image-2 在 APIMart 下的参数与通用格式不同）。
  *  覆盖优先于全局 IMAGE_MODEL_CAPABILITIES，未命中的模型仍走全局注册表/FALLBACK。 */
 export const IMAGE_MODEL_CAPABILITIES_BY_PROVIDER: Record<string, ImageModelCapability> = {
   "apimart:gpt-image-2": {
@@ -556,28 +570,39 @@ const FALLBACK_IMAGE_CAPABILITY: ImageModelCapability = {
 
 /**
  * 查询图片模型能力。
- * - 供应商级覆盖（IMAGE_MODEL_CAPABILITIES_BY_PROVIDER）：优先级最高，用于同一模型名在不同供应商下能力不同的情况
- *   （如 gpt-image-2 在 65535 与 APIMart 下参数不同）。需传入 provider 才会命中。
- * - 内置模型（在 IMAGE_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源，忽略数据库中的旧值
- *   （避免代码更新能力矩阵后数据库残留旧值导致能力不生效）
- * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
+ * - 用户模型列表（含落库的内置模型）条目上的 capability 优先：用户在设置页可编辑内置模型参数，编辑结果逐字段覆盖代码默认值
+ * - 代码默认值作为合并基座：供应商级覆盖（IMAGE_MODEL_CAPABILITIES_BY_PROVIDER，用于同一模型名在不同供应商下
+ *   能力不同的情况，如 gpt-image-2 在 APIMart 下的参数与通用格式不同）→ IMAGE_MODEL_CAPABILITIES 注册表 → FALLBACK
+ * - 条目无 capability（未配置过的自定义模型）时直接返回代码默认值/FALLBACK
+ * 注：代码更新能力矩阵后，已落库的旧值不会自动跟进，需在设置页通过「初始化模型参数」（单模型）
+ * 或「刷新内置模型列表」（整表）手动同步。
  */
 export function getImageModelCapability(
   modelValue: string,
   models?: ModelEntry[],
   provider?: string
 ): ImageModelCapability {
-  if (provider) {
-    const override = IMAGE_MODEL_CAPABILITIES_BY_PROVIDER[`${provider}:${modelValue}`];
-    if (override) return override;
-  }
-  const registry = IMAGE_MODEL_CAPABILITIES[modelValue];
-  if (registry) return registry;
-  const base = FALLBACK_IMAGE_CAPABILITY;
-  if (!models) return base;
-  const entry = models.find((m) => m.value === modelValue);
+  const codeDefault =
+    (provider ? IMAGE_MODEL_CAPABILITIES_BY_PROVIDER[`${provider}:${modelValue}`] : undefined) ??
+    IMAGE_MODEL_CAPABILITIES[modelValue];
+  const base = codeDefault ?? FALLBACK_IMAGE_CAPABILITY;
+  const entry = models?.find((m) => m.value === modelValue);
   if (!entry?.capability) return base;
   return { ...base, ...entry.capability };
+}
+
+/** 代码中该图片模型的默认能力（「初始化模型参数」按钮的数据源）；代码中无该模型时返回 undefined */
+export function getCodeDefaultImageCapability(
+  provider: string,
+  modelValue: string
+): ImageModelCapability | undefined {
+  const builtIn = (DEFAULT_IMAGE_MODELS[provider as ImageGenSettings["provider"]] ?? []).find(
+    (m) => m.value === modelValue
+  );
+  if (builtIn?.capability) return { ...FALLBACK_IMAGE_CAPABILITY, ...builtIn.capability };
+  const override = IMAGE_MODEL_CAPABILITIES_BY_PROVIDER[`${provider}:${modelValue}`];
+  if (override) return override;
+  return IMAGE_MODEL_CAPABILITIES[modelValue];
 }
 
 /** 视频模型能力描述 */
@@ -741,6 +766,21 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     returnLastFrame: true,
     watermark: false,
   },
+  "grok-imagine-1.5-video-apimart": {
+    modes: ["text2video", "first-frame", "multimodal-ref"],
+    resolutions: ["480p", "720p"],
+    ratios: ["16:9", "9:16", "1:1", "3:2", "2:3"],
+    durationRange: [6, 30],
+    durationAuto: false,
+    audio: false,
+    draft: false,
+    seed: false,
+    cameraFixed: false,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: false,
+    watermark: false,
+  },
 };
 
 /** 未知/用户自定义模型的保守回退（1.0 Pro 级能力，无多模态/有声） */
@@ -761,20 +801,33 @@ const FALLBACK_CAPABILITY: VideoModelCapability = {
 
 /**
  * 查询视频模型能力。
- * - 内置模型（在 VIDEO_MODEL_CAPABILITIES 注册表中）：注册表能力为权威来源
- * - 自定义模型（不在注册表中）：合并用户自定义能力 over FALLBACK
+ * - 用户模型列表（含落库的内置模型）条目上的 videoCapability 优先：用户在设置页可编辑内置模型参数，
+ *   编辑结果逐字段覆盖代码默认值
+ * - 代码默认值（VIDEO_MODEL_CAPABILITIES 注册表，缺省 FALLBACK）作为合并基座
+ * - 条目无 videoCapability（未配置过的自定义模型）时直接返回代码默认值/FALLBACK
+ * 注：代码更新能力矩阵后，已落库的旧值不会自动跟进，需在设置页通过「初始化模型参数」（单模型）
+ * 或「刷新内置模型列表」（整表）手动同步。
  */
 export function getVideoModelCapability(
   modelValue: string,
   models?: ModelEntry[]
 ): VideoModelCapability {
-  const registry = VIDEO_MODEL_CAPABILITIES[modelValue];
-  if (registry) return registry;
-  const base = FALLBACK_CAPABILITY;
-  if (!models) return base;
-  const entry = models.find((m) => m.value === modelValue);
+  const base = VIDEO_MODEL_CAPABILITIES[modelValue] ?? FALLBACK_CAPABILITY;
+  const entry = models?.find((m) => m.value === modelValue);
   if (!entry?.videoCapability) return base;
   return { ...base, ...entry.videoCapability };
+}
+
+/** 代码中该视频模型的默认能力（「初始化模型参数」按钮的数据源）；代码中无该模型时返回 undefined */
+export function getCodeDefaultVideoCapability(
+  provider: string,
+  modelValue: string
+): VideoModelCapability | undefined {
+  const builtIn = (DEFAULT_VIDEO_MODELS[provider as VideoGenSettings["provider"]] ?? []).find(
+    (m) => m.value === modelValue
+  );
+  if (builtIn?.videoCapability) return { ...FALLBACK_CAPABILITY, ...builtIn.videoCapability };
+  return VIDEO_MODEL_CAPABILITIES[modelValue];
 }
 
 /** 各音频模型能力注册表（键与 DEFAULT_AUDIO_MODELS 的 value 对齐，参照 docs/audio.md） */
@@ -813,9 +866,10 @@ export function getAudioModelCapability(
   return { ...base, ...entry.audioCapability };
 }
 
-/** 单个镜头视频生成的硬编码默认配置（卡片缺省 videoConfig 时回退） */
+/** 单个镜头视频生成的代码兜底默认配置（卡片缺省 videoConfig 且用户未自定义默认参数时回退） */
 export const DEFAULT_SHOT_VIDEO_CONFIG: ShotVideoConfig = {
-  model: "doubao-seedance-2-0-260128",
+  model: "",
+  provider: "ark",
   mode: "multimodal-ref",
   resolution: "720p",
   ratio: "16:9",
@@ -829,6 +883,24 @@ export const DEFAULT_SHOT_VIDEO_CONFIG: ShotVideoConfig = {
   priority: 0,
   draft: false,
 };
+
+/**
+ * 用户自定义的视频生成默认参数（设置页「视频生成 API」区域维护）。
+ * 新增镜头卡片、未记录 videoConfig 的旧卡片渲染回退、videoConfig 惰性写入的合并基座均使用它
+ * （模型字段仍优先取模型列表中的「默认」星标）。
+ * 缺省/读取失败时回退 DEFAULT_SHOT_VIDEO_CONFIG。
+ */
+export async function getDefaultShotVideoConfig(): Promise<ShotVideoConfig> {
+  try {
+    const stored = await apiClient.getSetting<Partial<ShotVideoConfig>>("default_video_config");
+    if (stored) return { ...DEFAULT_SHOT_VIDEO_CONFIG, ...stored };
+  } catch { /* fall through */ }
+  return DEFAULT_SHOT_VIDEO_CONFIG;
+}
+
+export async function saveDefaultShotVideoConfig(cfg: ShotVideoConfig): Promise<void> {
+  await apiClient.saveSetting("default_video_config", cfg);
+}
 
 // ==================== 读写 ====================
 
@@ -850,10 +922,21 @@ export async function saveLLMModels(provider: LLMSettings["provider"], models: M
   await apiClient.saveSetting("models_llm", all);
 }
 
-export async function resetLLMModels(provider: LLMSettings["provider"]): Promise<ModelEntry[]> {
-  const defaults = DEFAULT_LLM_MODELS[provider] ?? [];
-  await saveLLMModels(provider, defaults);
-  return defaults;
+/** 通用合并：代码最新内置列表 + 用户自添加模型（不在代码内置列表中的条目原样保留，含已被代码移除的旧内置模型） */
+function mergeWithBuiltIn(builtIn: ModelEntry[], current: ModelEntry[]): ModelEntry[] {
+  const builtInValues = new Set(builtIn.map((m) => m.value));
+  return [...builtIn, ...current.filter((m) => !builtInValues.has(m.value))];
+}
+
+/**
+ * 刷新内置模型列表：用代码中该 provider 最新的内置模型替换当前内置模型
+ * （内置模型上手动修改的参数恢复为代码默认），用户自添加的模型保留。返回合并后的列表。
+ */
+export async function refreshBuiltInLLMModels(provider: LLMSettings["provider"]): Promise<ModelEntry[]> {
+  const current = await getLLMModels(provider);
+  const merged = mergeWithBuiltIn(DEFAULT_LLM_MODELS[provider] ?? [], current);
+  await saveLLMModels(provider, merged);
+  return merged;
 }
 
 /** 纯 model value 数组 */
@@ -864,15 +947,9 @@ export async function getLLMModelValues(provider: LLMSettings["provider"]): Prom
 
 // ---- 图片 ----
 
-/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { ark: [...] } */
-function normalizeImageModelsMap(raw: unknown): Record<string, ModelEntry[]> {
-  if (Array.isArray(raw)) return { ark: raw };
-  return (raw as Record<string, ModelEntry[]>) ?? {};
-}
-
 export async function getImageModels(provider: ImageGenSettings["provider"]): Promise<ModelEntry[]> {
   try {
-    const all = normalizeImageModelsMap(await apiClient.getSetting("models_image"));
+    const all = await apiClient.getSetting<Record<string, ModelEntry[]>>("models_image");
     const custom = all?.[provider];
     if (custom && custom.length > 0) return custom;
   } catch { /* fall through */ }
@@ -881,15 +958,16 @@ export async function getImageModels(provider: ImageGenSettings["provider"]): Pr
 
 export async function saveImageModels(provider: ImageGenSettings["provider"], models: ModelEntry[]): Promise<void> {
   let all: Record<string, ModelEntry[]> = {};
-  try { all = normalizeImageModelsMap(await apiClient.getSetting("models_image")); } catch { /* empty */ }
+  try { all = (await apiClient.getSetting<Record<string, ModelEntry[]>>("models_image")) ?? {}; } catch { /* empty */ }
   all[provider] = models;
   await apiClient.saveSetting("models_image", all);
 }
 
-export async function resetImageModels(provider: ImageGenSettings["provider"]): Promise<ModelEntry[]> {
-  const defaults = DEFAULT_IMAGE_MODELS[provider] ?? [];
-  await saveImageModels(provider, defaults);
-  return defaults;
+export async function refreshBuiltInImageModels(provider: ImageGenSettings["provider"]): Promise<ModelEntry[]> {
+  const current = await getImageModels(provider);
+  const merged = mergeWithBuiltIn(DEFAULT_IMAGE_MODELS[provider] ?? [], current);
+  await saveImageModels(provider, merged);
+  return merged;
 }
 
 /** 纯 model value 数组 */
@@ -900,15 +978,9 @@ export async function getImageModelValues(provider: ImageGenSettings["provider"]
 
 // ---- 视频 ----
 
-/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { ark: [...] } */
-function normalizeVideoModelsMap(raw: unknown): Record<string, ModelEntry[]> {
-  if (Array.isArray(raw)) return { ark: raw };
-  return (raw as Record<string, ModelEntry[]>) ?? {};
-}
-
 export async function getVideoModels(provider: VideoGenSettings["provider"]): Promise<ModelEntry[]> {
   try {
-    const all = normalizeVideoModelsMap(await apiClient.getSetting("models_video"));
+    const all = await apiClient.getSetting<Record<string, ModelEntry[]>>("models_video");
     const custom = all?.[provider];
     if (custom && custom.length > 0) return custom;
   } catch { /* fall through */ }
@@ -917,15 +989,16 @@ export async function getVideoModels(provider: VideoGenSettings["provider"]): Pr
 
 export async function saveVideoModels(provider: VideoGenSettings["provider"], models: ModelEntry[]): Promise<void> {
   let all: Record<string, ModelEntry[]> = {};
-  try { all = normalizeVideoModelsMap(await apiClient.getSetting("models_video")); } catch { /* empty */ }
+  try { all = (await apiClient.getSetting<Record<string, ModelEntry[]>>("models_video")) ?? {}; } catch { /* empty */ }
   all[provider] = models;
   await apiClient.saveSetting("models_video", all);
 }
 
-export async function resetVideoModels(provider: VideoGenSettings["provider"]): Promise<ModelEntry[]> {
-  const defaults = DEFAULT_VIDEO_MODELS[provider] ?? [];
-  await saveVideoModels(provider, defaults);
-  return defaults;
+export async function refreshBuiltInVideoModels(provider: VideoGenSettings["provider"]): Promise<ModelEntry[]> {
+  const current = await getVideoModels(provider);
+  const merged = mergeWithBuiltIn(DEFAULT_VIDEO_MODELS[provider] ?? [], current);
+  await saveVideoModels(provider, merged);
+  return merged;
 }
 
 /** 纯 model value 数组 */
@@ -936,15 +1009,9 @@ export async function getVideoModelValues(provider: VideoGenSettings["provider"]
 
 // ---- 音频 ----
 
-/** 向后兼容：若读到旧格式（flat ModelEntry[]），自动包装为 { mimo: [...] } */
-function normalizeAudioModelsMap(raw: unknown): Record<string, ModelEntry[]> {
-  if (Array.isArray(raw)) return { mimo: raw };
-  return (raw as Record<string, ModelEntry[]>) ?? {};
-}
-
 export async function getAudioModels(provider: AudioGenSettings["provider"]): Promise<ModelEntry[]> {
   try {
-    const all = normalizeAudioModelsMap(await apiClient.getSetting("models_audio"));
+    const all = await apiClient.getSetting<Record<string, ModelEntry[]>>("models_audio");
     const custom = all?.[provider];
     if (custom && custom.length > 0) return custom;
   } catch { /* fall through */ }
@@ -953,15 +1020,16 @@ export async function getAudioModels(provider: AudioGenSettings["provider"]): Pr
 
 export async function saveAudioModels(provider: AudioGenSettings["provider"], models: ModelEntry[]): Promise<void> {
   let all: Record<string, ModelEntry[]> = {};
-  try { all = normalizeAudioModelsMap(await apiClient.getSetting("models_audio")); } catch { /* empty */ }
+  try { all = (await apiClient.getSetting<Record<string, ModelEntry[]>>("models_audio")) ?? {}; } catch { /* empty */ }
   all[provider] = models;
   await apiClient.saveSetting("models_audio", all);
 }
 
-export async function resetAudioModels(provider: AudioGenSettings["provider"]): Promise<ModelEntry[]> {
-  const defaults = DEFAULT_AUDIO_MODELS[provider] ?? [];
-  await saveAudioModels(provider, defaults);
-  return defaults;
+export async function refreshBuiltInAudioModels(provider: AudioGenSettings["provider"]): Promise<ModelEntry[]> {
+  const current = await getAudioModels(provider);
+  const merged = mergeWithBuiltIn(DEFAULT_AUDIO_MODELS[provider] ?? [], current);
+  await saveAudioModels(provider, merged);
+  return merged;
 }
 
 /** 纯 model value 数组 */
@@ -970,15 +1038,4 @@ export async function getAudioModelValues(provider: AudioGenSettings["provider"]
   return models.map((m) => m.value);
 }
 
-// ---- 全局初始化 ----
 
-/**
- * 初始化：用代码中的默认模型配置覆盖数据库中的所有模型列表。
- * 覆盖范围：所有 LLM provider 的模型列表 + 图片模型 + 视频模型 + 音频模型。
- */
-export async function initAllModels(): Promise<void> {
-  await apiClient.saveSetting("models_llm", DEFAULT_LLM_MODELS);
-  await apiClient.saveSetting("models_image", DEFAULT_IMAGE_MODELS);
-  await apiClient.saveSetting("models_video", DEFAULT_VIDEO_MODELS);
-  await apiClient.saveSetting("models_audio", DEFAULT_AUDIO_MODELS);
-}

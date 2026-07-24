@@ -9,12 +9,15 @@ import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import EditableCell from "./EditableCell";
 import ImageLightbox from "./ImageLightbox";
 import AssetPicker from "./AssetPicker";
+import PresetPicker from "./PresetPicker";
 import { callLLM } from "@/lib/llm-client";
 import {
   createVideoTask,
   cancelVideoTask,
   pollVideoTask,
   getVideoSettings,
+  isGrokVideoModel,
+  getAllConfiguredVideoModels,
 } from "@/lib/video-client";
 import {
   videoPromptMessages,
@@ -22,24 +25,25 @@ import {
   buildShotInfoBlock,
 } from "@/lib/prompts";
 import { isCosConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, resumeImageGeneration, isPollingSupported } from "@/lib/image-client";
+import { recordMediaAsset } from "@/lib/storage";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, getAllConfiguredImageModels } from "@/lib/image-client";
 import { ASSET_TYPE_LABELS, emptyAsset, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
 import {
   DEFAULT_SHOT_VIDEO_CONFIG,
+  getDefaultShotVideoConfig,
   getVideoModelCapability,
-  getVideoModels,
-  getDefaultModelValue,
-  getImageModels,
-  type ModelEntry,
+  findModelOption,
+  type ModelOption,
   type VideoModelCapability,
 } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
+import { ModelPicker } from "./ModelPicker";
 import type {
   Asset,
   AssetImageConfig,
   CharacterProfile,
   Episode,
-  ImageGenSettings,
+  PickedPresetItem,
   Shot,
   ShotVideoConfig,
   StyleSettings,
@@ -54,17 +58,28 @@ import { getStoryboardTemplateSync } from "@/lib/style-settings";
 
 interface VideoGenerationProps {
   episode: Episode;
+  /** 所属企划标题（用于媒体资产账本记录） */
+  seriesTitle?: string;
   onUpdateShot: (id: string, field: keyof Shot, value: string) => void;
-  onUpdateVideoStatus: (id: string, status: VideoStatus) => void;
+  onUpdateVideoStatus: (id: string, status: VideoStatus, error?: string) => void;
   /** 卡片级视频配置增量更新（合并写入 shot.videoConfig） */
   onUpdateVideoConfig: (id: string, patch: Partial<ShotVideoConfig>) => void;
   onBackToStep3: () => void;
+  /** 新增一个空镜头（在镜头列表末尾追加） */
+  onAddRow?: () => void;
+  /** 删除指定镜头 */
+  onDeleteRow?: (shotId: string) => void;
+  /** 上移/下移镜头（交换相邻顺序） */
+  onMoveRow?: (shotId: string, direction: "up" | "down") => void;
   /** 将资产关联到某个镜头（@ 补全选中时触发） */
   onLinkAsset: (shotId: string, assetId: string) => void;
   /** 解除镜头与资产的关联（× 按钮触发） */
   onUnlinkAsset: (shotId: string, assetId: string) => void;
   /** 将截屏资产保存到当前剧集 */
   onAddScreenshot: (asset: Asset) => void;
+  /** 立即落盘当前 episode（绕过 1500ms 防抖）。用于 imageTaskId 等关键恢复字段，
+   *  确保故事板任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。 */
+  onPersistNow?: () => void;
   /** 系列级风格设定设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
   /** 系列级人物设定（用于在视频提示词末尾注入角色音色） */
@@ -86,6 +101,8 @@ const RATIO_LABELS: Record<VideoRatio, string> = {
   "9:16": "9:16（竖屏）",
   "21:9": "21:9",
   "adaptive": "adaptive（自动）",
+  "3:2": "3:2",
+  "2:3": "2:3（竖屏）",
 };
 
 /**
@@ -190,13 +207,18 @@ function appendVoiceClauses(
 
 export default function VideoGeneration({
   episode,
+  seriesTitle,
   onUpdateShot,
   onUpdateVideoStatus,
   onUpdateVideoConfig,
   onBackToStep3,
+  onAddRow,
+  onDeleteRow,
+  onMoveRow,
   onLinkAsset,
   onUnlinkAsset,
   onAddScreenshot,
+  onPersistNow,
   seriesStyleSettings,
   characterSettings,
 }: VideoGenerationProps) {
@@ -209,29 +231,33 @@ export default function VideoGeneration({
   const showError = useErrorDialog();
   const confirm = useConfirm();
 
-  const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」视频供应商的全部模型（聚合，供卡片模型选择弹框使用）
+  const [videoOptions, setVideoOptions] = useState<ModelOption[]>([]);
+  // 用户自定义的默认生成参数（设置页维护；初始值为代码兜底，加载完成后覆盖）
+  const [defaultVideoConfig, setDefaultVideoConfig] = useState<ShotVideoConfig>(DEFAULT_SHOT_VIDEO_CONFIG);
+  const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
 
   const [videoConfigured, setVideoConfigured] = useState(false);
   useEffect(() => {
     (async () => {
       const settings = await getVideoSettings();
-      const provider = settings?.provider ?? "ark";
       setVideoConfigured(!!settings?.apiKey);
-      setVideoModels(await getVideoModels(provider));
+      setVideoOptions(await getAllConfiguredVideoModels());
     })();
+    getDefaultShotVideoConfig().then(setDefaultVideoConfig);
   }, [seriesStyleSettings]);
 
   // 图片生成 API 状态（供镜头故事板生成使用）
   const [imageConfigured, setImageConfigured] = useState(false);
-  const [imageProvider, setImageProvider] = useState<ImageGenSettings["provider"]>("ark");
-  const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
+  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供故事板模型选择弹框使用）
+  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   useEffect(() => {
-    getImageSettings().then(async (s) => {
+    (async () => {
+      const s = await getImageSettings();
       setImageConfigured(!!s?.apiKey);
-      const provider = s?.provider ?? "ark";
-      if (s?.provider) setImageProvider(s.provider);
-      setImageModels(await getImageModels(provider));
-    });
+      setImageOptions(await getAllConfiguredImageModels());
+    })();
+    getDefaultAssetImageConfig().then(setDefaultImageConfig);
   }, []);
 
   // 组件级 AbortController：卸载（切步骤/路由离开/刷新）时取消所有进行中的轮询，
@@ -349,7 +375,7 @@ export default function VideoGeneration({
   const storyboardPollAbortRef = useRef<AbortController | null>(null);
   useEffect(() => {
     if (storyboardResumeRef.current) return;
-    if (!imageConfigured || imageModels.length === 0) return;
+    if (!imageConfigured || imageOptions.length === 0) return;
     storyboardResumeRef.current = true;
     const ac = new AbortController();
     storyboardPollAbortRef.current = ac;
@@ -359,7 +385,7 @@ export default function VideoGeneration({
       // 进入恢复时立即显示占位（重新生成场景下旧 storyboardUrl 仍在，但 imageTaskId 表明有进行中任务）
       setGeneratingStoryboardIds((prev) => new Set(prev).add(shot.id));
 
-      resumeImageGeneration(shot.imageTaskId, undefined, ac.signal)
+      resumeImageGeneration(shot.imageTaskId, shot.imageTaskProvider, undefined, ac.signal)
         .then(async (result) => {
           let finalUrl = result.imageUrl;
           // 读取最新 episode 状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成并写入新 storyboardUrl）
@@ -433,7 +459,7 @@ export default function VideoGeneration({
 
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageConfigured, imageModels]);
+  }, [imageConfigured, imageOptions]);
 
   // @ 补全选项（供所有 VideoCard 共享）：仅包含第三步资产准备中的人物/场景/物品
   const atMentionOptions = useMemo(
@@ -530,22 +556,37 @@ export default function VideoGeneration({
         onUpdateShot(shot.id, "videoUrl", final.videoUrl);
         onUpdateVideoStatus(shot.id, "succeeded");
         // 自动转存到 COS（视频 URL 有有效期）
-        await transferVideoToCos(shot, final.videoUrl);
+        const finalVideoUrl = await transferVideoToCos(shot, final.videoUrl);
         // 若 API 返回了尾帧图像，自动转存并保存为截屏资产
         if (final.lastFrameUrl) {
           await saveReturnedLastFrame(shot, final.lastFrameUrl);
         }
+        // 记录视频资产到独立账本
+        const desc = (shot.visualDescription || "").trim();
+        const videoName = desc ? (desc.length > 20 ? desc.slice(0, 20) + "…" : desc) : `镜头${shotIndex}`;
+        void recordMediaAsset({
+          mediaType: "video",
+          url: finalVideoUrl,
+          entityType: "shot",
+          entityName: videoName,
+          prompt: shot.finalPrompt || "",
+          source: "shot",
+          seriesId: episode.seriesId,
+          seriesTitle: seriesTitle ?? "",
+          episodeId: episode.id,
+          episodeTitle: episode.title,
+        });
       } else if (final.status === "cancelled") {
         onUpdateVideoStatus(shot.id, "cancelled");
       } else {
-        onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : (final.status === "expired" ? "expired" : "failed"));
+        onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : (final.status === "expired" ? "expired" : "failed"), final.error ?? final.status);
         if (!opts?.silent) {
           showError(`镜头 ${shotIndex} 视频生成失败：${final.error ?? final.status}`);
         }
       }
     } catch (e) {
       if (signal.aborted) return;
-      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed");
+      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed", (e as Error).message);
       if (!opts?.silent) {
         showError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
       }
@@ -564,14 +605,15 @@ export default function VideoGeneration({
     }
     setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
 
-    // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
-    const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
+    // 卡片级视频配置（缺省时使用用户自定义默认参数构建并收敛到能力范围内）
+    const defaultVidOption = findModelOption(videoOptions, defaultVideoConfig.provider, defaultVideoConfig.model);
+    const defaultVidCap = getVideoModelCapability(
+      defaultVideoConfig.model,
+      defaultVidOption ? [defaultVidOption.entry] : undefined
+    );
     const config = shot.videoConfig
       ? shot.videoConfig
-      : sanitizeConfig(
-          { ...DEFAULT_SHOT_VIDEO_CONFIG, model: defaultVidModel },
-          getVideoModelCapability(defaultVidModel, videoModels)
-        );
+      : sanitizeConfig({ ...defaultVideoConfig }, defaultVidCap);
     const shotIndex = episode.shots.indexOf(shot) + 1;
 
     // 判断某个 @资源名 是否在 finalPrompt 中被 @ 引用（用词边界避免子串误匹配，如 @林 vs @林坤）
@@ -650,8 +692,35 @@ export default function VideoGeneration({
       }
     }
 
-    // 收集关联资产的图片 URL：仅保留在 finalPrompt 中被 @ 到的资产（未 @ 的不作为参考图传给 API）
+    // 关联资产（提前收集，供下方 Grok 校验与参考图收集共用）
     const related = getRelatedAssets(shot);
+
+    // 校验：Grok 模型不支持参考视频/音频，multimodal-ref 模式下若提示词里 @ 了视频/音频则提示会被忽略
+    if (isGrokVideoModel(config.model) && config.mode === "multimodal-ref") {
+      // 参考视频：@视频N；参考音频：@音频N；人物音色：@人物名音频
+      const hasRefVideo = (config.referenceVideoUrls ?? []).some((_, i) => mentionedInPrompt(`视频${i + 1}`));
+      const hasRefAudio = (config.referenceAudioUrls ?? []).some((_, i) => mentionedInPrompt(`音频${i + 1}`));
+      const hasCharacterVoice = related.some(
+        (a) => a.type === "character" && mentionedInPrompt(`${a.name}音频`)
+      );
+      if (hasRefVideo || hasRefAudio || hasCharacterVoice) {
+        const items: string[] = [];
+        if (hasRefVideo) items.push("参考视频");
+        if (hasRefAudio || hasCharacterVoice) items.push("参考音频");
+        const ok = await confirm({
+          message: `当前模型 Grok Imagine 1.5 不支持${items.join("和")}，继续生成时将自动忽略${items.join("和")}，仅使用参考图。\n是否继续？`,
+          confirmText: "继续",
+          cancelText: "取消",
+          variant: "primary",
+        });
+        if (!ok) {
+          setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
+          return;
+        }
+      }
+    }
+
+    // 收集关联资产的图片 URL：仅保留在 finalPrompt 中被 @ 到的资产（未 @ 的不作为参考图传给 API）
     const usedRelated = related.filter((a) => mentionedInPrompt(a.name));
     const relatedImageUrls = usedRelated
       .map((a) => a.imageUrl)
@@ -839,7 +908,7 @@ export default function VideoGeneration({
       // 轮询任务状态并收尾（内部已捕获轮询错误，仅 createTask 阶段错误会落到 catch）
       await pollAndFinalize(shot, createResult.taskId, abortRef.current!.signal, { provider: createResult.provider });
     } catch (e) {
-      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed");
+      onUpdateVideoStatus(shot.id, shot.videoUrl ? "succeeded" : "failed", (e as Error).message);
       showError(`镜头 ${shotIndex} 视频生成失败：${(e as Error).message}`);
     } finally {
       setVideoGeneratingIds((prev) => {
@@ -879,15 +948,17 @@ export default function VideoGeneration({
     }
   }
 
-  /** 将 Seedance 生成的视频转存到存储（24h 过期保护） */
-  async function transferVideoToCos(shot: Shot, sourceUrl: string) {
-    if (!(await isCosConfigured())) return;
+  /** 将 Seedance 生成的视频转存到存储（24h 过期保护），返回最终 URL */
+  async function transferVideoToCos(shot: Shot, sourceUrl: string): Promise<string> {
+    if (!(await isCosConfigured())) return sourceUrl;
 
     try {
       const { url } = await transferAsset(sourceUrl, "ai-script/videos");
       onUpdateShot(shot.id, "videoUrl", url);
+      return url;
     } catch (e) {
       console.error("视频转存存储失败：", (e as Error).message);
+      return sourceUrl;
     }
   }
 
@@ -907,10 +978,21 @@ export default function VideoGeneration({
         imageUrl,
         status: "ready",
         description: `视频尾帧截图：${shot.visualDescription || ""}`.trim(),
-        imagePrompt: `视频尾帧截图：${shot.visualDescription || ""}`.trim(),
       };
 
       onAddScreenshot(asset);
+      void recordMediaAsset({
+        mediaType: "image",
+        url: imageUrl,
+        entityType: "screenshot",
+        entityName: name,
+        prompt: asset.description,
+        source: "screenshot",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
       setSavedIds((prev) => new Set(prev).add(shot.id));
       setTimeout(() => {
         setSavedIds((prev) => {
@@ -942,10 +1024,21 @@ export default function VideoGeneration({
         imageUrl: url,
         status: "ready",
         description: `视频尾帧截图：${shot.visualDescription || ""}`.trim(),
-        imagePrompt: `视频尾帧截图：${shot.visualDescription || ""}`.trim(),
       };
 
       onAddScreenshot(asset);
+      void recordMediaAsset({
+        mediaType: "image",
+        url,
+        entityType: "screenshot",
+        entityName: name,
+        prompt: asset.description,
+        source: "screenshot",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
       setSavedIds((prev) => new Set(prev).add(shot.id));
       setTimeout(() => {
         setSavedIds((prev) => {
@@ -1132,54 +1225,81 @@ export default function VideoGeneration({
       {episode.shots.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/50 py-16 text-center">
           <div className="mb-2 text-4xl opacity-40">🎬</div>
-          <p className="text-sm text-slate-500">暂无镜头，请返回第二步生成分镜</p>
+          <p className="text-sm text-slate-500">
+            暂无镜头{onAddRow ? "，可手动添加或返回第二步生成分镜" : "，请返回第二步生成分镜"}
+          </p>
+          {onAddRow && (
+            <Button variant="secondary" size="sm" className="mt-4" onClick={onAddRow}>
+              + 添加镜头
+            </Button>
+          )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          {episode.shots.map((shot, i) => (
-            <VideoCard
-              key={shot.id}
-              shot={shot}
-              index={i}
-              episode={episode}
-              relatedAssets={getRelatedAssets(shot)}
-              characterVoiceNames={characterVoiceNames}
-              storyboardTemplate={storyboardTemplate}
-              allAssets={episode.assets.filter((a) => a.type === "character" || a.type === "scene" || a.type === "object")}
-              atMentionOptions={atMentionOptions}
-              videoModels={videoModels}
-              imageConfigured={imageConfigured}
-              imageProvider={imageProvider}
-              imageModels={imageModels}
-              isGeneratingPrompt={generatingIds.has(shot.id)}
-              isGeneratingVideo={videoGeneratingIds.has(shot.id)}
-              isGeneratingStoryboard={generatingStoryboardIds.has(shot.id)}
-              onSetGeneratingStoryboard={(value) =>
-                setGeneratingStoryboardIds((prev) => {
-                  const next = new Set(prev);
-                  if (value) next.add(shot.id);
-                  else next.delete(shot.id);
-                  return next;
-                })
-              }
-              videoConfigured={videoConfigured}
-              onGeneratePrompt={() => generateOne(shot)}
-              onGenerateVideo={() => generateVideo(shot)}
-              onCancelVideo={() => cancelVideo(shot)}
-              onUpdatePrompt={(v) => onUpdateShot(shot.id, "finalPrompt", v)}
-              onUpdateVisualDescription={(v) => onUpdateShot(shot.id, "visualDescription", v)}
-              onUpdateVideoConfig={(patch) => onUpdateVideoConfig(shot.id, patch)}
-              onUpdateShotField={(field, value) => onUpdateShot(shot.id, field, value)}
-              onUnlinkAsset={(assetId) => onUnlinkAsset(shot.id, assetId)}
-              onLinkAsset={(assetId) => onLinkAsset(shot.id, assetId)}
-              onCaptureScreenshot={() => captureLastFrame(shot, i + 1)}
-              isCapturing={capturingIds.has(shot.id)}
-              isSaved={savedIds.has(shot.id)}
-              onAddAsset={onAddScreenshot}
-              abortSignal={abortRef.current?.signal}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            {episode.shots.map((shot, i) => (
+              <VideoCard
+                key={shot.id}
+                shot={shot}
+                index={i}
+                episode={episode}
+                relatedAssets={getRelatedAssets(shot)}
+                characterVoiceNames={characterVoiceNames}
+                storyboardTemplate={storyboardTemplate}
+                allAssets={episode.assets.filter((a) => a.type === "character" || a.type === "scene" || a.type === "object")}
+                atMentionOptions={atMentionOptions}
+                videoOptions={videoOptions}
+                imageConfigured={imageConfigured}
+                imageOptions={imageOptions}
+                defaultVideoConfig={defaultVideoConfig}
+                defaultImageConfig={defaultImageConfig}
+                isGeneratingPrompt={generatingIds.has(shot.id)}
+                isGeneratingVideo={videoGeneratingIds.has(shot.id)}
+                isGeneratingStoryboard={generatingStoryboardIds.has(shot.id)}
+                onSetGeneratingStoryboard={(value) =>
+                  setGeneratingStoryboardIds((prev) => {
+                    const next = new Set(prev);
+                    if (value) next.add(shot.id);
+                    else next.delete(shot.id);
+                    return next;
+                  })
+                }
+                videoConfigured={videoConfigured}
+                onGeneratePrompt={() => generateOne(shot)}
+                onGenerateVideo={() => generateVideo(shot)}
+                onCancelVideo={() => cancelVideo(shot)}
+                onUpdatePrompt={(v) => onUpdateShot(shot.id, "finalPrompt", v)}
+                onUpdateVisualDescription={(v) => onUpdateShot(shot.id, "visualDescription", v)}
+                onUpdateVideoConfig={(patch) => onUpdateVideoConfig(shot.id, patch)}
+                onUpdateShotField={(field, value) => onUpdateShot(shot.id, field, value)}
+                onUnlinkAsset={(assetId) => onUnlinkAsset(shot.id, assetId)}
+                onLinkAsset={(assetId) => onLinkAsset(shot.id, assetId)}
+                onCaptureScreenshot={() => captureLastFrame(shot, i + 1)}
+                isCapturing={capturingIds.has(shot.id)}
+                isSaved={savedIds.has(shot.id)}
+                onAddAsset={onAddScreenshot}
+                abortSignal={abortRef.current?.signal}
+                onPersistNow={onPersistNow}
+                seriesTitle={seriesTitle}
+                onDeleteShot={onDeleteRow ? () => onDeleteRow(shot.id) : undefined}
+                isFirst={i === 0}
+                isLast={i === episode.shots.length - 1}
+                onMoveShot={
+                  onMoveRow
+                    ? (dir) => onMoveRow(shot.id, dir)
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+          {onAddRow && (
+            <div className="mt-4">
+              <Button variant="secondary" size="sm" onClick={onAddRow}>
+                + 添加镜头
+              </Button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1260,6 +1380,7 @@ function AddMediaDropdown({
   className,
   onUpload,
   onPickAsset,
+  onPickPreset,
   onGenerateFromStoryboard,
 }: {
   label: string;
@@ -1270,6 +1391,8 @@ function AddMediaDropdown({
   className?: string;
   onUpload: () => void;
   onPickAsset: () => void;
+  /** 从预设库获取 */
+  onPickPreset?: () => void;
   /** 参考图区域可选：使用故事板生成图片资产 */
   onGenerateFromStoryboard?: () => void;
 }) {
@@ -1298,8 +1421,17 @@ function AddMediaDropdown({
             onClick={onPickAsset}
             className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-slate-50"
           >
-            从资产库上传
+            从资产库获取
           </button>
+          {onPickPreset && (
+            <button
+              type="button"
+              onClick={onPickPreset}
+              className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-slate-50"
+            >
+              从预设库获取
+            </button>
+          )}
           {onGenerateFromStoryboard && (
             <button
               type="button"
@@ -1325,6 +1457,7 @@ function MediaUploadArea({
   max,
   onUpload,
   onPickAsset,
+  onPickPreset,
   onRemove,
   beforeItems,
   labelSuffix,
@@ -1339,6 +1472,7 @@ function MediaUploadArea({
   max: number;
   onUpload: () => void;
   onPickAsset: () => void;
+  onPickPreset?: () => void;
   onRemove: (index: number) => void;
   /** 在虚线上传按钮之前渲染的自定义节点（如关联人物音色缩略图） */
   beforeItems?: React.ReactNode;
@@ -1419,6 +1553,7 @@ function MediaUploadArea({
             uploading={uploading}
             onUpload={onUpload}
             onPickAsset={onPickAsset}
+            onPickPreset={onPickPreset}
           />
         )}
       </div>
@@ -1467,10 +1602,11 @@ function VideoCard({
   storyboardTemplate,
   allAssets,
   atMentionOptions,
-  videoModels,
+  videoOptions,
   imageConfigured,
-  imageProvider,
-  imageModels,
+  imageOptions,
+  defaultVideoConfig,
+  defaultImageConfig,
   isGeneratingPrompt,
   isGeneratingVideo,
   isGeneratingStoryboard,
@@ -1490,6 +1626,12 @@ function VideoCard({
   isSaved,
   onAddAsset,
   abortSignal,
+  onPersistNow,
+  seriesTitle,
+  onDeleteShot,
+  isFirst,
+  isLast,
+  onMoveShot,
 }: {
   shot: Shot;
   index: number;
@@ -1500,10 +1642,15 @@ function VideoCard({
   storyboardTemplate: string;
   allAssets: Asset[];
   atMentionOptions: { label: string; value: string }[];
-  videoModels: ModelEntry[];
+  /** 所有已配置供应商的视频模型聚合列表（模型选择弹框 + 能力查询使用） */
+  videoOptions: ModelOption[];
   imageConfigured: boolean;
-  imageProvider: ImageGenSettings["provider"];
-  imageModels: ModelEntry[];
+  /** 所有已配置供应商的图片模型聚合列表（故事板弹框模型选择 + 能力查询使用） */
+  imageOptions: ModelOption[];
+  /** 用户自定义的默认视频生成参数（设置页维护；卡片缺省 videoConfig 时回退） */
+  defaultVideoConfig: ShotVideoConfig;
+  /** 用户自定义的默认图片生成参数（故事板弹框每次打开时作为基础） */
+  defaultImageConfig: AssetImageConfig;
   isGeneratingPrompt: boolean;
   isGeneratingVideo: boolean;
   videoConfigured: boolean;
@@ -1525,60 +1672,63 @@ function VideoCard({
   onAddAsset: (asset: Asset) => void;
   /** 组件级 AbortSignal，切页/卸载时取消故事板图片生成轮询（保留 jobId 供恢复） */
   abortSignal?: AbortSignal;
+  /** 立即落盘当前 episode（绕过防抖），用于 imageTaskId 关键字段持久化 */
+  onPersistNow?: () => void;
+  /** 所属企划标题（用于媒体资产账本记录） */
+  seriesTitle?: string;
+  /** 删除当前镜头（已由父组件做二次确认或由本卡片确认后调用） */
+  onDeleteShot?: () => void;
+  /** 是否为第一个镜头（用于禁用上移） */
+  isFirst?: boolean;
+  /** 是否为最后一个镜头（用于禁用下移） */
+  isLast?: boolean;
+  /** 上移/下移当前镜头 */
+  onMoveShot?: (direction: "up" | "down") => void;
 }) {
   const hasPrompt = !!shot.finalPrompt;
-  const videoStatus = shot.videoStatus ?? "idle";
+  const videoStatus = shot.videoStatus;
   const isVideoReady = videoStatus === "succeeded" && !!shot.videoUrl;
   const isVideoBusy = videoStatus === "queued" || videoStatus === "running" || isGeneratingVideo;
 
-  // 卡片级视频配置（缺省时使用默认模型构建并收敛到能力范围内）
-  const defaultVidModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
+  // 卡片级视频配置（缺省时使用用户自定义默认参数构建并收敛到能力范围内）
+  const defaultVidOption = findModelOption(videoOptions, defaultVideoConfig.provider, defaultVideoConfig.model);
+  const defaultVidCap = getVideoModelCapability(
+    defaultVideoConfig.model,
+    defaultVidOption ? [defaultVidOption.entry] : undefined
+  );
   const config = shot.videoConfig
     ? shot.videoConfig
-    : sanitizeConfig(
-        { ...DEFAULT_SHOT_VIDEO_CONFIG, model: defaultVidModel },
-        getVideoModelCapability(defaultVidModel, videoModels)
-      );
-  const cap = getVideoModelCapability(config.model, videoModels);
-
-  // 供应商切换后，当前 model 可能不在新供应商的模型列表中（如 ark 的 doubao-seedance-2-0-260128
-  // 不在 apimart 的列表里）。检测到时自动收敛到新供应商的默认模型并按新能力收敛参数，
-  // 确保切回视频生成页时参数与供应商一致。
-  useEffect(() => {
-    if (videoModels.length === 0) return;
-    const saved = shot.videoConfig;
-    if (!saved) return;
-    if (videoModels.some((m) => m.value === saved.model)) return;
-    const newModel = getDefaultModelValue(videoModels) ?? DEFAULT_SHOT_VIDEO_CONFIG.model;
-    const newCap = getVideoModelCapability(newModel, videoModels);
-    const sanitized = sanitizeConfig(
-      { ...DEFAULT_SHOT_VIDEO_CONFIG, ...saved, model: newModel },
-      newCap
-    );
-    onUpdateVideoConfig(sanitized);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoModels, shot.videoConfig?.model]);
+    : sanitizeConfig({ ...defaultVideoConfig }, defaultVidCap);
+  // 能力查询使用所选模型所属供应商的模型条目（同一模型名在不同供应商下能力可能不同）
+  const selectedVidOption = findModelOption(videoOptions, config.provider, config.model);
+  const cap = getVideoModelCapability(config.model, selectedVidOption ? [selectedVidOption.entry] : undefined);
   const [showVideoConfig, setShowVideoConfig] = useState(false);
   const [showInputMaterials, setShowInputMaterials] = useState(true);
   const [showShotInfo, setShowShotInfo] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"video" | "audio" | "firstFrame" | "lastFrame" | "refImage" | null>(null);
   const showError = useErrorDialog();
+  const confirm = useConfirm();
   const [pickerTarget, setPickerTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | "refVideo" | "refAudio" | null>(null);
+  const [presetPickerTarget, setPresetPickerTarget] = useState<"refImage" | "refVideo" | "refAudio" | "promptText" | null>(null);
 
   // 故事板生成状态
   const [storyboardOpen, setStoryboardOpen] = useState(false);
   const [storyboardPrompt, setStoryboardPrompt] = useState("");
   const [useStoryboardTemplate, setUseStoryboardTemplate] = useState(true);
-  const [storyboardConfig, setStoryboardConfig] = useState<AssetImageConfig>(
-    {
-      ...DEFAULT_ASSET_IMAGE_CONFIG,
-      model: getDefaultModelValue(imageModels) ?? DEFAULT_ASSET_IMAGE_CONFIG.model,
-      aspectRatio: "16:9",
-      resolution: "3K",
-    }
-  );
+  const [storyboardConfig, setStoryboardConfig] = useState<AssetImageConfig>({
+    ...defaultImageConfig,
+  });
   const [storyboardRefImages, setStoryboardRefImages] = useState<string[]>([]);
   const [storyboardRefImageLabels, setStoryboardRefImageLabels] = useState<string[]>([]);
+
+  /** 删除当前镜头（二次确认） */
+  async function handleDeleteShot() {
+    const ok = await confirm({
+      message: `确定删除镜头 ${index + 1} 吗？\n该镜头的画面描述、视频提示词及已生成的视频将一并移除，且无法撤销。`,
+      confirmText: "删除",
+    });
+    if (ok) onDeleteShot?.();
+  }
 
   /** 将当前镜头信息追加到视频提示词输入框 */
   function addShotInfoToPrompt() {
@@ -1657,10 +1807,44 @@ function VideoCard({
     return opts;
   }, [atMentionOptions, config.mode, config.referenceImageAssetUrls, config.referenceImageAssetNames, config.referenceVideoUrls, config.referenceAudioUrls, relatedAssets, characterVoiceNames]);
 
-  /** 切换模型时收敛配置到新模型能力范围内 */
-  function changeModel(newModel: string) {
-    const newCap = getVideoModelCapability(newModel, videoModels);
-    const sanitized = sanitizeConfig({ ...config, model: newModel }, newCap);
+  /** 切换模型时收敛配置到新模型能力范围内（同时记录所选模型所属供应商，生成时按此路由凭证）。
+   *  旧模型不支持而被强制关闭的能力，在切回支持该能力的新模型时恢复为用户默认参数，
+   *  避免模型间往返切换后自动时长/有声视频等选项卡在关闭状态。 */
+  function changeModel(newProvider: string, newModel: string) {
+    const newOption = findModelOption(videoOptions, newProvider, newModel);
+    const newCap = getVideoModelCapability(newModel, newOption ? [newOption.entry] : undefined);
+    const oldOption = findModelOption(videoOptions, config.provider, config.model);
+    const oldCap = getVideoModelCapability(config.model, oldOption ? [oldOption.entry] : undefined);
+    const merged: ShotVideoConfig = {
+      ...config,
+      model: newModel,
+      provider: newProvider as ShotVideoConfig["provider"],
+    };
+    if (!oldCap.durationAuto && newCap.durationAuto) {
+      merged.duration = defaultVideoConfig.duration;
+    }
+    if (!oldCap.audio && newCap.audio) {
+      merged.generateAudio = defaultVideoConfig.generateAudio;
+    }
+    if (!oldCap.seed && newCap.seed) {
+      merged.seed = defaultVideoConfig.seed;
+    }
+    if (!oldCap.cameraFixed && newCap.cameraFixed) {
+      merged.cameraFixed = defaultVideoConfig.cameraFixed;
+    }
+    if (!oldCap.webSearch && newCap.webSearch) {
+      merged.webSearch = defaultVideoConfig.webSearch;
+    }
+    if (!oldCap.priority && newCap.priority) {
+      merged.priority = defaultVideoConfig.priority;
+    }
+    if (!oldCap.draft && newCap.draft) {
+      merged.draft = defaultVideoConfig.draft;
+    }
+    if (oldCap.watermark === false && newCap.watermark !== false) {
+      merged.watermark = defaultVideoConfig.watermark;
+    }
+    const sanitized = sanitizeConfig(merged, newCap);
     onUpdateVideoConfig(sanitized);
   }
 
@@ -1675,6 +1859,19 @@ function VideoCard({
       setUploadingKind(kind);
       try {
         const url = await uploadRefFile(file, `${kind}-${shot.id}`);
+        const refMediaType = kind === "video" ? "video" : kind === "audio" ? "audio" : "image";
+        const refKindLabel = kind === "firstFrame" ? "首帧图" : kind === "lastFrame" ? "尾帧图" : kind === "refImage" ? "参考图" : kind === "video" ? "参考视频" : "参考音频";
+        void recordMediaAsset({
+          mediaType: refMediaType,
+          url,
+          entityType: "other",
+          entityName: refKindLabel,
+          source: "manual",
+          seriesId: episode.seriesId,
+          seriesTitle: seriesTitle ?? "",
+          episodeId: episode.id,
+          episodeTitle: episode.title,
+        });
         if (kind === "video") {
           const arr = config.referenceVideoUrls ?? [];
           if (arr.length >= 3) { showError("参考视频最多 3 个"); return; }
@@ -1751,10 +1948,10 @@ function VideoCard({
 
   /** 打开故事板生成弹框，直接将镜头信息 + 故事板模板填入输入框 */
   function openStoryboardDialog() {
-    setStoryboardConfig((c) => ({
-      ...c,
-      model: getDefaultModelValue(imageModels) ?? c.model,
-    }));
+    // 每次打开都以用户自定义默认图片参数为基础（已含默认模型 + 所属供应商）
+    setStoryboardConfig({
+      ...defaultImageConfig,
+    });
     const assetsWithImages = relatedAssets.filter((a) => a.imageUrl);
     setStoryboardRefImages(assetsWithImages.map((a) => a.imageUrl));
     setStoryboardRefImageLabels(assetsWithImages.map((a) => a.name));
@@ -1788,10 +1985,12 @@ function VideoCard({
         finalStoryboardPrompt,
         params.config,
         params.images.length > 0 ? params.images : undefined,
-        imageModels,
         (jobId) => {
-          // 异步任务创建后立即持久化 imageTaskId，切页/刷新后可恢复轮询
+          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider，切页/刷新后可恢复轮询（按 provider 路由凭证）
           onUpdateShotField("imageTaskId", jobId);
+          if (params.config.provider) onUpdateShotField("imageTaskProvider", params.config.provider);
+          // 立即落盘：jobId 写入即保存，避免 1.5s 防抖未触发就切路由/刷新导致恢复信息丢失
+          onPersistNow?.();
         },
         abortSignal
       );
@@ -1827,14 +2026,15 @@ function VideoCard({
         imageUrl: finalUrl,
         status: "ready",
         description: params.prompt,
-        imagePrompt: params.prompt,
         shotId: shot.id,
       };
       onAddAsset(asset);
     } catch (e) {
       // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复轮询；
-      // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误
-      const isAborted = abortSignal?.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误。
+      // 不依赖共享 abortSignal.aborted：组件卸载后所有并发轮询共享的 signal 会被 abort，
+      // 真实失败也会被误判为"已取消"而静默，导致既不报错也不回写图片。
+      const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         onUpdateShotField("imageTaskId", "");
         showError(`故事板生成失败：${(e as Error).message}`);
@@ -1853,25 +2053,64 @@ function VideoCard({
             {index + 1}
           </span>
           <span className="text-sm font-medium text-slate-700">镜头 {index + 1}</span>
-          {shot.duration && (
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">{shot.duration}</span>
-          )}
-          {shot.shotType && (
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">{shot.shotType}</span>
-          )}
-          {shot.cameraMovement && (
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">{shot.cameraMovement}镜</span>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
           {hasPrompt && (
             <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 提示词已就绪</span>
           )}
           {videoStatus !== "idle" && (
-            <span className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATUS_BADGE_CLASS[videoStatus]}`}>
+            <span
+              className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATUS_BADGE_CLASS[videoStatus]}`}
+              title={(videoStatus === "failed" || videoStatus === "expired") && shot.videoError ? shot.videoError : undefined}
+            >
               {isVideoBusy && <Spinner size={10} />}
               {STATUS_LABEL[videoStatus]}
             </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          {onMoveShot && (
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={() => onMoveShot("up")}
+                disabled={isFirst}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-brand-50 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                title="上移"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 5l7 7H5l7-7z" fill="currentColor" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => onMoveShot("down")}
+                disabled={isLast}
+                className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-brand-50 hover:text-brand-600 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-slate-400"
+                title="下移"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                  <path d="M12 19l7-7H5l7 7z" fill="currentColor" />
+                </svg>
+              </button>
+            </div>
+          )}
+          {onDeleteShot && (
+            <button
+              type="button"
+              onClick={handleDeleteShot}
+              disabled={isVideoBusy}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-500 disabled:cursor-not-allowed disabled:opacity-40"
+              title={isVideoBusy ? "视频生成中，暂无法删除" : "删除镜头"}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2m-8 0v12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V7"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
           )}
         </div>
       </div>
@@ -2217,6 +2456,7 @@ function VideoCard({
                           uploading={uploadingKind === "refImage"}
                           onUpload={() => handleUploadRef("refImage")}
                           onPickAsset={() => setPickerTarget("refImage")}
+                          onPickPreset={() => setPresetPickerTarget("refImage")}
                           onGenerateFromStoryboard={openStoryboardDialog}
                         />
                       </div>
@@ -2237,6 +2477,7 @@ function VideoCard({
                       max={3}
                       onUpload={() => handleUploadRef("video")}
                       onPickAsset={() => setPickerTarget("refVideo")}
+                      onPickPreset={() => setPresetPickerTarget("refVideo")}
                       onRemove={(i) => onUpdateVideoConfig({ referenceVideoUrls: (config.referenceVideoUrls ?? []).filter((_, j) => j !== i) })}
                       // onAddAsset={() => { setAssetInputKind("video"); setAssetInputValue(""); }} // 添加素材ID功能暂时隐藏
                     />
@@ -2259,6 +2500,7 @@ function VideoCard({
                           max={Math.max(0, 3 - linkedCharacterVoices.length)}
                           onUpload={() => handleUploadRef("audio")}
                           onPickAsset={() => setPickerTarget("refAudio")}
+                          onPickPreset={() => setPresetPickerTarget("refAudio")}
                           onRemove={(i) => onUpdateVideoConfig({ referenceAudioUrls: (config.referenceAudioUrls ?? []).filter((_, j) => j !== i) })}
                           labelSuffix={suffix}
                           beforeItems={linkedCharacterVoices.map((c) => (
@@ -2336,7 +2578,7 @@ function VideoCard({
               ⚙️ 视频参数
             </span>
             <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
-              <span className="truncate max-w-[140px]">{videoModels.find((m) => m.value === config.model)?.label ?? config.model}</span>
+              <span className="truncate max-w-[140px]">{selectedVidOption?.entry.label ?? config.model}</span>
               <span className="rounded bg-slate-200 px-1 py-0.5">{MODE_LABELS[config.mode]}</span>
               <span>{config.resolution} · {config.duration === -1 ? "自动" : `${config.duration}s`}</span>
             </span>
@@ -2346,11 +2588,12 @@ function VideoCard({
               <div className="grid grid-cols-2 gap-2.5">
                 <label className="block">
                   <span className="mb-1 block text-[11px] text-slate-500">模型</span>
-                  <select value={config.model} onChange={(e) => changeModel(e.target.value)} className="input">
-                    {videoModels.map((m) => (
-                      <option key={m.value} value={m.value}>{m.label ?? m.value}</option>
-                    ))}
-                  </select>
+                  <ModelPicker
+                    options={videoOptions}
+                    provider={config.provider}
+                    model={config.model}
+                    onSelect={(p, m) => changeModel(p, m)}
+                  />
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-[11px] text-slate-500">生成模式</span>
@@ -2503,7 +2746,7 @@ function VideoCard({
                       onClick={addShotInfoToPrompt}
                       className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
                     >
-                      添加镜头信息
+                      添加镜头组信息
                     </button>
                     <button
                       type="button"
@@ -2518,6 +2761,13 @@ function VideoCard({
                       className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
                     >
                       添加故事板
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPresetPickerTarget("promptText")}
+                      className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
+                    >
+                      从预设库获取
                     </button>
                   </div>
                 </div>
@@ -2641,6 +2891,94 @@ function VideoCard({
         />
       )}
 
+      {presetPickerTarget && (
+        <PresetPicker
+          open={!!presetPickerTarget}
+          onClose={() => setPresetPickerTarget(null)}
+          type={
+            presetPickerTarget === "refImage"
+              ? "image"
+              : presetPickerTarget === "refVideo"
+                ? "video"
+                : presetPickerTarget === "refAudio"
+                  ? "audio"
+                  : "text"
+          }
+          multiple={true}
+          max={
+            presetPickerTarget === "refImage"
+              ? 10
+              : presetPickerTarget === "refVideo" || presetPickerTarget === "refAudio"
+                ? 3
+                : undefined
+          }
+          selectedUrls={
+            presetPickerTarget === "refImage"
+              ? config.referenceImageAssetUrls ?? []
+              : presetPickerTarget === "refVideo"
+                ? config.referenceVideoUrls ?? []
+                : presetPickerTarget === "refAudio"
+                  ? config.referenceAudioUrls ?? []
+                  : []
+          }
+          onConfirm={(items: PickedPresetItem[]) => {
+            if (presetPickerTarget === "refImage") {
+              const urls = items
+                .map((i) => i.url)
+                .filter((u): u is string => !!u);
+              if (urls.length === 0) {
+                setPresetPickerTarget(null);
+                return;
+              }
+              const existingNames = config.referenceImageAssetNames ?? [];
+              const appendedNames: string[] = [];
+              for (const it of items) {
+                const trimmed = it.name?.trim();
+                if (trimmed) {
+                  appendedNames.push(trimmed);
+                } else {
+                  appendedNames.push(`参考图${nextRefImgNumber([...existingNames, ...appendedNames])}`);
+                }
+              }
+              onUpdateVideoConfig({
+                referenceImageAssetUrls: [
+                  ...(config.referenceImageAssetUrls ?? []),
+                  ...urls,
+                ],
+                referenceImageAssetNames: [...existingNames, ...appendedNames],
+              });
+            } else if (presetPickerTarget === "refVideo") {
+              const urls = items
+                .map((i) => i.url)
+                .filter((u): u is string => !!u);
+              const existing = config.referenceVideoUrls ?? [];
+              onUpdateVideoConfig({
+                referenceVideoUrls: [...existing, ...urls].slice(0, 3),
+              });
+            } else if (presetPickerTarget === "refAudio") {
+              const urls = items
+                .map((i) => i.url)
+                .filter((u): u is string => !!u);
+              const existing = config.referenceAudioUrls ?? [];
+              onUpdateVideoConfig({
+                referenceAudioUrls: [...existing, ...urls].slice(0, 3),
+              });
+            } else if (presetPickerTarget === "promptText") {
+              const texts = items
+                .map((i) => i.content ?? "")
+                .filter((t) => t.trim());
+              if (texts.length > 0) {
+                const block = texts.join("\n");
+                const current = shot.finalPrompt ?? "";
+                const next = current.trim() ? `${current.trim()}\n${block}` : block;
+                onUpdatePrompt(next);
+              }
+            }
+            setPresetPickerTarget(null);
+          }}
+        />
+      )}
+
       <ImageGenerationDialog
         open={storyboardOpen}
         onClose={() => setStoryboardOpen(false)}
@@ -2650,8 +2988,7 @@ function VideoCard({
         onImagesChange={setStoryboardRefImages}
         imageLabels={storyboardRefImageLabels}
         onImageLabelsChange={setStoryboardRefImageLabels}
-        provider={imageProvider}
-        imageModels={imageModels}
+        imageOptions={imageOptions}
         title="生成故事板"
         confirmText="生成故事板"
         loading={isGeneratingStoryboard}

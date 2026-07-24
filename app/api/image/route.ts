@@ -95,102 +95,62 @@ export async function POST(req: Request) {
     return Response.json(result);
   }
 
-  // 按模型能力条件性构造上游请求体（参照 docs/gpt2.md、docs/image.md 参数支持矩阵）
+  // 按模型能力条件性构造上游请求体（参照 docs/image.md 参数支持矩阵）
   const cap = getImageModelCapability(body.model, undefined, body.provider);
   const asyncMode = !!body.asyncMode;
 
-  // gpt-image-2 有参考图时走 /images/edits 端点（multipart/form-data，image 为文件字段）
-  // 其余场景（gpt-image-2 文生图、Seedream 系列文/图生图）走 /images/generations（JSON body）
+  // 参考图统一走 /images/generations（JSON body）：Seedream 用 image 字段，APIMart 用 image_urls 字段
   const hasRefImages = cap.maxRefImages > 0 && body.images && body.images.length > 0;
-  const useEditsEndpoint = cap.quality && hasRefImages;
-  const endpoint = useEditsEndpoint ? "/images/edits" : "/images/generations";
-  const url = `${base}${endpoint}`;
+  const url = `${base}/images/generations`;
 
   let upstream: Response;
   try {
-    if (useEditsEndpoint) {
-      // /images/edits 端点：multipart/form-data，image 为文件字段
-      const formData = new FormData();
-      formData.append("model", body.model);
-      formData.append("prompt", body.prompt);
-      formData.append("n", "1");
-      if (body.size) formData.append("size", body.size);
-      if (cap.quality && body.quality) formData.append("quality", body.quality);
+    // /images/generations 端点：JSON body
+    const upstreamBody: Record<string, unknown> = {
+      model: body.model,
+      prompt: body.prompt,
+      response_format: cap.responseFormat
+        ? (body.responseFormat ?? "url")
+        : "url",
+    };
 
-      // 将参考图（data URL 或远程 URL）转为 Blob 附加到 image 字段
-      for (const refUrl of body.images!) {
-        let imageBlob: Blob;
-        if (refUrl.startsWith("data:")) {
-          const m = refUrl.match(/^data:image\/([\w.+-]+);base64,(.+)$/);
-          if (!m) throw new Error("参考图 data URL 格式无效");
-          imageBlob = new Blob([Buffer.from(m[2], "base64")], {
-            type: `image/${m[1]}`,
-          });
-        } else {
-          const imgResp = await fetch(refUrl);
-          if (!imgResp.ok) throw new Error(`获取参考图失败：HTTP ${imgResp.status}`);
-          imageBlob = await imgResp.blob();
-        }
-        const ext = imageBlob.type.split("/")[1] || "png";
-        formData.append("image[]", imageBlob, `image.${ext}`);
-      }
-
-      const headers: Record<string, string> = { Authorization: `Bearer ${body.apiKey}` };
-      if (asyncMode) headers["X-Async-Mode"] = "true";
-
-      upstream = await fetch(url, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-    } else {
-      // /images/generations 端点：JSON body
-      const upstreamBody: Record<string, unknown> = {
-        model: body.model,
-        prompt: body.prompt,
-        response_format: cap.responseFormat
-          ? (body.responseFormat ?? "url")
-          : "url",
-      };
-
-      // Seedream 参考图（单图/多图生图）：1 张传 string，多张传 array
-      if (hasRefImages) {
-        upstreamBody.image =
-          body.images!.length === 1 ? body.images![0] : body.images;
-      }
-
-      if (body.size) upstreamBody.size = body.size;
-      if (cap.watermark && typeof body.watermark === "boolean") {
-        upstreamBody.watermark = body.watermark;
-      }
-      if (cap.outputFormat && body.outputFormat) {
-        upstreamBody.output_format = body.outputFormat;
-      }
-      if (cap.sequentialImageGen) {
-        upstreamBody.sequential_image_generation = "disabled";
-      }
-      if (cap.webSearch && body.webSearch) {
-        upstreamBody.tools = [{ type: "web_search" }];
-      }
-      if (cap.optimizePrompt && body.optimizePromptMode) {
-        upstreamBody.optimize_prompt_options = { mode: body.optimizePromptMode };
-      }
-      if (cap.quality && body.quality) {
-        upstreamBody.quality = body.quality;
-      }
-
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${body.apiKey}`,
-      };
-      if (asyncMode) headers["X-Async-Mode"] = "true";
-
-      upstream = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(upstreamBody),
-      });
+    // Seedream 参考图（单图/多图生图）：1 张传 string，多张传 array
+    if (hasRefImages) {
+      upstreamBody.image =
+        body.images!.length === 1 ? body.images![0] : body.images;
     }
+
+    if (body.size) upstreamBody.size = body.size;
+    if (cap.watermark && typeof body.watermark === "boolean") {
+      upstreamBody.watermark = body.watermark;
+    }
+    if (cap.outputFormat && body.outputFormat) {
+      upstreamBody.output_format = body.outputFormat;
+    }
+    if (cap.sequentialImageGen) {
+      upstreamBody.sequential_image_generation = "disabled";
+    }
+    if (cap.webSearch && body.webSearch) {
+      upstreamBody.tools = [{ type: "web_search" }];
+    }
+    if (cap.optimizePrompt && body.optimizePromptMode) {
+      upstreamBody.optimize_prompt_options = { mode: body.optimizePromptMode };
+    }
+    if (cap.quality && body.quality) {
+      upstreamBody.quality = body.quality;
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${body.apiKey}`,
+    };
+    if (asyncMode) headers["X-Async-Mode"] = "true";
+
+    upstream = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(upstreamBody),
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });

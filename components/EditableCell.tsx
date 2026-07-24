@@ -28,6 +28,11 @@ interface EditableCellProps {
    * 传入选中项的 value（即资产名称）。
    */
   onAtMentionSelect?: (value: string) => void;
+  /**
+   * 是否允许在 @ 下拉中新建一个当前不存在的标签。
+   * 开启后，当输入的关键词非空且与已有选项不完全重复时，下拉末尾会追加"新建标签"项。
+   */
+  allowCreateTag?: boolean;
 }
 
 /**
@@ -44,6 +49,7 @@ export default function EditableCell({
   onRemoveTag,
   atMentionOptions,
   onAtMentionSelect,
+  allowCreateTag = false,
 }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -97,7 +103,8 @@ export default function EditableCell({
     const newDraft = e.target.value;
     setDraft(newDraft);
 
-    if (!atMentionOptions || atMentionOptions.length === 0) return;
+    const hasOptions = !!atMentionOptions && atMentionOptions.length > 0;
+    if (!hasOptions && !allowCreateTag) return;
 
     const cursor = e.target.selectionStart ?? newDraft.length;
     const textBefore = newDraft.slice(0, cursor);
@@ -122,7 +129,22 @@ export default function EditableCell({
         )
       : [];
 
-  const showDropdown = mentionQuery !== null && filteredOptions.length > 0;
+  /** 允许新建标签：输入关键词非空且与已有选项不完全重复时，追加"新建标签"项 */
+  const trimmedQuery = mentionQuery !== null ? mentionQuery.trim() : "";
+  const createOption: AtMentionOption | null =
+    allowCreateTag &&
+    trimmedQuery !== "" &&
+    !(atMentionOptions ?? []).some(
+      (o) => o.value.toLowerCase() === trimmedQuery.toLowerCase()
+    )
+      ? { label: trimmedQuery, value: trimmedQuery }
+      : null;
+
+  const displayOptions = createOption
+    ? [...filteredOptions, createOption]
+    : filteredOptions;
+
+  const showDropdown = mentionQuery !== null && displayOptions.length > 0;
 
   // 弹框打开时监听所有可滚动容器，滚动时实时跟随
   useEffect(() => {
@@ -177,7 +199,7 @@ export default function EditableCell({
     if (showDropdown) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setMentionIndex((i) => Math.min(i + 1, filteredOptions.length - 1));
+        setMentionIndex((i) => Math.min(i + 1, displayOptions.length - 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -187,7 +209,7 @@ export default function EditableCell({
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        selectMention(filteredOptions[mentionIndex]);
+        selectMention(displayOptions[mentionIndex]);
         return;
       }
       if (e.key === "Escape") {
@@ -240,7 +262,7 @@ export default function EditableCell({
           />
           {showDropdown && (() => {
             // 下方/上方剩余空间，估算菜单高度（每项约 36px，上限 200px）
-            const estHeight = Math.min(200, Math.max(1, filteredOptions.length) * 36);
+            const estHeight = Math.min(200, Math.max(1, displayOptions.length) * 36);
             const margin = 4;
             const belowSpace = window.innerHeight - dropdownPos.bottom;
             const aboveSpace = dropdownPos.top;
@@ -253,21 +275,33 @@ export default function EditableCell({
                 style={{ top, left: dropdownPos.left, maxHeight: "200px" }}
                 className="fixed z-50 min-w-[160px] max-w-[260px] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
               >
-                {filteredOptions.map((opt, i) => (
-                  <div
-                    key={opt.value}
-                    ref={i === mentionIndex ? highlightRef : null}
-                    onMouseDown={(e) => handleDropdownMouseDown(e, opt)}
-                    className={`cursor-pointer px-3 py-2 text-xs ${
-                      i === mentionIndex
-                        ? "bg-brand-50 text-brand-700"
-                        : "text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    <span className="font-medium text-amber-600">@</span>
-                    {opt.label}
-                  </div>
-                ))}
+                {displayOptions.map((opt, i) => {
+                  const isCreate = opt === createOption;
+                  return (
+                    <div
+                      key={isCreate ? `__create__${opt.value}` : opt.value}
+                      ref={i === mentionIndex ? highlightRef : null}
+                      onMouseDown={(e) => handleDropdownMouseDown(e, opt)}
+                      className={`cursor-pointer px-3 py-2 text-xs ${
+                        i === mentionIndex
+                          ? "bg-brand-50 text-brand-700"
+                          : "text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {isCreate ? (
+                        <span>
+                          <span className="font-medium text-emerald-600">+ 新建标签</span>{" "}
+                          <span className="font-medium text-amber-600">@{opt.label}</span>
+                        </span>
+                      ) : (
+                        <span>
+                          <span className="font-medium text-amber-600">@</span>
+                          {opt.label}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             );
           })()}

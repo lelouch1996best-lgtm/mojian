@@ -16,6 +16,7 @@ export function SceneCard({
   isGenerating,
   onUploadImage,
   isUploading,
+  onRandomAppearance,
 }: {
   scene: SceneProfile;
   isLatest: boolean;
@@ -27,6 +28,7 @@ export function SceneCard({
   isGenerating: boolean;
   onUploadImage: (file: File) => void;
   isUploading: boolean;
+  onRandomAppearance: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   return (
@@ -146,7 +148,12 @@ export function SceneCard({
                 onChange={(e) => onUpdate("category", e.target.value)}
                 placeholder="如：室内、室外、奇幻地…" className="scene-input" />
             </Field>
-            <Field label="🎨 外观描述" hint="视觉特征、布局、建筑风格">
+            <Field label="🎨 外观描述" hint="视觉特征、布局、建筑风格" action={
+              <button onClick={onRandomAppearance} title="随机生成外观"
+                className="text-xs text-brand-600 transition-colors hover:text-brand-700">
+                ✨
+              </button>
+            }>
               <textarea value={scene.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
                 placeholder="如：古朴的木质茶馆，挂着红灯笼，门前有石阶流水…"
@@ -182,12 +189,15 @@ export function SceneCard({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, action, children }: { label: string; hint?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
         <label className="text-xs font-semibold text-black">{label}</label>
-        {hint && <span className="text-xs text-slate-400">{hint}</span>}
+        <div className="flex items-center gap-1.5">
+          {hint && <span className="text-xs text-slate-400">{hint}</span>}
+          {action}
+        </div>
       </div>
       {children}
     </div>

@@ -1,6 +1,6 @@
 /** 服务端 API 客户端 */
 
-import type { AssetLibraryItem } from "@/lib/types";
+import type { AssetLibraryItem, MediaAsset, MediaAssetInput, PresetItem, PresetTag } from "@/lib/types";
 
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 
@@ -54,4 +54,48 @@ export const apiClient = {
       method: "DELETE",
       body: JSON.stringify({ ids }),
     }),
+
+  // Media Assets（独立媒体资产账本表）
+  listMediaAssets: () => request<MediaAsset[]>("/data/media-assets"),
+  addMediaAsset: (input: MediaAssetInput) =>
+    request<{ ok: boolean; asset: MediaAsset }>("/data/media-assets", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  deleteMediaAssets: (ids: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/data/media-assets", {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    }),
+
+  // Preset Library
+  listPresets: () => request<PresetItem[]>("/data/presets"),
+  savePreset: (p: PresetItem) =>
+    request<{ ok: boolean; preset: PresetItem }>("/data/presets", {
+      method: "POST",
+      body: JSON.stringify(p),
+    }),
+  deletePresets: (ids: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/data/presets", {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    }),
+  getPreset: (id: string) => request<PresetItem>(`/data/presets/${id}`),
+  deletePreset: (id: string) =>
+    request<void>(`/data/presets/${id}`, { method: "DELETE" }),
+
+  // Preset Tags
+  listPresetTags: () => request<PresetTag[]>("/data/preset-tags"),
+  savePresetTag: (name: string) =>
+    request<{ ok: boolean; tag: PresetTag }>("/data/preset-tags", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  deletePresetTags: (ids: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/data/preset-tags", {
+      method: "DELETE",
+      body: JSON.stringify({ ids }),
+    }),
+  deletePresetTag: (id: string) =>
+    request<void>(`/data/preset-tags/${id}`, { method: "DELETE" }),
 };

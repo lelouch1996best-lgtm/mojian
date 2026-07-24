@@ -60,8 +60,8 @@ export default function Home() {
       message: "确定删除该企划及其所有剧集？此操作不可撤销。",
       confirmText: "删除",
     })) return;
-    deleteSeries(id);
-    refresh();
+    await deleteSeries(id);
+    await refresh();
   }
 
   return (
@@ -101,6 +101,31 @@ export default function Home() {
               <rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.8" />
             </svg>
             资产库
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push("/preset-library")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path d="M4 7h16M4 12h16M4 17h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M19 17l2 2-2 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            预设库
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push("/style-templates")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path
+                d="M4 20h16M6 20V8a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M9 10h6M9 14h6"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+              />
+            </svg>
+            风格模板
           </Button>
           <Button variant="ghost" size="md" onClick={() => router.push("/settings")}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">

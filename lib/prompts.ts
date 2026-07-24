@@ -12,15 +12,31 @@ function characterContext(text: string): string {
   return `\n\n【人物设定 —— 请保持以下人物的性格、外貌、关系一致性】\n${text.trim()}\n`;
 }
 
+/** 物品设定前缀模板 */
+function objectContext(text: string): string {
+  if (!text?.trim()) return "";
+  return `\n\n【物品设定 —— 请保持以下物品的外观、功能、来源设定一致性】\n${text.trim()}\n`;
+}
+
+/** 场景设定前缀模板 */
+function sceneContext(text: string): string {
+  if (!text?.trim()) return "";
+  return `\n\n【场景设定 —— 请保持以下场景的环境、氛围设定一致性】\n${text.trim()}\n`;
+}
+
 // (a) Step1 内容扩写
 export function expansionMessages(
   content: string,
   worldText = "",
   characterText = "",
+  objectText = "",
+  sceneText = "",
   previousEpisodesContext = "",
 ): LLMMessage[] {
   const ctx = worldContext(worldText);
   const charCtx = characterContext(characterText);
+  const objCtx = objectContext(objectText);
+  const scnCtx = sceneContext(sceneText);
   const prevCtx = previousEpisodesContext
     ? `\n\n【前文剧情（前几集扩写内容，供参考以保持剧情连贯）】\n${previousEpisodesContext}\n`
     : "";
@@ -28,7 +44,7 @@ export function expansionMessages(
     {
       role: "system",
       content:
-        `你是一位专业的视频剧本编剧助手。你的任务是对用户提供的粗略故事内容进行扩写和润色，使其更加丰富、生动、有画面感。保持原意，但补充细节、对话、场景描写和情感表达。直接输出扩写后的完整内容，不要添加任何额外说明、标题或前缀。${ctx}${charCtx}${prevCtx}`,
+        `你是一位专业的视频剧本编剧助手。你的任务是对用户提供的粗略故事内容进行扩写和润色，使其更加丰富、生动、有画面感。保持原意，但补充细节、对话、场景描写和情感表达。直接输出扩写后的完整内容，不要添加任何额外说明、标题或前缀。${ctx}${charCtx}${objCtx}${scnCtx}${prevCtx}`,
     },
     { role: "user", content: `请扩写以下内容：\n\n${content}` },
   ];
@@ -176,6 +192,7 @@ export function assetMessages(
    - 物品（object）：外观特征，包括形状、材质、颜色、尺寸、细节等
    - 场景（scene）：外观特征，包括环境布局、建筑/自然元素、光影氛围等
    该描述同时用于卡片展示和图片生成，应详细且具画面感
+3. 只描述该实体静态的、固有的外观特征，不要描写实体当时的状态、姿态或动作（例如不要写"一只狗正在跑过来"这类动作描述）
 
 必须返回一个合法的 JSON 对象，格式为：
 {"assets":[{"name":"小明","type":"character","description":"..."}]}
@@ -222,7 +239,8 @@ export function regenerateAssetMessages(
 要求：
 1. 用中文详细描述该${typeLabel}的${fieldLabel}特征，包括${detailHint}
 2. 描述应详细且具画面感，同时用于卡片展示和图片生成
-3. 只返回${fieldLabel}描述文本本身，不要任何额外说明、前缀或 markdown 格式${styleCtx}`,
+3. 只描述该${typeLabel}静态的、固有的${fieldLabel}特征，不要描写该${typeLabel}当时的状态、姿态或动作（例如不要写"一只狗正在跑过来"这类动作描述）
+4. 只返回${fieldLabel}描述文本本身，不要任何额外说明、前缀或 markdown 格式${styleCtx}`,
     },
     {
       role: "user",
@@ -408,7 +426,7 @@ export function buildShotInfoBlock(
     .filter(Boolean)
     .join("\n");
   if (!fields) return "";
-  return `【当前镜头信息】\n${fields}`;
+  return `【当前镜头组信息】\n${fields}`;
 }
 
 /** 非模板路径：将 LLM 生成的画面描述与当前镜头信息块清晰拼接 */
@@ -491,5 +509,30 @@ export function extractCharacterMessages(expandedContent: string): LLMMessage[] 
 不要包含任何其他文字、不要使用 markdown 代码块。`,
     },
     { role: "user", content: `请从以下剧本扩写内容中提取人物设定：\n\n${expandedContent}` },
+  ];
+}
+
+/** 卡片外貌/外观随机生成：根据卡片已填字段（含外貌本身），生成详细外貌/外观描述（流式） */
+export function generateAppearanceMessages(
+  info: string,
+  type: "character" | "object" | "scene"
+): LLMMessage[] {
+  const typeLabel = type === "character" ? "人物" : type === "scene" ? "场景" : "物品";
+  const fieldLabel = type === "character" ? "外貌" : "外观";
+  const detailHint =
+    type === "character"
+      ? "面部特征、发型、体型、服饰、配饰等"
+      : type === "object"
+      ? "形状、材质、颜色、尺寸、细节等"
+      : "环境布局、建筑/自然元素、光影氛围等";
+  return [
+    {
+      role: "system",
+      content: `你是一位 AI 视频制作的资产设计专家。请根据以下${typeLabel}信息，生成一段详细且具画面感的${fieldLabel}描述，包括${detailHint}。如果信息中已包含简短的${fieldLabel}描述，请在此基础上扩展丰富细节；如果未包含，请发挥创意生成。描述应生动具体、富有细节，适合用于图片生成参考。只描述该${typeLabel}静态的、固有的${fieldLabel}特征，不要描写该${typeLabel}当时的状态、姿态或动作（例如不要写"一只狗正在跑过来"这类动作描述）。只返回${fieldLabel}描述文本本身，不要任何额外说明、前缀或 markdown 格式。`,
+    },
+    {
+      role: "user",
+      content: `以下是该${typeLabel}的信息：\n\n${info}\n\n请根据以上信息生成详细的${fieldLabel}描述。`,
+    },
   ];
 }

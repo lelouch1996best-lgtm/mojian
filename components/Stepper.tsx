@@ -34,23 +34,17 @@ export default function Stepper({
               : s.id === 3
                 ? step3Done
                 : false;
-        const canClick =
-          s.id === 1 ||
-          (s.id === 2 && step1Done) ||
-          (s.id === 3 && step2Done) ||
-          (s.id === 4 && step3Done);
         return (
           <div key={s.id} className="flex items-center">
             <button
-              disabled={!canClick}
-              onClick={() => canClick && onStepClick(s.id)}
-              className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors ${
+              onClick={() => onStepClick(s.id)}
+              className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-colors cursor-pointer ${
                 isActive
                   ? "bg-brand-600 text-white"
                   : isDone
                     ? "bg-brand-50 text-brand-700 hover:bg-brand-100"
                     : "bg-slate-100 text-slate-400"
-              } ${canClick ? "cursor-pointer" : "cursor-not-allowed"}`}
+              }`}
             >
               <span
                 className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${

@@ -22,6 +22,7 @@ export function CharacterCard({
   onUploadVoice,
   isUploadingVoice,
   onRemoveVoice,
+  onRandomAppearance,
 }: {
   character: CharacterProfile;
   isLatest: boolean;
@@ -39,6 +40,7 @@ export function CharacterCard({
   onUploadVoice: (file: File) => void;
   isUploadingVoice: boolean;
   onRemoveVoice: () => void;
+  onRandomAppearance: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceFileInputRef = useRef<HTMLInputElement>(null);
@@ -345,7 +347,12 @@ export function CharacterCard({
                   placeholder="男，25岁" className="char-input" />
               </Field>
             </div>
-            <Field label="🎨 外貌" hint="外貌特征、穿着打扮">
+            <Field label="🎨 外貌" hint="外貌特征、穿着打扮" action={
+              <button onClick={onRandomAppearance} title="随机生成外貌"
+                className="text-xs text-brand-600 transition-colors hover:text-brand-700">
+                ✨
+              </button>
+            }>
               <textarea value={character.appearance}
                 onChange={(e) => onUpdate("appearance", e.target.value)}
                 placeholder="如：短发，戴黑框眼镜，常穿深色风衣…"
@@ -387,12 +394,15 @@ export function CharacterCard({
   );
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function Field({ label, hint, action, children }: { label: string; hint?: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
         <label className="text-xs font-semibold text-black">{label}</label>
-        {hint && <span className="text-xs text-slate-400">{hint}</span>}
+        <div className="flex items-center gap-1.5">
+          {hint && <span className="text-xs text-slate-400">{hint}</span>}
+          {action}
+        </div>
       </div>
       {children}
     </div>
