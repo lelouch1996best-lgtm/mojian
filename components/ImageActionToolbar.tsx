@@ -11,8 +11,8 @@ interface ImageActionToolbarProps {
   onUpload?: () => void;
   /** 是否正在上传 */
   isUploading?: boolean;
-  /** 删除回调 */
-  onDelete?: () => void;
+  /** 粘贴图片 URL 回调（弹出输入框） */
+  onPasteUrl?: () => void;
 }
 
 export default function ImageActionToolbar({
@@ -20,10 +20,10 @@ export default function ImageActionToolbar({
   isRegenerating,
   onUpload,
   isUploading,
-  onDelete,
+  onPasteUrl,
 }: ImageActionToolbarProps) {
   return (
-    <div className="absolute right-2 top-2 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+    <div className="absolute bottom-2 right-2 flex flex-row gap-1 opacity-0 transition-opacity group-hover:opacity-100">
       {onRegenerate && (
         <ToolbarButton
           onClick={onRegenerate}
@@ -68,15 +68,18 @@ export default function ImageActionToolbar({
         </ToolbarButton>
       )}
 
-      {onDelete && (
-        <ToolbarButton
-          onClick={onDelete}
-          title="删除此版本"
-          danger
-        >
+      {onPasteUrl && (
+        <ToolbarButton onClick={onPasteUrl} title="粘贴图片URL">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path
-              d="M4 7h16M10 11v6M14 11v6M5 7l1 13a2 2 0 002 2h8a2 2 0 002-2l1-13M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3"
+              d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"
               stroke="currentColor"
               strokeWidth="2"
               strokeLinecap="round"
@@ -94,14 +97,12 @@ function ToolbarButton({
   title,
   disabled,
   loading,
-  danger,
   children,
 }: {
   onClick?: () => void;
   title: string;
   disabled?: boolean;
   loading?: boolean;
-  danger?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -110,9 +111,7 @@ function ToolbarButton({
       onClick={onClick}
       disabled={disabled || loading}
       title={title}
-      className={`flex h-7 w-7 items-center justify-center rounded bg-black/55 text-white backdrop-blur-sm transition-colors disabled:opacity-60 ${
-        danger ? "hover:bg-red-500" : "hover:bg-black/75"
-      }`}
+      className="flex h-7 w-7 items-center justify-center rounded bg-black/55 text-white backdrop-blur-sm transition-colors hover:bg-black/75 disabled:opacity-60"
     >
       {loading ? <Spinner size={14} /> : children}
     </button>

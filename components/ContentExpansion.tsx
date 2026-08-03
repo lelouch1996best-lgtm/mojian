@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
-import Textarea from "./ui/Textarea";
+import AtMentionTextarea, { type AtMentionOption } from "./AtMentionTextarea";
 import { streamLLM, callLLM } from "@/lib/llm-client";
 import {
   expansionMessages,
@@ -98,6 +98,17 @@ export default function ContentExpansion({
     () => getLatestSceneVersions(sceneSettings ?? []).filter((s) => s.name.trim()),
     [sceneSettings]
   );
+
+  const atMentionOptions: AtMentionOption[] = useMemo(() => {
+    const options: AtMentionOption[] = [];
+    if (worldText.trim()) {
+      options.push({ label: "[世界] 世界设定", value: "世界设定" });
+    }
+    latestCharacters.forEach((c) => options.push({ label: `[人物] ${c.name}`, value: c.name }));
+    latestObjects.forEach((o) => options.push({ label: `[物品] ${o.name}`, value: o.name }));
+    latestScenes.forEach((s) => options.push({ label: `[场景] ${s.name}`, value: s.name }));
+    return options;
+  }, [worldText, latestCharacters, latestObjects, latestScenes]);
 
   /** 将勾选的剧集按集序排列后拼接，并按约 3000 字上限截断（优先保留最近的剧集） */
   function buildPreviousContext(eps: PreviousEpisodeContext[]): string {
@@ -274,9 +285,10 @@ export default function ContentExpansion({
             disabled={expanding}
           />
         </div>
-        <Textarea
+        <AtMentionTextarea
           value={originalContent}
-          onChange={(e) => onOriginalChange(e.target.value)}
+          onChange={onOriginalChange}
+          options={atMentionOptions}
           placeholder="输入你的故事大概、剧情梗概、想要表达的内容…&#10;例如：一个雨天，女孩在咖啡馆等一个不会来的人，窗外雨声渐大，她慢慢喝完最后一口咖啡。"
           rows={5}
           className="min-h-[120px] leading-relaxed"
@@ -305,9 +317,10 @@ export default function ContentExpansion({
             disabled={expanding}
           />
         </div>
-        <Textarea
+        <AtMentionTextarea
           value={expandedContent}
-          onChange={(e) => onExpandedChange(e.target.value)}
+          onChange={onExpandedChange}
+          options={atMentionOptions}
           placeholder={expanding ? "正在生成…" : "扩写后的内容将显示在这里，你可以手动修改"}
           rows={10}
           className="min-h-[200px] leading-relaxed"

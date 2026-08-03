@@ -5,21 +5,25 @@ import { useRouter } from "next/navigation";
 import ImageLightbox from "@/components/ImageLightbox";
 import Spinner from "@/components/ui/Spinner";
 import { ImageGenerationDialog } from "./ImageGenerationDialog";
+import VoicePersonaCreateDialog from "./VoicePersonaCreateDialog";
 import { apiClient } from "@/lib/api-client";
 import { ASSET_TYPE_LABELS, formatTime } from "@/lib/utils";
 import { isCosConfigured, transferAsset, uploadRefFile } from "@/lib/cos-client";
 import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
 import { type ModelOption } from "@/lib/model-presets";
-import type { AssetImageConfig, MediaAsset, MediaAssetInput } from "@/lib/types";
+import { getVoicePersonas, deleteVoicePersona } from "@/lib/storage";
+import type { AssetImageConfig, MediaAsset, MediaAssetInput, VoicePersona } from "@/lib/types";
 
-type MediaTypeFilter = "all" | "image" | "video" | "audio";
-type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard";
+type MediaTypeFilter = "all" | "image" | "video" | "audio" | "music" | "voice";
+type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard" | "generated";
 
 const MEDIA_TYPE_OPTIONS: { value: MediaTypeFilter; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "image", label: "图片" },
   { value: "video", label: "视频" },
   { value: "audio", label: "音色" },
+  { value: "music", label: "音乐" },
+  { value: "voice", label: "歌手音色" },
 ];
 
 const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
@@ -29,6 +33,7 @@ const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "scene", label: "场景" },
   { value: "screenshot", label: "截屏" },
   { value: "storyboard", label: "故事板" },
+  { value: "generated", label: "生成" },
 ];
 
 /** 添加资产弹窗用的实体类型选项 */
@@ -38,6 +43,7 @@ const ADD_ENTITY_TYPE_OPTIONS: { value: MediaAsset["entityType"]; label: string 
   { value: "scene", label: "场景" },
   { value: "screenshot", label: "截屏" },
   { value: "storyboard", label: "故事板" },
+  { value: "generated", label: "生成" },
 ];
 
 const ADD_MEDIA_TYPE_OPTIONS: { value: MediaAsset["mediaType"]; label: string }[] = [
@@ -64,6 +70,8 @@ function mediaEmptyText(mediaType: MediaTypeFilter): string {
   if (mediaType === "image") return "暂无图片资产";
   if (mediaType === "video") return "暂无视频资产";
   if (mediaType === "audio") return "暂无音色资产";
+  if (mediaType === "music") return "暂无音乐资产";
+  if (mediaType === "voice") return "暂无歌手音色，点击右上角「创建歌手音色」开始";
   return "暂无生成的资产";
 }
 
@@ -110,6 +118,8 @@ export default function AssetLibrary() {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<null | { ids: string[]; names: string[] }>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [voiceCreateOpen, setVoiceCreateOpen] = useState(false);
+  const [voicePersonas, setVoicePersonas] = useState<VoicePersona[]>([]);
   const [allSeries, setAllSeries] = useState<{ id: string; title: string }[]>([]);
 
   useEffect(() => {
@@ -125,10 +135,15 @@ export default function AssetLibrary() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await apiClient.listMediaAssets();
+      const [list, voices] = await Promise.all([
+        apiClient.listMediaAssets(),
+        getVoicePersonas(),
+      ]);
       setItems(list);
+      setVoicePersonas(voices);
     } catch {
       setItems([]);
+      setVoicePersonas([]);
     } finally {
       setLoading(false);
     }
@@ -169,13 +184,14 @@ export default function AssetLibrary() {
       if (mediaType === "image" && item.mediaType !== "image") return false;
       if (mediaType === "video" && item.mediaType !== "video") return false;
       if (mediaType === "audio" && item.mediaType !== "audio") return false;
+      if (mediaType === "music" && item.mediaType !== "music") return false;
       if (entityType !== "all" && item.entityType !== entityType) return false;
       return true;
     });
   }, [items, seriesId, mediaType, entityType]);
 
-  // 媒体类型为"视频"时，实体类型筛选无意义（视频 entityType 恒为 shot），禁用
-  const entityTypeDisabled = mediaType === "video";
+  // 媒体类型为"视频"或"歌手音色"时，实体类型筛选无意义，禁用
+  const entityTypeDisabled = mediaType === "video" || mediaType === "voice";
 
   async function handleCopy(item: MediaAsset) {
     await copyUrl(item.url);
@@ -222,6 +238,18 @@ export default function AssetLibrary() {
     setConfirmDelete({ ids: [item.id], names: [item.entityName] });
   }
 
+  async function deleteVoicePersonaItem(vp: VoicePersona) {
+    setDeleting(true);
+    try {
+      await deleteVoicePersona(vp.id);
+      await refresh();
+    } catch (e) {
+      alert("删除失败：" + (e as Error).message);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   function requestDeleteSelected() {
     const ids = filtered.filter((i) => selected.has(i.id)).map((i) => i.id);
     const names = filtered.filter((i) => selected.has(i.id)).map((i) => i.entityName);
@@ -252,8 +280,14 @@ export default function AssetLibrary() {
 
         <div className="ml-auto flex flex-wrap items-center gap-2 text-sm text-slate-500">
           <button
-            onClick={() => setAddOpen(true)}
+            onClick={() => setVoiceCreateOpen(true)}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+          >
+            + 创建歌手音色
+          </button>
+          <button
+            onClick={() => setAddOpen(true)}
+            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
           >
             + 添加资产
           </button>
@@ -286,37 +320,39 @@ export default function AssetLibrary() {
       </div>
 
       {/* 过滤栏 */}
-      <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-slate-500">企划</span>
-          <select
-            value={seriesId}
-            onChange={(e) => setSeriesId(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-          >
-            <option value="">全部企划</option>
-            {seriesOptions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.title}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="flex items-center gap-1.5">
-          <span className="mr-1 text-sm font-medium text-slate-500">媒体</span>
-          {MEDIA_TYPE_OPTIONS.map((opt) => (
-            <FilterPill
-              key={opt.value}
-              active={mediaType === opt.value}
-              onClick={() => setMediaType(opt.value)}
+      <div className="mb-6 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-slate-500">企划</span>
+            <select
+              value={seriesId}
+              onChange={(e) => setSeriesId(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
             >
-              {opt.label}
-            </FilterPill>
-          ))}
+              <option value="">全部企划</option>
+              {seriesOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="mr-1 text-sm font-medium text-slate-500">媒体</span>
+            {MEDIA_TYPE_OPTIONS.map((opt) => (
+              <FilterPill
+                key={opt.value}
+                active={mediaType === opt.value}
+                onClick={() => setMediaType(opt.value)}
+              >
+                {opt.label}
+              </FilterPill>
+            ))}
+          </div>
         </div>
 
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <span className="mr-1 text-sm font-medium text-slate-500">类型</span>
           {ENTITY_TYPE_OPTIONS.map((opt) => (
             <FilterPill
@@ -337,6 +373,22 @@ export default function AssetLibrary() {
           <Spinner size={18} />
           <span>加载中…</span>
         </div>
+      ) : mediaType === "voice" ? (
+        voicePersonas.length === 0 ? (
+          <div className="py-20 text-center text-slate-400">
+            暂无歌手音色，点击右上角「创建歌手音色」开始
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {voicePersonas.map((vp) => (
+              <VoicePersonaCard
+                key={vp.id}
+                vp={vp}
+                onDelete={() => deleteVoicePersonaItem(vp)}
+              />
+            ))}
+          </div>
+        )
       ) : items.length === 0 ? (
         <div className="py-20 text-center text-slate-400">{mediaEmptyText(mediaType)}</div>
       ) : filtered.length === 0 ? (
@@ -357,7 +409,7 @@ export default function AssetLibrary() {
               onDownload={() =>
                 downloadMedia(
                   item.url,
-                  `${item.entityName}.${item.mediaType === "video" ? "mp4" : item.mediaType === "audio" ? "mp3" : "png"}`
+                  `${item.entityName}.${item.mediaType === "video" ? "mp4" : item.mediaType === "image" ? "png" : "mp3"}`
                 )
               }
               onCopy={() => handleCopy(item)}
@@ -472,6 +524,105 @@ export default function AssetLibrary() {
           }}
         />
       )}
+
+      {/* 创建歌手音色弹窗 */}
+      <VoicePersonaCreateDialog
+        open={voiceCreateOpen}
+        onClose={() => setVoiceCreateOpen(false)}
+        onCreated={() => {
+          setVoiceCreateOpen(false);
+          refresh();
+        }}
+      />
+    </div>
+  );
+}
+
+const VOICE_SOURCE_LABELS: Record<VoicePersona["sourceType"], string> = {
+  upload: "上传",
+  tts: "TTS",
+  url: "链接",
+};
+
+const VOICE_STATUS_LABELS: Record<VoicePersona["status"], { label: string; cls: string }> = {
+  idle: { label: "待创建", cls: "bg-slate-100 text-slate-500" },
+  pending: { label: "创建中", cls: "bg-amber-100 text-amber-700" },
+  completed: { label: "已完成", cls: "bg-green-100 text-green-700" },
+  failed: { label: "失败", cls: "bg-red-100 text-red-600" },
+};
+
+function VoicePersonaCard({
+  vp,
+  onDelete,
+}: {
+  vp: VoicePersona;
+  onDelete: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const statusInfo = VOICE_STATUS_LABELS[vp.status] ?? VOICE_STATUS_LABELS.idle;
+
+  function copyPersonaId() {
+    if (!vp.personaId) return;
+    navigator.clipboard.writeText(vp.personaId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }
+
+  return (
+    <div className="group relative flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:shadow-md">
+      <div className="flex items-center justify-between gap-2 border-b border-slate-100 px-3 py-2">
+        <span className="truncate text-sm font-medium text-slate-800">{vp.name}</span>
+        <div className="flex shrink-0 items-center gap-1">
+          <span className={`rounded px-1.5 py-0.5 text-xs ${statusInfo.cls}`}>
+            {statusInfo.label}
+          </span>
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
+            {VOICE_SOURCE_LABELS[vp.sourceType]}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex-1 space-y-2 p-3">
+        {vp.sourceAudioUrl ? (
+          <audio controls src={vp.sourceAudioUrl} className="w-full" preload="metadata" />
+        ) : (
+          <div className="flex h-10 items-center justify-center rounded bg-slate-50 text-xs text-slate-400">
+            无预览音频
+          </div>
+        )}
+
+        {vp.description && (
+          <p className="line-clamp-2 text-xs text-slate-500">{vp.description}</p>
+        )}
+
+        {vp.personaId ? (
+          <div className="flex items-center gap-1.5">
+            <code className="flex-1 truncate rounded bg-slate-50 px-2 py-1 text-xs text-slate-600">
+              {vp.personaId}
+            </code>
+            <button
+              onClick={copyPersonaId}
+              className="shrink-0 rounded px-1.5 py-1 text-xs text-brand-600 hover:bg-brand-50"
+              title="复制 Persona ID"
+            >
+              {copied ? "已复制" : "复制"}
+            </button>
+          </div>
+        ) : vp.status === "failed" ? (
+          <p className="line-clamp-2 text-xs text-red-500">{vp.error || "创建失败"}</p>
+        ) : null}
+      </div>
+
+      <div className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5">
+        <span className="text-xs text-slate-400">{formatTime(vp.createdAt)}</span>
+        <button
+          onClick={onDelete}
+          className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50"
+        >
+          删除
+        </button>
+      </div>
     </div>
   );
 }
@@ -525,6 +676,7 @@ function AssetCard({
 }) {
   const isVideo = item.mediaType === "video";
   const isAudio = item.mediaType === "audio";
+  const isMusic = item.mediaType === "music";
 
   const thumbnail = (
     <div className="group relative aspect-square w-full overflow-hidden bg-slate-100">
@@ -545,7 +697,7 @@ function AssetCard({
             </div>
           </div>
         </>
-      ) : isAudio ? (
+      ) : isAudio || isMusic ? (
         <div className="flex h-full w-full items-center justify-center bg-slate-50 p-3">
           <audio controls src={item.url} className="w-full" />
         </div>
@@ -577,7 +729,7 @@ function AssetCard({
         </div>
       ) : (
         <span className="absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-          {isVideo ? "视频" : isAudio ? "音色" : "图片"}
+          {isVideo ? "视频" : isAudio ? "音色" : isMusic ? "音乐" : "图片"}
         </span>
       )}
 
@@ -675,7 +827,7 @@ function AssetCard({
         <div onClick={onPreviewVideo} title="点击播放">
           {thumbnail}
         </div>
-      ) : isAudio ? (
+      ) : isAudio || isMusic ? (
         thumbnail
       ) : (
         <ImageLightbox src={item.url} alt={item.entityName}>

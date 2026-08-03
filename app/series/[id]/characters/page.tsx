@@ -8,11 +8,12 @@ import { getSeries, saveSeries, recordMediaAsset } from "@/lib/storage";
 import { emptyCharacterProfile, isCharacterProfileValid } from "@/lib/character-settings";
 import { debounce, uuid, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import { useUnloadPersist } from "@/lib/use-unload-persist";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, getAllConfiguredImageModels } from "@/lib/image-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
+import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { getAudioModels, type ModelEntry, type ModelOption } from "@/lib/model-presets";
 import { isAudioConfigured, generateVoice, type VoiceGenParams } from "@/lib/audio-client";
 import { getAssetTemplate, getAssetReferenceImage } from "@/lib/style-settings";
-import { isCosConfigured, transferAsset, uploadBase64, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
+import { isCosConfigured, uploadBase64, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
 import { ImageGenerationDialog } from "@/components/ImageGenerationDialog";
 import { AppearanceGenerateDialog } from "@/components/AppearanceGenerateDialog";
 import { getSettings as getLlmSettings } from "@/lib/llm-client";
@@ -20,6 +21,7 @@ import { VoiceGenerationDialog } from "@/components/VoiceGenerationDialog";
 import AssetPicker, { type PickedAssetItem } from "@/components/AssetPicker";
 import type { AssetImageConfig, CharacterProfile, Series } from "@/lib/types";
 import { CharacterCard } from "./CharacterCard";
+import { CharacterDetailModal } from "@/components/CharacterDetailModal";
 
 export default function CharacterSettingsPage() {
   const router = useRouter();
@@ -30,7 +32,7 @@ export default function CharacterSettingsPage() {
 
   const [series, setSeries] = useState<Series | null>(null);
   const [characters, setCharacters] = useState<CharacterProfile[]>([]);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [detailTargetId, setDetailTargetId] = useState<string | null>(null);
   const [savedHint, setSavedHint] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
@@ -113,12 +115,13 @@ export default function CharacterSettingsPage() {
 
   // 组件级 AbortController：卸载（切路由/刷新）时取消所有进行中的图片生成轮询，
   // 避免孤儿轮询与重新挂载后的恢复轮询产生重复。
-  // 同步初始化（而非在 useEffect 中创建），确保首次渲染即可向 generateImage 传递 signal。
+  // 在 useEffect 中创建（而非渲染期同步初始化），避免 StrictMode 双挂载时
+  // 首次挂载创建的 controller 被 abort 后仍被二次挂载复用。
   const abortRef = useRef<AbortController | null>(null);
-  if (abortRef.current === null) abortRef.current = new AbortController();
   useEffect(() => {
-    const ac = abortRef.current!;
-    return () => ac.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    return () => { ac.abort(); abortRef.current = null; };
   }, []);
 
   // 始终指向最新 characters，供恢复轮询的异步回调读取最新状态做去重/已完成判断，
@@ -135,55 +138,41 @@ export default function CharacterSettingsPage() {
     return { ...s, characterSettings: valid };
   }, "/api/data/series");
 
-  // 切页/刷新回来后，立即根据 imageTaskId 恢复生图中占位（不等待 imageConfigured/imageOptions 加载完成）。
-  // 仅以 imageTaskId 为准（重新生成时旧 imageUrl 仍在，但不阻断占位恢复）。
-  const didRestoreLoading = useRef(false);
-  useEffect(() => {
-    if (didRestoreLoading.current) return;
-    didRestoreLoading.current = true;
-    const ids = characters.filter((c) => c.imageTaskId).map((c) => c.id);
-    if (ids.length > 0) {
-      setGeneratingImageIds((prev) => {
-        const next = new Set(prev);
-        ids.forEach((id) => next.add(id));
-        return next;
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [characters]);
+  // 数据加载完成信号：series 非 null 时 characters 已同批次载入（refresh 内一起 setState），
+  // 恢复 effect 必须等到此时再执行，否则闭包捕获空数组导致恢复空转。
+  const dataReady = series !== null;
 
-  // 进入页面时，恢复未完成的生图轮询（刷新/切页后任务不丢失）。
-  const resumeRef = useRef(false);
+  // 进入页面且数据加载完成后，恢复未完成的生图任务（刷新/切页后任务不丢失）。
+  // 占位恢复也在此统一完成：entries 非空时先批量加入占位，onDone/onFailed 中移除对应占位。
   useEffect(() => {
-    if (resumeRef.current) return;
+    if (!dataReady) return;
     if (!imageConfigured || imageOptions.length === 0) return;
-    resumeRef.current = true;
-    const signal = abortRef.current?.signal;
+    const ac = new AbortController();
 
-    for (const char of characters) {
-      if (!char.imageTaskId) continue;
-      // 进入恢复时立即显示占位（重新生成场景下旧 imageUrl 仍在，但 imageTaskId 表明有进行中任务）
-      setGeneratingImageIds((prev) => new Set(prev).add(char.id));
+    const entries = characters
+      .filter((c) => c.imageTaskId)
+      .map((c) => ({ key: c.id, jobId: c.imageTaskId!, provider: c.imageTaskProvider }));
+    if (entries.length === 0) return;
 
-      resumeImageGeneration(char.imageTaskId, char.imageTaskProvider, undefined, signal)
-        .then(async (result) => {
-          // 读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成并写入新 imageUrl）
-          const latest = charactersRef.current.find((c) => c.id === char.id);
-          if (latest && latest.imageTaskId !== char.imageTaskId) {
+    // 进入恢复时立即显示占位（重新生成场景下旧 imageUrl 仍在，但 imageTaskId 表明有进行中任务）
+    setGeneratingImageIds((prev) => {
+      const next = new Set(prev);
+      entries.forEach((e) => next.add(e.key));
+      return next;
+    });
+
+    recoverImageTasks(entries, {
+      onDone: async (key, imageUrl) => {
+        // imageUrl 已经服务端 COS 转存，无需再转存
+        try {
+          // 读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原任务可能已完成并写入新 imageUrl）
+          const entry = entries.find((e) => e.key === key);
+          const latest = charactersRef.current.find((c) => c.id === key);
+          if (latest && entry && latest.imageTaskId !== entry.jobId) {
             // taskId 已变化（被新的生成覆盖），不处理这次结果
             return;
           }
-          let imageUrl = result.imageUrl;
-          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
-          try {
-            if (await isCosConfigured()) {
-              const { url } = await transferAsset(imageUrl, "ai-script/characters");
-              imageUrl = url;
-            }
-          } catch (e) {
-            console.error("人物转存存储失败：", (e as Error).message);
-          }
-          const updated = charactersRef.current.map((c) => (c.id === char.id ? { ...c, imageUrl, imageTaskId: undefined } : c));
+          const updated = charactersRef.current.map((c) => (c.id === key ? { ...c, imageUrl, imageTaskId: undefined, imageTaskProvider: undefined } : c));
           setCharacters(updated);
           const s = seriesRef.current;
           if (s) {
@@ -196,29 +185,28 @@ export default function CharacterSettingsPage() {
               mediaType: "image",
               url: imageUrl,
               entityType: "character",
-              entityName: char.name || "未命名人物",
+              entityName: latest?.name || "未命名人物",
               source: "profile-character",
               seriesId: s.id,
               seriesTitle: s.title,
             });
           }
-        })
-        .catch((err) => {
-          // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
-          // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误。
-          // 不依赖共享 signal.aborted：卸载后并发恢复轮询共享 signal 会被 abort，真实失败也会被误判为取消而静默。
-          const isAborted = (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
-          if (!isAborted) {
-            setCharacters((prev) => prev.map((c) => (c.id === char.id ? { ...c, imageTaskId: undefined } : c)));
-            showError(`「${char.name}」图片生成失败：${(err as Error).message}`);
-          }
-        })
-        .finally(() => {
-          setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
-        });
-    }
+        } finally {
+          setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(key); return n; });
+        }
+      },
+      onFailed: (key, error) => {
+        // 仅真实失败才回调（取消/切页由 recoverImageTasks 静默，taskId 保留待下次恢复）
+        const name = charactersRef.current.find((c) => c.id === key)?.name ?? "";
+        setCharacters((prev) => prev.map((c) => (c.id === key ? { ...c, imageTaskId: undefined } : c)));
+        showError(`「${name}」图片生成失败：${error}`);
+        setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(key); return n; });
+      },
+    }, ac.signal);
+
+    return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imageConfigured, imageOptions]);
+  }, [dataReady, imageConfigured, imageOptions]);
 
   const grouped = useMemo(() => {
     const map = new Map<string, CharacterProfile[]>();
@@ -242,7 +230,7 @@ export default function CharacterSettingsPage() {
       ...emptyCharacterProfile(), id: uuid(), characterId: uuid(), version: 1, versionLabel: "v1",
     };
     setCharacters((prev) => [...prev, newChar]);
-    setExpandedIds((prev) => new Set(prev).add(newChar.id));
+    setDetailTargetId(newChar.id);
   }
 
   function handleAddVersion(charId: string) {
@@ -256,7 +244,7 @@ export default function CharacterSettingsPage() {
       imageUrl: undefined, referenceImages: [], imageTaskId: undefined,
     };
     setCharacters((prev) => [...prev, newVersion]);
-    setExpandedIds((prev) => new Set(prev).add(newVersion.id));
+    setDetailTargetId(newVersion.id);
   }
 
   async function handleDelete(id: string) {
@@ -265,7 +253,7 @@ export default function CharacterSettingsPage() {
       confirmText: "删除",
     })) return;
     setCharacters((prev) => prev.filter((c) => c.id !== id));
-    setExpandedIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    setDetailTargetId((prev) => (prev === id ? null : prev));
   }
 
   /** 打开图片生成弹框（先做必要校验） */
@@ -392,18 +380,9 @@ export default function CharacterSettingsPage() {
             keepalive: true,
           });
         }
-      }, abortRef.current?.signal);
-      let imageUrl = result.imageUrl;
-
-      // 自动转存到存储（Seedream URL 24h 过期）
-      if (await isCosConfigured()) {
-        try {
-          const { url } = await transferAsset(imageUrl, "ai-script/characters");
-          imageUrl = url;
-        } catch {
-          // 转存失败不阻断流程，保留原始 URL
-        }
-      }
+      }, abortRef.current?.signal, { cosPrefix: "ai-script/characters" });
+      // imageUrl 已经服务端 COS 转存，无需再转存
+      const imageUrl = result.imageUrl;
 
       const updated = charactersRef.current.map((c) => (c.id === char.id ? { ...c, imageUrl, imageTaskId: undefined } : c));
       setCharacters(updated);
@@ -437,12 +416,6 @@ export default function CharacterSettingsPage() {
       setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
     }
   }
-
-  function toggleExpand(id: string) {
-    setExpandedIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  }
-  function expandAll() { setExpandedIds(new Set(characters.map((c) => c.id))); }
-  function collapseAll() { setExpandedIds(new Set()); }
 
   /** 上传本地图片作为人物形象图（转 base64 后调用存储上传 API） */
   async function handleUploadImage(char: CharacterProfile, file: File) {
@@ -644,6 +617,7 @@ export default function CharacterSettingsPage() {
 
   const validCount = characters.filter((c) => c.name.trim()).length;
   const groupCount = grouped.length;
+  const detailTarget = characters.find((c) => c.id === detailTargetId) ?? null;
 
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-8 sm:px-6">
@@ -681,15 +655,10 @@ export default function CharacterSettingsPage() {
       )}
 
       {characters.length > 0 && (
-        <div className="mb-4 flex items-center justify-between">
+        <div className="mb-4">
           <span className="text-xs text-slate-400">
             共 {groupCount} 个角色 · {validCount} 条记录
           </span>
-          <div className="flex gap-2">
-            <button onClick={expandAll} className="text-xs text-slate-500 hover:text-brand-500">全部展开</button>
-            <span className="text-slate-300">|</span>
-            <button onClick={collapseAll} className="text-xs text-slate-500 hover:text-brand-500">全部收起</button>
-          </div>
         </div>
       )}
 
@@ -722,7 +691,7 @@ export default function CharacterSettingsPage() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {group.map((char) => (
                     <CharacterCard key={char.id} character={char} isLatest={char.id === latest.id}
-                      expanded={expandedIds.has(char.id)} onToggle={() => toggleExpand(char.id)}
+                      onOpenDetail={() => setDetailTargetId(char.id)}
                       onUpdate={(field, value) => updateField(char.id, field, value)}
                       onDelete={() => handleDelete(char.id)}
                       onGenerateImage={() => openGenerateImageDialog(char)}
@@ -734,8 +703,7 @@ export default function CharacterSettingsPage() {
                       onAddVoiceFromAsset={() => handleAddVoiceFromAsset(char)}
                       onUploadVoice={(file) => handleUploadVoice(char, file)}
                       isUploadingVoice={uploadingVoiceIds.has(char.id)}
-                      onRemoveVoice={() => handleRemoveVoice(char)}
-                      onRandomAppearance={() => openRandomAppearanceDialog(char)} />
+                      onRemoveVoice={() => handleRemoveVoice(char)} />
                   ))}
                 </div>
               </div>
@@ -798,6 +766,24 @@ export default function CharacterSettingsPage() {
         onApply={handleApplyAppearance}
         initialPrompt={appearanceDialogInitialPrompt}
         entityType="character"
+      />
+
+      <CharacterDetailModal
+        character={detailTarget}
+        open={!!detailTarget}
+        onClose={() => setDetailTargetId(null)}
+        onUpdate={(field, value) => detailTarget && updateField(detailTarget.id, field, value)}
+        onGenerateImage={() => detailTarget && openGenerateImageDialog(detailTarget)}
+        isGenerating={detailTarget ? generatingImageIds.has(detailTarget.id) : false}
+        onUploadImage={(file) => detailTarget && handleUploadImage(detailTarget, file)}
+        isUploading={detailTarget ? uploadingImageIds.has(detailTarget.id) : false}
+        onRandomAppearance={() => detailTarget && openRandomAppearanceDialog(detailTarget)}
+        onGenerateVoice={() => detailTarget && handleGenerateVoice(detailTarget)}
+        isGeneratingVoice={detailTarget ? generatingVoiceIds.has(detailTarget.id) : false}
+        onAddVoiceFromAsset={() => detailTarget && handleAddVoiceFromAsset(detailTarget)}
+        onUploadVoice={(file) => detailTarget && handleUploadVoice(detailTarget, file)}
+        isUploadingVoice={detailTarget ? uploadingVoiceIds.has(detailTarget.id) : false}
+        onRemoveVoice={() => detailTarget && handleRemoveVoice(detailTarget)}
       />
     </main>
   );

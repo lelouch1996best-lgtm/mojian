@@ -17,10 +17,10 @@ import {
   DEFAULT_ASSET_IMAGE_CONFIG,
   getDefaultAssetImageConfig,
   getAllConfiguredImageModels,
-  resumeImageGeneration,
   isPollingSupported,
 } from "@/lib/image-client";
-import { isCosConfigured, transferAsset, uploadRefFile } from "@/lib/cos-client";
+import { recoverImageTasks, type ImageTaskRecoveryEntry } from "@/lib/image-task-recovery";
+import { isCosConfigured, uploadRefFile } from "@/lib/cos-client";
 import { ImageGenerationDialog, type ImageGenerationParams } from "@/components/ImageGenerationDialog";
 import type { ModelOption } from "@/lib/model-presets";
 import type { AssetImageConfig, StylePreset } from "@/lib/types";
@@ -89,74 +89,90 @@ export default function StyleTemplatesPage() {
     refresh();
   }, [refresh]);
 
-  // 模板数据与图片配置就绪后，恢复未完成的参考图生图轮询（切页/刷新后任务不丢失）
+  // 模板数据与图片配置就绪后，恢复未完成的参考图生图订阅（切页/刷新后任务不丢失）。
+  // 服务端任务中心负责轮询上游/COS 转存/容错，前端仅订阅本地任务状态；
+  // 切页/卸载仅取消前端等待（cleanup abort），任务在服务端继续，taskId 保留待下次恢复。
   const resumeRef = useRef(false);
   useEffect(() => {
     if (resumeRef.current) return;
     if (loading || !imageConfigured || imageOptions.length === 0) return;
     resumeRef.current = true;
-    const signal = abortRef.current?.signal;
+    const ac = new AbortController();
 
     const REF_FIELDS: ReferenceImageFieldKey[] = [
       "characterReferenceImage",
       "sceneReferenceImage",
       "objectReferenceImage",
     ];
+    const entries: ImageTaskRecoveryEntry[] = [];
+    // key -> 恢复上下文（写回字段定位与去重判断用）；key 含模板 id，避免不同模板同名字段冲突
+    const metaByKey = new Map<string, { templateId: string; field: ReferenceImageFieldKey; taskId: string }>();
     for (const tpl of templates) {
       for (const field of REF_FIELDS) {
         const taskId = tpl[REF_TASK_ID_FIELD[field]] as string | undefined;
         if (!taskId) continue;
-        const provider = tpl[REF_TASK_PROVIDER_FIELD[field]] as
-          | Parameters<typeof resumeImageGeneration>[1]
-          | undefined;
+        const provider = tpl[REF_TASK_PROVIDER_FIELD[field]] as ImageTaskRecoveryEntry["provider"];
         const model = imageOptions[0]?.entry.value ?? "";
         if (!isPollingSupported(model, provider)) continue;
-
         const key = `${tpl.id}:${field}`;
-        setResumingRefKeys((prev) => new Set(prev).add(key));
-        resumeImageGeneration(taskId, provider, undefined, signal)
-          .then(async (result) => {
-            // 去重：taskId 已被新一轮生成覆盖时放弃本次结果
-            const latest = templatesRef.current.find((t) => t.id === tpl.id);
-            if ((latest?.[REF_TASK_ID_FIELD[field]] as string | undefined) !== taskId) return;
-            let url = result.imageUrl;
-            try {
-              if (await isCosConfigured()) {
-                url = (await transferAsset(url, "ai-script/style-ref")).url;
-              }
-            } catch {
-              /* 转存失败保留原始 URL */
-            }
-            setTemplates((prev) =>
-              prev.map((t) =>
-                t.id === tpl.id
-                  ? { ...t, [field]: url, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
-                  : t
-              )
-            );
-          })
-          .catch((err) => {
-            // 切页/卸载导致轮询被取消时保留 taskId 以便下次恢复；真实失败时清除 taskId
-            const isAborted = (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
-            if (!isAborted) {
-              setTemplates((prev) =>
-                prev.map((t) =>
-                  t.id === tpl.id
-                    ? { ...t, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
-                    : t
-                )
-              );
-            }
-          })
-          .finally(() => {
-            setResumingRefKeys((prev) => {
-              const next = new Set(prev);
-              next.delete(key);
-              return next;
-            });
-          });
+        entries.push({ key, jobId: taskId, provider });
+        metaByKey.set(key, { templateId: tpl.id, field, taskId });
       }
     }
+    if (entries.length > 0) {
+      setResumingRefKeys((prev) => {
+        const next = new Set(prev);
+        entries.forEach((e) => next.add(e.key));
+        return next;
+      });
+    }
+
+    const clearResuming = (key: string) =>
+      setResumingRefKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+
+    recoverImageTasks(entries, {
+      onDone: (key, imageUrl) => {
+        const meta = metaByKey.get(key);
+        if (!meta) return;
+        const { templateId, field, taskId } = meta;
+        // 去重：taskId 已被新一轮生成覆盖时放弃本次结果
+        const latest = templatesRef.current.find((t) => t.id === templateId);
+        if ((latest?.[REF_TASK_ID_FIELD[field]] as string | undefined) !== taskId) {
+          clearResuming(key);
+          return;
+        }
+        // imageUrl 已经服务端 COS 转存，直接写回（走防抖自动保存落库），无需前端再转存
+        setTemplates((prev) =>
+          prev.map((t) =>
+            t.id === templateId
+              ? { ...t, [field]: imageUrl, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
+              : t
+          )
+        );
+        clearResuming(key);
+      },
+      onFailed: (key, error) => {
+        // 仅真实失败才回调：清除 taskId 并提示；取消（切页/卸载）不回调，taskId 保留待下次恢复
+        const meta = metaByKey.get(key);
+        if (!meta) return;
+        const { templateId, field } = meta;
+        setTemplates((prev) =>
+          prev.map((t) =>
+            t.id === templateId
+              ? { ...t, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
+              : t
+          )
+        );
+        alert(`参考图生成失败：${error}`);
+        clearResuming(key);
+      },
+    }, ac.signal);
+
+    return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, imageConfigured, imageOptions]);
 
@@ -265,7 +281,7 @@ export default function StyleTemplatesPage() {
     setGenOpen(true);
   }
 
-  /** 生成弹框确认：生图 -> 转存 COS -> 写入模板字段（taskId 落盘，切页/刷新后可恢复轮询） */
+  /** 生成弹框确认：生图（任务完成后服务端已转存 COS）-> 写入模板字段（taskId 落盘，切页/刷新后可恢复订阅） */
   async function handleRefGenerateConfirm(params: ImageGenerationParams) {
     if (!genField) return;
     const field = genField;
@@ -278,38 +294,42 @@ export default function StyleTemplatesPage() {
         params.config,
         params.images.length > 0 ? params.images : undefined,
         (jobId) => {
-          // 异步任务创建后立即持久化 jobId + provider（走防抖自动保存 + beforeunload keepalive 兜底）
+          // 异步任务创建后立即持久化 jobId + provider
           if (templateId) {
-            setTemplates((prev) =>
-              prev.map((t) =>
-                t.id === templateId
-                  ? { ...t, [REF_TASK_ID_FIELD[field]]: jobId, [REF_TASK_PROVIDER_FIELD[field]]: params.config.provider }
-                  : t
-              )
+            // 基于 ref 构造新数组并同步 ref，再 keepalive 直写落库——提交在飞时切页，
+            // 组件卸载后 setState 无效，直写是 taskId 不丢的唯一保障
+            const updated = templatesRef.current.map((t) =>
+              t.id === templateId
+                ? { ...t, [REF_TASK_ID_FIELD[field]]: jobId, [REF_TASK_PROVIDER_FIELD[field]]: params.config.provider }
+                : t
             );
+            templatesRef.current = updated;
+            setTemplates(updated);
+            fetch("/api/settings/style-templates", {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+              },
+              body: JSON.stringify({ value: updated }),
+              keepalive: true,
+            });
           }
         },
-        abortRef.current?.signal
+        abortRef.current?.signal,
+        { cosPrefix: "ai-script/style-ref" }
       );
-      let url = result.imageUrl;
-      if (await isCosConfigured()) {
-        try {
-          url = (await transferAsset(url, "ai-script/style-ref")).url;
-        } catch {
-          /* 转存失败保留原始 URL */
-        }
-      }
-      // 成功：一次性写入图片 URL 并清除任务标记
+      // 成功：imageUrl 已经服务端 COS 转存，一次性写入图片 URL 并清除任务标记
       if (templateId) {
         setTemplates((prev) =>
           prev.map((t) =>
             t.id === templateId
-              ? { ...t, [field]: url, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
+              ? { ...t, [field]: result.imageUrl, [REF_TASK_ID_FIELD[field]]: undefined, [REF_TASK_PROVIDER_FIELD[field]]: undefined }
               : t
           )
         );
       } else {
-        updateField(field, url);
+        updateField(field, result.imageUrl);
       }
       setGenOpen(false);
     } catch (e) {

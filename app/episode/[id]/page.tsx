@@ -67,6 +67,7 @@ export default function EpisodePage() {
   // 用户自定义的默认视频生成参数（videoConfig 惰性写入的合并基座；初始值为代码兜底，加载完成后覆盖）
   const [defaultVideoConfig, setDefaultVideoConfig] = useState<ShotVideoConfig>(DEFAULT_SHOT_VIDEO_CONFIG);
   const [titleEditing, setTitleEditing] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
   const [notFound, setNotFound] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedHint, setSavedHint] = useState(false);
@@ -101,13 +102,14 @@ export default function EpisodePage() {
   }
 
   // 立即落盘（绕过 1500ms 防抖）：用于 imageTaskId 等关键恢复字段。
-  // 推迟到渲染提交后读取 episodeRef，避免并发 setEpisode 闭包滞后读到旧值；
-  // 取消防抖队列，避免与本次直存重复落盘。
-  const persistNow = useCallback(() => {
+  // setTimeout 推迟到渲染提交后读取 episodeRef，避免并发 setEpisode 闭包滞后读到旧值。
+  // mutate 可选：基于 ref 快照构造补丁对象直接落库——组件已卸载（提交在飞时切页）
+  // 时 setState 无效、ref 不再更新，此时 mutation 直写是 taskId 不丢的唯一保障。
+  const persistNow = useCallback((mutate?: (ep: Episode) => Episode) => {
     setTimeout(() => {
       const ep = episodeRef.current;
       if (!ep) return;
-      void saveEpisode(ep);
+      void saveEpisode(mutate ? mutate(ep) : ep);
     }, 0);
   }, []);
 
@@ -125,6 +127,14 @@ export default function EpisodePage() {
   // 卸载兜底落盘：刷新/关闭走 beforeunload，SPA 路由离开走组件卸载 cleanup，
   // 防止 1500ms 防抖未触发导致进行中的视频任务状态丢失。
   useUnloadPersist(() => episodeRef.current, "/api/data/episodes");
+
+  // header 分界线：未滚动时与内容融为一体；滚动后加毛玻璃 + 底部分界线
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 4);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -176,6 +186,14 @@ export default function EpisodePage() {
   useEffect(() => {
     if (!episode || episode.assets.length === 0) return;
     const latestImageByKey = new Map<string, string>();
+    const versionImageUrlsByKey = new Map<string, Set<string>>();
+    const addImageUrl = (name: string, type: string, imageUrl?: string) => {
+      if (!imageUrl || !name.trim()) return;
+      const key = `${name.trim().toLowerCase()}|${type}`;
+      const set = versionImageUrlsByKey.get(key);
+      if (set) set.add(imageUrl);
+      else versionImageUrlsByKey.set(key, new Set([imageUrl]));
+    };
     for (const c of getLatestVersions(seriesCharacterSettings)) {
       if (c.imageUrl && c.name.trim()) latestImageByKey.set(`${c.name.trim().toLowerCase()}|character`, c.imageUrl);
     }
@@ -185,6 +203,9 @@ export default function EpisodePage() {
     for (const s of getLatestSceneVersions(seriesSceneSettings)) {
       if (s.imageUrl && s.name.trim()) latestImageByKey.set(`${s.name.trim().toLowerCase()}|scene`, s.imageUrl);
     }
+    for (const c of seriesCharacterSettings ?? []) addImageUrl(c.name, "character", c.imageUrl);
+    for (const o of seriesObjectSettings ?? []) addImageUrl(o.name, "object", o.imageUrl);
+    for (const s of seriesSceneSettings ?? []) addImageUrl(s.name, "scene", s.imageUrl);
     if (latestImageByKey.size === 0) return;
     const pending: { id: string; imageUrl: string }[] = [];
     for (const a of episode.assets) {
@@ -194,7 +215,11 @@ export default function EpisodePage() {
       if (a.status === "pending" || a.imageTaskId) continue;
       const key = `${a.name.toLowerCase()}|${a.type}`;
       const latest = latestImageByKey.get(key);
-      if (latest && latest !== a.imageUrl) pending.push({ id: a.id, imageUrl: latest });
+      // 仅当资产当前图片不属于任何版本（旧图/自定义图）时才同步为最新版图片；
+      // 若已绑定到某个具体版本图片，保留用户的版本选择，避免刷新后被回滚到最新版。
+      if (latest && latest !== a.imageUrl && !versionImageUrlsByKey.get(key)?.has(a.imageUrl)) {
+        pending.push({ id: a.id, imageUrl: latest });
+      }
     }
     if (pending.length > 0) {
       update((ep) => ({
@@ -425,6 +450,9 @@ export default function EpisodePage() {
   function handleAddRow() {
     update((ep) => ({ ...ep, shots: [...ep.shots, emptyShot()] }));
   }
+  function handleAddSmartShot(shot: Shot) {
+    update((ep) => ({ ...ep, shots: [...ep.shots, shot] }));
+  }
   function handleDeleteRow(shotId: string) {
     update((ep) => ({ ...ep, shots: ep.shots.filter((s) => s.id !== shotId) }));
   }
@@ -495,8 +523,15 @@ export default function EpisodePage() {
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-6 sm:px-6">
-      <header className="mb-5 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+    <main className="mx-auto min-h-screen max-w-[1400px] px-4 pb-6 sm:px-6">
+      <header
+        className={[
+          "sticky top-0 z-40 -mx-4 mb-5 px-4 pt-6 sm:-mx-6 sm:px-6 grid grid-cols-[1fr_auto_1fr] items-center gap-3 transition-[background-color,backdrop-filter,border-color] duration-200",
+          scrolled
+            ? "border-b border-slate-200/70 bg-white/40 backdrop-blur-md"
+            : "border-b border-transparent bg-transparent",
+        ].join(" ")}
+      >
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.push(episode.seriesId ? `/series/${episode.seriesId}` : "/")}
@@ -622,12 +657,17 @@ export default function EpisodePage() {
           onUpdateShot={handleUpdateShot}
           onUpdateManyVisuals={handleUpdateManyVisuals}
           onAddRow={handleAddRow}
+          onAddSmartShot={handleAddSmartShot}
           onDeleteRow={handleDeleteRow}
           onMoveRow={handleMoveRow}
           onBackToStep1={() => gotoStep(1)}
           onEnterStep3={() => gotoStep(3)}
           onRemoveTag={handleRemoveTag}
           onReplaceShots={handleReplaceShots}
+          worldSettings={seriesWorldSettings}
+          characterSettings={seriesCharacterSettings}
+          objectSettings={seriesObjectSettings}
+          sceneSettings={seriesSceneSettings}
         />
       ) : currentStep === 3 ? (
         <div className="mx-auto max-w-6xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -659,6 +699,7 @@ export default function EpisodePage() {
           onUpdateVideoConfig={handleUpdateVideoConfig}
           onBackToStep3={() => gotoStep(3)}
           onAddRow={handleAddRow}
+          onAddSmartShot={handleAddSmartShot}
           onDeleteRow={handleDeleteRow}
           onMoveRow={handleMoveRow}
           onLinkAsset={handleLinkAsset}
@@ -667,6 +708,9 @@ export default function EpisodePage() {
           onPersistNow={persistNow}
           seriesStyleSettings={seriesStyleSettings}
           characterSettings={seriesCharacterSettings}
+          worldSettings={seriesWorldSettings}
+          objectSettings={seriesObjectSettings}
+          sceneSettings={seriesSceneSettings}
         />
       )}
 

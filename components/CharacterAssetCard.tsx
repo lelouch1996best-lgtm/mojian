@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ImageLightbox from "./ImageLightbox";
 import ImageActionToolbar from "./ImageActionToolbar";
+import ImageUrlPastePanel from "./ImageUrlPastePanel";
 import TaggedText from "./TaggedText";
 import EditableCell from "./EditableCell";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
@@ -51,6 +52,7 @@ export default function CharacterAssetCard({
 }: CharacterAssetCardProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [urlPasteOpen, setUrlPasteOpen] = useState(false);
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
@@ -72,6 +74,13 @@ export default function CharacterAssetCard({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extracted, selected, asset.imageUrl]);
+
+  useEffect(() => {
+    if (versions.length === 0) return;
+    if (selectedId && versions.some((v) => v.id === selectedId)) return;
+    const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
+    setSelectedId(byImage?.id ?? versions[versions.length - 1]?.id ?? "");
+  }, [versions, selectedId, asset.imageUrl]);
 
   function handleSelectVersion(id: string) {
     setSelectedId(id);
@@ -129,32 +138,44 @@ export default function CharacterAssetCard({
             <span className="text-xs">上传中…</span>
           </div>
         ) : (
-          <div className="flex items-center gap-6 text-slate-300">
-            {onGenerateImage && (
+          !urlPasteOpen && (
+            <div className="flex items-center gap-6 text-slate-300">
+              {onGenerateImage && (
+                <button
+                  onClick={onGenerateImage}
+                  className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
+                >
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                    <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" />
+                    <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="text-xs">生成图片</span>
+                </button>
+              )}
+              {onUploadImage && (
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
+                >
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                  <span className="text-xs">上传图片</span>
+                </button>
+              )}
               <button
-                onClick={onGenerateImage}
+                onClick={() => setUrlPasteOpen(true)}
                 className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
               >
                 <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
-                  <circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" />
-                  <path d="M4 20c0-4.4 3.6-7 8-7s8 2.6 8 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  <path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <span className="text-xs">生成图片</span>
+                <span className="text-xs">粘贴URL</span>
               </button>
-            )}
-            {onUploadImage && (
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex flex-col items-center gap-1 transition-colors hover:text-brand-500"
-              >
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none">
-                  <path d="M12 16V4m0 0L8 8m4-4l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-                <span className="text-xs">上传图片</span>
-              </button>
-            )}
-          </div>
+            </div>
+          )
         )}
         {/* 重新生成中遮罩（已有图片时） */}
         {isGenerating && asset.imageUrl && !extracted && (
@@ -198,8 +219,8 @@ export default function CharacterAssetCard({
             已关联音色
           </span>
         )}
-        {/* 无图或已提取时右上角删除按钮 */}
-        {onDelete && (!asset.imageUrl || extracted) && (
+        {/* 右上角删除按钮（常驻） */}
+        {onDelete && (
           <button
             type="button"
             onClick={onDelete}
@@ -212,13 +233,19 @@ export default function CharacterAssetCard({
           </button>
         )}
         {/* 有图时悬浮操作栏 */}
-        {!extracted && asset.imageUrl && !isGenerating && !isUploading && (
+        {!extracted && asset.imageUrl && !isGenerating && !isUploading && !urlPasteOpen && (
           <ImageActionToolbar
             onRegenerate={onGenerateImage}
             isRegenerating={isGenerating}
             onUpload={onUploadImage ? () => fileInputRef.current?.click() : undefined}
             isUploading={isUploading}
-            onDelete={onDelete}
+            onPasteUrl={() => setUrlPasteOpen(true)}
+          />
+        )}
+        {urlPasteOpen && !extracted && (
+          <ImageUrlPastePanel
+            onConfirm={(url) => { onUpdate("imageUrl", url); onUpdate("status", "ready"); setUrlPasteOpen(false); }}
+            onCancel={() => setUrlPasteOpen(false)}
           />
         )}
       </div>

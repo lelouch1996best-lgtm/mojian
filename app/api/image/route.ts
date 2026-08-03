@@ -4,6 +4,7 @@ import type {
   ImageAsyncCreateResponse,
 } from "@/lib/types";
 import { getImageModelCapability } from "@/lib/model-presets";
+import { getImageTaskCenter } from "@/lib/image-task-center";
 
 export const runtime = "nodejs";
 
@@ -21,6 +22,18 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+
+  const taskCenter = getImageTaskCenter();
+  taskCenter.ensureRunning();
+  const register = (jobId: string) =>
+    taskCenter.registerTask({
+      jobId,
+      provider: body.provider,
+      apiKey: body.apiKey,
+      baseURL: body.baseURL,
+      model: body.model,
+      cosPrefix: body.cosPrefix,
+    });
 
   const base = body.baseURL.replace(/\/+$/, "");
 
@@ -92,6 +105,7 @@ export async function POST(req: Request) {
       jobId: taskId,
       status: first?.status ?? "submitted",
     };
+    register(taskId);
     return Response.json(result);
   }
 
@@ -199,6 +213,7 @@ export async function POST(req: Request) {
       jobId,
       status: (data as { status?: string })?.status ?? "pending",
     };
+    register(jobId);
     return Response.json(result);
   }
 

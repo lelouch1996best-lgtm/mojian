@@ -19,7 +19,7 @@ interface AssetPickerProps {
   open: boolean;
   onClose: () => void;
   /** 可选媒体类型约束 */
-  mediaType: "image" | "video" | "audio";
+  mediaType: "image" | "video" | "audio" | "music";
   /** 多选模式（参考图/参考视频）；false 为单选（首尾帧） */
   multiple?: boolean;
   /** 已选 URL 列表，用于去重与回显 */
@@ -272,7 +272,7 @@ export default function AssetPicker({
           className="flex cursor-move items-center justify-between border-b border-slate-200 px-5 py-3.5"
         >
           <h3 className="select-none text-base font-semibold text-slate-800">
-            {`从资产库选择${mediaType === "image" ? "图片" : mediaType === "audio" ? "音色" : "视频"}`}
+            {`从资产库选择${mediaType === "image" ? "图片" : mediaType === "audio" ? "音色" : mediaType === "music" ? "音乐" : "视频"}`}
           </h3>
           <button
             onClick={onClose}
@@ -338,7 +338,7 @@ export default function AssetPicker({
         </div>
       ) : items.length === 0 ? (
         <div className="py-20 text-center text-slate-400">
-          {mediaType === "audio" ? "暂无音色资产" : `暂无生成的${mediaType === "image" ? "图片" : "视频"}`}
+          {mediaType === "audio" ? "暂无音色资产" : mediaType === "music" ? "暂无音乐资产" : `暂无生成的${mediaType === "image" ? "图片" : "视频"}`}
         </div>
       ) : filtered.length === 0 ? (
         <div className="py-20 text-center text-slate-400">没有匹配的资产</div>
@@ -459,7 +459,7 @@ function AssetPickCard({
   onPreviewVideo: () => void;
 }) {
   const isVideo = item.mediaType === "video";
-  const isAudio = item.mediaType === "audio";
+  const isAudio = item.mediaType === "audio" || item.mediaType === "music";
 
   const previewIcon = (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none">

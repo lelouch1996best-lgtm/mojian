@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
 import Spinner from "./ui/Spinner";
 import Modal from "./ui/Modal";
 import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import EditableCell from "./EditableCell";
+import OptionCombobox from "./OptionCombobox";
+import { SHOT_TYPES, CAMERA_MOVES } from "@/lib/shot-options";
 import ImageLightbox from "./ImageLightbox";
 import AssetPicker from "./AssetPicker";
 import PresetPicker from "./PresetPicker";
@@ -23,10 +25,12 @@ import {
   videoPromptMessages,
   wrapStoryboardTemplate,
   buildShotInfoBlock,
+  buildShotInfoBlockForImage,
 } from "@/lib/prompts";
 import { isCosConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
 import { recordMediaAsset } from "@/lib/storage";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, getAllConfiguredImageModels } from "@/lib/image-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
+import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { ASSET_TYPE_LABELS, emptyAsset, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
 import {
   DEFAULT_SHOT_VIDEO_CONFIG,
@@ -38,12 +42,16 @@ import {
 } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
 import { ModelPicker } from "./ModelPicker";
+import Select from "./ui/Select";
+import { SmartAddShotDialog } from "./SmartAddShotDialog";
 import type {
   Asset,
   AssetImageConfig,
   CharacterProfile,
   Episode,
+  ObjectProfile,
   PickedPresetItem,
+  SceneProfile,
   Shot,
   ShotVideoConfig,
   StyleSettings,
@@ -52,6 +60,7 @@ import type {
   VideoRatio,
   VideoResolution,
   VideoStatus,
+  WorldSettings,
 } from "@/lib/types";
 import { getLatestVersions } from "@/lib/character-settings";
 import { getStoryboardTemplateSync } from "@/lib/style-settings";
@@ -67,6 +76,8 @@ interface VideoGenerationProps {
   onBackToStep3: () => void;
   /** 新增一个空镜头（在镜头列表末尾追加） */
   onAddRow?: () => void;
+  /** 智能添加镜头：根据输入内容 AI 生成完整镜头后追加 */
+  onAddSmartShot?: (shot: Shot) => void;
   /** 删除指定镜头 */
   onDeleteRow?: (shotId: string) => void;
   /** 上移/下移镜头（交换相邻顺序） */
@@ -78,12 +89,19 @@ interface VideoGenerationProps {
   /** 将截屏资产保存到当前剧集 */
   onAddScreenshot: (asset: Asset) => void;
   /** 立即落盘当前 episode（绕过 1500ms 防抖）。用于 imageTaskId 等关键恢复字段，
-   *  确保故事板任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。 */
-  onPersistNow?: () => void;
+   *  确保故事板任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。
+   *  可传 mutate 基于快照构造补丁直写（组件卸载后仍有效）。 */
+  onPersistNow?: (mutate?: (ep: Episode) => Episode) => void;
   /** 系列级风格设定设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
   /** 系列级人物设定（用于在视频提示词末尾注入角色音色） */
   characterSettings?: CharacterProfile[] | null;
+  /** 系列级世界设定（用于智能添加镜头弹框 @ 选择设定） */
+  worldSettings?: WorldSettings | null;
+  /** 系列级物品设定（用于智能添加镜头弹框 @ 选择设定） */
+  objectSettings?: ObjectProfile[] | null;
+  /** 系列级场景设定（用于智能添加镜头弹框 @ 选择设定） */
+  sceneSettings?: SceneProfile[] | null;
 }
 
 const MODE_LABELS: Record<VideoGenerationMode, string> = {
@@ -146,6 +164,16 @@ function nextRefImgNumber(names: string[] | undefined): number {
   return max + 1;
 }
 
+/** 计算下一个"生成图N"的编号（避免与已有"生成图N"重名） */
+function nextGenImgNumber(names: string[] | undefined): number {
+  let max = 0;
+  for (const n of names ?? []) {
+    const m = /^生成图(\d+)$/.exec(n);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return max + 1;
+}
+
 /** 读取参考图在索引 i 处的显示名（缺省回退"参考图N"，N=i+1，兼容旧数据） */
 function getRefImgName(names: string[] | undefined, i: number): string {
   return names?.[i]?.trim() || `参考图${i + 1}`;
@@ -162,6 +190,7 @@ const TYPE_BADGE_CLASS: Record<Asset["type"], string> = {
   object: "bg-[#FDF3E3] text-[#92400E]",
   screenshot: "bg-slate-100 text-slate-600",
   storyboard: "bg-amber-50 text-amber-700",
+  generated: "bg-violet-50 text-violet-700",
 };
 
 const STATUS_LABEL: Record<VideoStatus, string> = {
@@ -183,9 +212,6 @@ const STATUS_BADGE_CLASS: Record<VideoStatus, string> = {
   expired: "bg-slate-100 text-slate-500 font-medium",
   cancelled: "bg-slate-100 text-slate-500 font-medium",
 };
-
-const SHOT_TYPES = ["特写", "近景", "中景", "全景", "远景"];
-const CAMERA_MOVES = ["推", "拉", "摇", "移", "跟", "固定"];
 
 /** 在视频提示词末尾用代码拼接音色绑定句式（不依赖 LLM 生成） */
 function appendVoiceClauses(
@@ -213,6 +239,7 @@ export default function VideoGeneration({
   onUpdateVideoConfig,
   onBackToStep3,
   onAddRow,
+  onAddSmartShot,
   onDeleteRow,
   onMoveRow,
   onLinkAsset,
@@ -221,6 +248,9 @@ export default function VideoGeneration({
   onPersistNow,
   seriesStyleSettings,
   characterSettings,
+  worldSettings,
+  objectSettings,
+  sceneSettings,
 }: VideoGenerationProps) {
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
   const [videoGeneratingIds, setVideoGeneratingIds] = useState<Set<string>>(new Set());
@@ -228,6 +258,10 @@ export default function VideoGeneration({
   const [capturingIds, setCapturingIds] = useState<Set<string>>(new Set());
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
+  const [bulkCollapsed, setBulkCollapsed] = useState(false);
+  const [bulkCollapseToken, setBulkCollapseToken] = useState(0);
+  const [smartAddOpen, setSmartAddOpen] = useState(false);
+  const [newlyAddedShotId, setNewlyAddedShotId] = useState<string | null>(null);
   const showError = useErrorDialog();
   const confirm = useConfirm();
 
@@ -262,12 +296,13 @@ export default function VideoGeneration({
 
   // 组件级 AbortController：卸载（切步骤/路由离开/刷新）时取消所有进行中的轮询，
   // 避免孤儿轮询与重新挂载后的恢复轮询产生重复。
-  // 同步初始化（而非在 useEffect 中创建），确保首次渲染即可向 VideoCard 传递 signal。
+  // 在 useEffect 中创建（而非渲染期同步初始化），避免 StrictMode 双挂载时
+  // 首次挂载创建的 controller 被 abort 后仍被二次挂载复用。
   const abortRef = useRef<AbortController | null>(null);
-  if (abortRef.current === null) abortRef.current = new AbortController();
   useEffect(() => {
-    const ac = abortRef.current!;
-    return () => ac.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    return () => { ac.abort(); abortRef.current = null; };
   }, []);
 
   const assetById = useMemo(() => {
@@ -307,6 +342,20 @@ export default function VideoGeneration({
     [seriesStyleSettings],
   );
 
+  // 根据画面描述中的 @标签自动关联资产（进入 Step4 时自动执行，也可通过一键关联手动触发）
+  const linkMentionedAssets = useCallback(
+    (shot: Shot) => {
+      const tagNames = extractTags(shot.visualDescription);
+      for (const tagName of tagNames) {
+        const assetId = assetIdByName.get(tagName.toLowerCase());
+        if (assetId && !shot.relatedAssetIds?.includes(assetId)) {
+          onLinkAsset(shot.id, assetId);
+        }
+      }
+    },
+    [assetIdByName, onLinkAsset],
+  );
+
   // 进入 Step4 时，根据画面描述中的 @标签自动关联资产（仅执行一次）
   const didAutoLink = useRef(false);
   useEffect(() => {
@@ -314,14 +363,7 @@ export default function VideoGeneration({
     if (episode.assets.length === 0 || episode.shots.length === 0) return;
     didAutoLink.current = true;
     for (const shot of episode.shots) {
-      const tagNames = extractTags(shot.visualDescription);
-      if (tagNames.length === 0) continue;
-      for (const tagName of tagNames) {
-        const assetId = assetIdByName.get(tagName.toLowerCase());
-        if (assetId && !shot.relatedAssetIds?.includes(assetId)) {
-          onLinkAsset(shot.id, assetId);
-        }
-      }
+      linkMentionedAssets(shot);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [episode.assets.length, episode.shots.length, assetIdByName, onLinkAsset]);
@@ -353,109 +395,153 @@ export default function VideoGeneration({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoConfigured]);
 
-  // 切页/刷新回来后，立即根据 imageTaskId 恢复故事板生成中占位（不等待 imageConfigured 加载完成）。
-  // 仅以 imageTaskId 为准（重新生成时旧 storyboardUrl 仍在，但不阻断占位恢复）。
-  const didRestoreStoryboardLoading = useRef(false);
+  // 进入 Step4 时，恢复未完成的故事板/生成图图片任务订阅（刷新/切页后任务不丢失）。
+  // 数据加载完成信号：父页面在 episode 为 null 时不渲染本组件（且 key=episode.id 按剧集重挂载），
+  // 故挂载时 shots 必已加载完毕，仅需等待 imageConfigured/imageOptions 就绪，避免空数据时恢复空转。
+  // 占位恢复也在此统一完成：entries 非空时先批量加入占位，onDone/onFailed 中移除对应占位。
   useEffect(() => {
-    if (didRestoreStoryboardLoading.current) return;
-    didRestoreStoryboardLoading.current = true;
-    const ids = episode.shots.filter((s) => s.imageTaskId).map((s) => s.id);
-    if (ids.length > 0) {
-      setGeneratingStoryboardIds((prev) => {
-        const next = new Set(prev);
-        ids.forEach((id) => next.add(id));
-        return next;
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episode.shots]);
-
-  // 进入 Step4 时，恢复未完成的故事板图片生成轮询（刷新/切页后任务不丢失）。
-  const storyboardResumeRef = useRef(false);
-  const storyboardPollAbortRef = useRef<AbortController | null>(null);
-  useEffect(() => {
-    if (storyboardResumeRef.current) return;
     if (!imageConfigured || imageOptions.length === 0) return;
-    storyboardResumeRef.current = true;
     const ac = new AbortController();
-    storyboardPollAbortRef.current = ac;
 
-    for (const shot of episode.shots) {
-      if (!shot.imageTaskId) continue;
-      // 进入恢复时立即显示占位（重新生成场景下旧 storyboardUrl 仍在，但 imageTaskId 表明有进行中任务）
-      setGeneratingStoryboardIds((prev) => new Set(prev).add(shot.id));
+    // key 编码 shotId + 任务类型，onDone 按 kind 写回不同字段（storyboard -> storyboardUrl；genImage -> 参考图列表）
+    const entries = episode.shots
+      .filter((s) => s.imageTaskId)
+      .map((s) => ({
+        key: `${s.id}:${s.imageTaskKind ?? "storyboard"}`,
+        jobId: s.imageTaskId!,
+        provider: s.imageTaskProvider,
+      }));
+    if (entries.length === 0) return;
 
-      resumeImageGeneration(shot.imageTaskId, shot.imageTaskProvider, undefined, ac.signal)
-        .then(async (result) => {
-          let finalUrl = result.imageUrl;
-          // 读取最新 episode 状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成并写入新 storyboardUrl）
+    const shotIdOf = (key: string) => key.slice(0, key.lastIndexOf(":"));
+
+    // 进入恢复时立即显示占位（重新生成场景下旧 storyboardUrl 仍在，但 imageTaskId 表明有进行中任务）
+    setGeneratingStoryboardIds((prev) => {
+      const next = new Set(prev);
+      entries.forEach((e) => next.add(shotIdOf(e.key)));
+      return next;
+    });
+
+    recoverImageTasks(entries, {
+      onDone: async (key, imageUrl) => {
+        // imageUrl 已经服务端 COS 转存，无需再转存
+        const shotId = shotIdOf(key);
+        const kind = key.slice(key.lastIndexOf(":") + 1);
+        try {
+          // 读取最新 episode 状态做去重判断（避免闭包捕获过期数据；切页期间原任务可能已完成并写回）
+          const entry = entries.find((e) => e.key === key);
           const latest = episodeRef.current;
-          const latestShot = latest.shots.find((s) => s.id === shot.id);
-          if (latestShot && latestShot.imageTaskId !== shot.imageTaskId) {
+          const latestShot = latest.shots.find((s) => s.id === shotId);
+          if (!latestShot) return;
+          if (entry && latestShot.imageTaskId !== entry.jobId) {
             // taskId 已变化（被新的生成覆盖），不处理这次结果
             return;
           }
-          onUpdateShot(shot.id, "storyboardUrl", finalUrl);
-          onUpdateShot(shot.id, "imageTaskId", "");
-          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）
-          try {
-            if (await isCosConfigured()) {
-              const { url } = await transferAsset(result.imageUrl, "ai-script/storyboards");
-              finalUrl = url;
-              onUpdateShot(shot.id, "storyboardUrl", finalUrl);
+
+          // 生成图片任务：加入参考图列表并存入资产库（类型：生成）
+          if (kind === "genImage") {
+            onUpdateShot(shotId, "imageTaskId", "");
+            onUpdateShot(shotId, "imageTaskProvider", "");
+            onUpdateShot(shotId, "imageTaskKind", "");
+            const refImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
+            const refNames = latestShot.videoConfig?.referenceImageAssetNames ?? [];
+            if (!refImgs.includes(imageUrl)) {
+              const genName = `生成图${nextGenImgNumber(refNames)}`;
+              onUpdateVideoConfig(shotId, {
+                referenceImageAssetUrls: [...refImgs, imageUrl],
+                referenceImageAssetNames: [...refNames, genName],
+              });
+
+              // 存入资产库（类型：生成，避免重复入库）
+              const refImgExists = latest.assets.some(
+                (a) => a.type === "generated" && a.imageUrl === imageUrl
+              );
+              if (!refImgExists) {
+                const shotIdx = latest.shots.findIndex((s) => s.id === shotId) + 1;
+                const assetName = `${latest.title || "未命名剧集"}-镜头${shotIdx}-${genName}`;
+                const asset: Asset = {
+                  ...emptyAsset(assetName, "generated"),
+                  imageUrl,
+                  status: "ready",
+                  shotId,
+                };
+                onAddScreenshot(asset);
+                void recordMediaAsset({
+                  mediaType: "image",
+                  url: imageUrl,
+                  entityType: "generated",
+                  entityName: assetName,
+                  prompt: latestShot.finalPrompt ?? "",
+                  source: "generated",
+                  seriesId: latest.seriesId,
+                  seriesTitle: seriesTitle ?? "",
+                  episodeId: latest.id,
+                  episodeTitle: latest.title,
+                });
+              }
             }
-          } catch (e) {
-            console.error("故事板转存存储失败：", (e as Error).message);
+            return;
           }
 
+          onUpdateShot(shotId, "storyboardUrl", imageUrl);
+          onUpdateShot(shotId, "imageTaskId", "");
+          onUpdateShot(shotId, "imageTaskProvider", "");
+          onUpdateShot(shotId, "imageTaskKind", "");
+
           // 计算故事板名称（用于参考图显示名 + 资产名，与 handleGenerateStoryboard 保持一致）
-          const shotIdx = latest.shots.findIndex((s) => s.id === shot.id) + 1;
+          const shotIdx = latest.shots.findIndex((s) => s.id === shotId) + 1;
           const existingStoryboards = latest.assets.filter(
-            (a) => a.type === "storyboard" && a.shotId === shot.id
+            (a) => a.type === "storyboard" && a.shotId === shotId
           );
           const nextIdx = existingStoryboards.length + 1;
           const storyboardName = `${latest.title || "未命名剧集"}-镜头${shotIdx}-故事板${nextIdx}`;
 
           // 生成成功后直接放入参考图（保留故事板名称，便于 @ 引用）
-          const existingRefImgs = latestShot?.videoConfig?.referenceImageAssetUrls ?? [];
-          const existingRefNames = latestShot?.videoConfig?.referenceImageAssetNames ?? [];
-          if (!existingRefImgs.includes(finalUrl)) {
-            onUpdateVideoConfig(shot.id, {
-              referenceImageAssetUrls: [...existingRefImgs, finalUrl],
+          const existingRefImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
+          const existingRefNames = latestShot.videoConfig?.referenceImageAssetNames ?? [];
+          if (!existingRefImgs.includes(imageUrl)) {
+            onUpdateVideoConfig(shotId, {
+              referenceImageAssetUrls: [...existingRefImgs, imageUrl],
               referenceImageAssetNames: [...existingRefNames, storyboardName],
             });
           }
 
           // 保存为故事板资产（避免重复入库）
           const storyboardExists = latest.assets.some(
-            (a) => a.type === "storyboard" && a.imageUrl === finalUrl
+            (a) => a.type === "storyboard" && a.imageUrl === imageUrl
           );
           if (!storyboardExists) {
             const asset: Asset = {
               ...emptyAsset(storyboardName, "storyboard"),
-              imageUrl: finalUrl,
+              imageUrl,
               status: "ready",
-              shotId: shot.id,
+              shotId,
             };
             onAddScreenshot(asset);
           }
-        })
-        .catch((err) => {
-          // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
-          // 仅在真实失败（API 错误/超时）时清除 imageTaskId
-          const isAborted = ac.signal.aborted || (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
-          if (!isAborted) {
-            onUpdateShot(shot.id, "imageTaskId", "");
-          }
-        })
-        .finally(() => {
+        } finally {
           setGeneratingStoryboardIds((prev) => {
             const next = new Set(prev);
-            next.delete(shot.id);
+            next.delete(shotId);
             return next;
           });
+        }
+      },
+      onFailed: (key, error) => {
+        // 仅真实失败才回调（取消/切页由 recoverImageTasks 静默，imageTaskId 保留待下次恢复）
+        const shotId = shotIdOf(key);
+        const shotIdx = episodeRef.current.shots.findIndex((s) => s.id === shotId) + 1;
+        onUpdateShot(shotId, "imageTaskId", "");
+        onUpdateShot(shotId, "imageTaskProvider", "");
+        onUpdateShot(shotId, "imageTaskKind", "");
+        showError(`镜头 ${shotIdx} 图片生成失败：${error}`);
+        setGeneratingStoryboardIds((prev) => {
+          const next = new Set(prev);
+          next.delete(shotId);
+          return next;
         });
-    }
+      },
+    }, ac.signal);
 
     return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -594,16 +680,15 @@ export default function VideoGeneration({
   }
 
   /** 生成单个镜头的视频 */
-  async function generateVideo(shot: Shot, opts?: { skipUnusedRefCheck?: boolean }) {
+  async function generateVideo(shot: Shot, opts?: { skipUnusedRefCheck?: boolean; validateOnly?: boolean }): Promise<boolean> {
     if (!shot.finalPrompt) {
       showError(`镜头 ${episode.shots.indexOf(shot) + 1} 还没有视频提示词，请先生成`);
-      return;
+      return false;
     }
     if (!videoConfigured) {
       showError("未配置视频生成 API，请先在设置中配置");
-      return;
+      return false;
     }
-    setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
 
     // 卡片级视频配置（缺省时使用用户自定义默认参数构建并收敛到能力范围内）
     const defaultVidOption = findModelOption(videoOptions, defaultVideoConfig.provider, defaultVideoConfig.model);
@@ -686,8 +771,7 @@ export default function VideoGeneration({
           variant: "primary",
         });
         if (!ok) {
-          setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
-          return;
+          return false;
         }
       }
     }
@@ -696,7 +780,7 @@ export default function VideoGeneration({
     const related = getRelatedAssets(shot);
 
     // 校验：Grok 模型不支持参考视频/音频，multimodal-ref 模式下若提示词里 @ 了视频/音频则提示会被忽略
-    if (isGrokVideoModel(config.model) && config.mode === "multimodal-ref") {
+    if (!opts?.skipUnusedRefCheck && isGrokVideoModel(config.model) && config.mode === "multimodal-ref") {
       // 参考视频：@视频N；参考音频：@音频N；人物音色：@人物名音频
       const hasRefVideo = (config.referenceVideoUrls ?? []).some((_, i) => mentionedInPrompt(`视频${i + 1}`));
       const hasRefAudio = (config.referenceAudioUrls ?? []).some((_, i) => mentionedInPrompt(`音频${i + 1}`));
@@ -714,8 +798,7 @@ export default function VideoGeneration({
           variant: "primary",
         });
         if (!ok) {
-          setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
-          return;
+          return false;
         }
       }
     }
@@ -763,16 +846,14 @@ export default function VideoGeneration({
       firstFrameUrl = config.firstFrameImageUrl;
       if (!firstFrameUrl) {
         showError(`镜头 ${shotIndex} 首帧模式需要上传首帧图片，请在卡片参数中上传`);
-        setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
-        return;
+        return false;
       }
     } else if (config.mode === "first-last-frame") {
       firstFrameUrl = config.firstFrameImageUrl;
       lastFrameUrl = config.lastFrameImageUrl;
       if (!firstFrameUrl || !lastFrameUrl) {
         showError(`镜头 ${shotIndex} 首尾帧模式需要上传首帧与尾帧图片，请在卡片参数中上传`);
-        setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
-        return;
+        return false;
       }
     } else if (config.mode === "multimodal-ref") {
       // 参考图：只包含被 @ 到的关联资产图片 + 被 @ 到的手动参考图（故事板已作为普通参考图存在于 referenceImageAssetUrls）
@@ -788,8 +869,7 @@ export default function VideoGeneration({
       const vidCount = usedReferenceVideoUrls.length;
       if (referenceImageUrls.length === 0 && vidCount === 0) {
         showError(`镜头 ${shotIndex} 多模态参考模式需至少提供 1 张参考图（在提示词中 @ 关联资产或参考图）或 1 个参考视频（在提示词中 @视频N）`);
-        setVideoGeneratingIds((prev) => { const n = new Set(prev); n.delete(shot.id); return n; });
-        return;
+        return false;
       }
 
       // 参考音频：只保留被 @音频N 引用的
@@ -834,6 +914,8 @@ export default function VideoGeneration({
       audioNameToNo.set(`${name}音频`, ++audioNo);
     });
 
+    if (opts?.validateOnly) return true;
+    setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
     onUpdateVideoStatus(shot.id, "queued");
     try {
       // 发送给 Seedance API 前确定性替换 @资产名称 -> 图片N（兜底，不依赖 LLM 自觉）
@@ -917,6 +999,7 @@ export default function VideoGeneration({
         return next;
       });
     }
+    return true;
   }
 
   /** 批量生成所有镜头视频 */
@@ -1188,21 +1271,16 @@ export default function VideoGeneration({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
-            onClick={generateAll}
-            loading={generatingAll}
+            onClick={() => {
+              const next = !bulkCollapsed;
+              setBulkCollapsed(next);
+              setBulkCollapseToken((t) => t + 1);
+            }}
             disabled={episode.shots.length === 0}
           >
-            {generatingAll ? "批量生成中…" : "一键生成全部提示词"}
-          </Button>
-          <Button
-            size="sm"
-            onClick={generateAllVideos}
-            disabled={!videoConfigured || !allReady}
-            title={!videoConfigured ? "请先配置视频 API" : !allReady ? "请先生成全部提示词" : ""}
-          >
-            批量生成视频
+            {bulkCollapsed ? "一键展开" : "一键折叠"}
           </Button>
         </div>
       </div>
@@ -1228,18 +1306,25 @@ export default function VideoGeneration({
           <p className="text-sm text-slate-500">
             暂无镜头{onAddRow ? "，可手动添加或返回第二步生成分镜" : "，请返回第二步生成分镜"}
           </p>
-          {onAddRow && (
-            <Button variant="secondary" size="sm" className="mt-4" onClick={onAddRow}>
-              + 添加镜头
-            </Button>
-          )}
+          <div className="mt-4 flex items-center gap-2">
+            {onAddRow && (
+              <Button variant="secondary" size="sm" onClick={onAddRow}>
+                + 添加镜头
+              </Button>
+            )}
+            {onAddSmartShot && (
+              <Button variant="secondary" size="sm" onClick={() => setSmartAddOpen(true)}>
+                ✨ 智能添加镜头
+              </Button>
+            )}
+          </div>
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <div className="flex flex-col gap-4 lg:flex-row lg:flex-wrap">
             {episode.shots.map((shot, i) => (
+              <div key={shot.id} className="w-full lg:w-[calc(50%-0.5rem)]">
               <VideoCard
-                key={shot.id}
                 shot={shot}
                 index={i}
                 episode={episode}
@@ -1256,6 +1341,8 @@ export default function VideoGeneration({
                 isGeneratingPrompt={generatingIds.has(shot.id)}
                 isGeneratingVideo={videoGeneratingIds.has(shot.id)}
                 isGeneratingStoryboard={generatingStoryboardIds.has(shot.id)}
+                initiallyExpanded={shot.id === newlyAddedShotId}
+                bulkCollapse={{ value: bulkCollapsed, token: bulkCollapseToken }}
                 onSetGeneratingStoryboard={(value) =>
                   setGeneratingStoryboardIds((prev) => {
                     const next = new Set(prev);
@@ -1265,8 +1352,10 @@ export default function VideoGeneration({
                   })
                 }
                 videoConfigured={videoConfigured}
+                assetIdByName={assetIdByName}
                 onGeneratePrompt={() => generateOne(shot)}
-                onGenerateVideo={() => generateVideo(shot)}
+                onGenerateVideo={() => generateVideo(shot, { skipUnusedRefCheck: true })}
+                onPrecheckVideo={() => generateVideo(shot, { validateOnly: true })}
                 onCancelVideo={() => cancelVideo(shot)}
                 onUpdatePrompt={(v) => onUpdateShot(shot.id, "finalPrompt", v)}
                 onUpdateVisualDescription={(v) => onUpdateShot(shot.id, "visualDescription", v)}
@@ -1274,6 +1363,7 @@ export default function VideoGeneration({
                 onUpdateShotField={(field, value) => onUpdateShot(shot.id, field, value)}
                 onUnlinkAsset={(assetId) => onUnlinkAsset(shot.id, assetId)}
                 onLinkAsset={(assetId) => onLinkAsset(shot.id, assetId)}
+                onLinkMentionedAssets={() => linkMentionedAssets(shot)}
                 onCaptureScreenshot={() => captureLastFrame(shot, i + 1)}
                 isCapturing={capturingIds.has(shot.id)}
                 isSaved={savedIds.has(shot.id)}
@@ -1290,18 +1380,121 @@ export default function VideoGeneration({
                     : undefined
                 }
               />
+              </div>
             ))}
           </div>
-          {onAddRow && (
-            <div className="mt-4">
-              <Button variant="secondary" size="sm" onClick={onAddRow}>
-                + 添加镜头
-              </Button>
+          {(onAddRow || onAddSmartShot) && (
+            <div className="mt-4 flex items-center gap-2">
+              {onAddRow && (
+                <Button variant="secondary" size="sm" onClick={onAddRow}>
+                  + 添加镜头
+                </Button>
+              )}
+              {onAddSmartShot && (
+                <Button variant="secondary" size="sm" onClick={() => setSmartAddOpen(true)}>
+                  ✨ 智能添加镜头
+                </Button>
+              )}
             </div>
           )}
         </>
       )}
+
+      <SmartAddShotDialog
+        open={smartAddOpen}
+        onClose={() => setSmartAddOpen(false)}
+        onApply={(shot) => {
+          setNewlyAddedShotId(shot.id);
+          onAddSmartShot?.(shot);
+          linkMentionedAssets(shot);
+        }}
+        title="智能添加镜头"
+        worldSettings={worldSettings}
+        characterSettings={characterSettings}
+        objectSettings={objectSettings}
+        sceneSettings={sceneSettings}
+      />
+      <ShotToc shots={episode.shots} />
     </div>
+  );
+}
+
+/** 镜头目录（右侧浮动导航：内容超视口 200% 时显示，半透明，hover 变实，点击跳转） */
+function ShotToc({ shots }: { shots: Shot[] }) {
+  const [visible, setVisible] = useState(false);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const visibleMapRef = useRef<Map<string, boolean>>(new Map());
+
+  useEffect(() => {
+    const check = () => {
+      setVisible(document.documentElement.scrollHeight > window.innerHeight * 2);
+    };
+    check();
+    window.addEventListener("resize", check);
+    const ro = new ResizeObserver(check);
+    if (document.body) ro.observe(document.body);
+    return () => {
+      window.removeEventListener("resize", check);
+      ro.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const els = shots
+      .map((s) => document.getElementById(`shot-card-${s.id}`))
+      .filter((el): el is HTMLElement => !!el);
+    if (els.length === 0) return;
+    visibleMapRef.current.clear();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          const id = e.target.id.replace("shot-card-", "");
+          if (e.isIntersecting) visibleMapRef.current.set(id, true);
+          else visibleMapRef.current.delete(id);
+        });
+        const first = shots.find((s) => visibleMapRef.current.has(s.id));
+        if (first) setActiveId(first.id);
+      },
+      { rootMargin: "-25% 0px -65% 0px", threshold: 0 }
+    );
+    els.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [visible, shots]);
+
+  const handleClick = (id: string) => {
+    document
+      .getElementById(`shot-card-${id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  if (!visible || shots.length === 0) return null;
+
+  return (
+    <nav
+      aria-label="镜头目录"
+      className="fixed right-3 top-1/2 z-40 hidden -translate-y-1/2 opacity-60 transition-opacity duration-200 hover:opacity-100 lg:block"
+    >
+      <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-slate-200 bg-white/70 p-1.5 shadow-sm backdrop-blur-sm transition-colors hover:bg-white/95 hover:shadow-md">
+        <ul className="flex flex-col gap-0.5">
+          {shots.map((s, i) => (
+            <li key={s.id}>
+              <button
+                type="button"
+                onClick={() => handleClick(s.id)}
+                className={`block w-full whitespace-nowrap rounded px-2.5 py-1 text-left text-xs transition-colors ${
+                  activeId === s.id
+                    ? "bg-brand-100 font-medium text-brand-700"
+                    : "text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                }`}
+              >
+                镜头 {i + 1}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </nav>
   );
 }
 
@@ -1382,6 +1575,7 @@ function AddMediaDropdown({
   onPickAsset,
   onPickPreset,
   onGenerateFromStoryboard,
+  onGenerateImage,
 }: {
   label: string;
   buttonLabel?: string;
@@ -1395,6 +1589,8 @@ function AddMediaDropdown({
   onPickPreset?: () => void;
   /** 参考图区域可选：使用故事板生成图片资产 */
   onGenerateFromStoryboard?: () => void;
+  /** 参考图区域可选：带上卡片参考图直接生成图片（不附加提示词模板） */
+  onGenerateImage?: () => void;
 }) {
   return (
     <div className="group relative">
@@ -1439,6 +1635,15 @@ function AddMediaDropdown({
               className="block w-full px-3 py-1.5 text-left text-xs text-brand-600 hover:bg-brand-50"
             >
               使用故事板生成
+            </button>
+          )}
+          {onGenerateImage && (
+            <button
+              type="button"
+              onClick={onGenerateImage}
+              className="block w-full px-3 py-1.5 text-left text-xs text-brand-600 hover:bg-brand-50"
+            >
+              生成图片
             </button>
           )}
         </div>
@@ -1611,8 +1816,10 @@ function VideoCard({
   isGeneratingVideo,
   isGeneratingStoryboard,
   videoConfigured,
+  assetIdByName,
   onGeneratePrompt,
   onGenerateVideo,
+  onPrecheckVideo,
   onCancelVideo,
   onUpdatePrompt,
   onUpdateVisualDescription,
@@ -1620,10 +1827,13 @@ function VideoCard({
   onUpdateShotField,
   onUnlinkAsset,
   onLinkAsset,
+  onLinkMentionedAssets,
   onSetGeneratingStoryboard,
   onCaptureScreenshot,
   isCapturing,
   isSaved,
+  initiallyExpanded,
+  bulkCollapse,
   onAddAsset,
   abortSignal,
   onPersistNow,
@@ -1656,8 +1866,15 @@ function VideoCard({
   videoConfigured: boolean;
   isCapturing: boolean;
   isSaved: boolean;
+  /** 新添加的镜头初始展开「分镜信息」区域 */
+  initiallyExpanded?: boolean;
+  /** 父级「一键折叠/展开」指令：每次触发 token 递增，卡片据 value 设置折叠状态 */
+  bulkCollapse?: { value: boolean; token: number };
+  /** 资产名称（小写）到资产 ID 的映射，用于一键关联 @标签 */
+  assetIdByName: Map<string, string>;
   onGeneratePrompt: () => void;
   onGenerateVideo: () => void;
+  onPrecheckVideo: () => Promise<boolean>;
   onCancelVideo: () => void;
   onUpdatePrompt: (v: string) => void;
   onUpdateVisualDescription: (v: string) => void;
@@ -1666,14 +1883,17 @@ function VideoCard({
   onUpdateShotField: (field: keyof Shot, value: string) => void;
   onUnlinkAsset: (assetId: string) => void;
   onLinkAsset: (assetId: string) => void;
+  /** 一键关联画面描述中 @到的资产 */
+  onLinkMentionedAssets: () => void;
   isGeneratingStoryboard: boolean;
   onSetGeneratingStoryboard: (value: boolean) => void;
   onCaptureScreenshot: () => void;
   onAddAsset: (asset: Asset) => void;
   /** 组件级 AbortSignal，切页/卸载时取消故事板图片生成轮询（保留 jobId 供恢复） */
   abortSignal?: AbortSignal;
-  /** 立即落盘当前 episode（绕过防抖），用于 imageTaskId 关键字段持久化 */
-  onPersistNow?: () => void;
+  /** 立即落盘当前 episode（绕过防抖），用于 imageTaskId 关键字段持久化；
+   *  可传 mutate 基于快照构造补丁直写（组件卸载后仍有效） */
+  onPersistNow?: (mutate?: (ep: Episode) => Episode) => void;
   /** 所属企划标题（用于媒体资产账本记录） */
   seriesTitle?: string;
   /** 删除当前镜头（已由父组件做二次确认或由本卡片确认后调用） */
@@ -1702,14 +1922,38 @@ function VideoCard({
   // 能力查询使用所选模型所属供应商的模型条目（同一模型名在不同供应商下能力可能不同）
   const selectedVidOption = findModelOption(videoOptions, config.provider, config.model);
   const cap = getVideoModelCapability(config.model, selectedVidOption ? [selectedVidOption.entry] : undefined);
-  const [showVideoConfig, setShowVideoConfig] = useState(false);
+  const [videoConfigOpen, setVideoConfigOpen] = useState(false);
   const [showInputMaterials, setShowInputMaterials] = useState(true);
-  const [showShotInfo, setShowShotInfo] = useState(false);
+  const [showShotInfo, setShowShotInfo] = useState(true);
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(`video:shot:collapsed:${shot.id}`) === "1";
+  });
+  useEffect(() => {
+    window.localStorage.setItem(`video:shot:collapsed:${shot.id}`, collapsed ? "1" : "0");
+  }, [collapsed, shot.id]);
+  const lastBulkTokenRef = useRef(0);
+  useEffect(() => {
+    if (bulkCollapse && bulkCollapse.token !== lastBulkTokenRef.current) {
+      lastBulkTokenRef.current = bulkCollapse.token;
+      setCollapsed(bulkCollapse.value);
+    }
+  }, [bulkCollapse]);
   const [uploadingKind, setUploadingKind] = useState<"video" | "audio" | "firstFrame" | "lastFrame" | "refImage" | null>(null);
   const showError = useErrorDialog();
   const confirm = useConfirm();
   const [pickerTarget, setPickerTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | "refVideo" | "refAudio" | null>(null);
   const [presetPickerTarget, setPresetPickerTarget] = useState<"refImage" | "refVideo" | "refAudio" | "promptText" | null>(null);
+
+  // 画面描述中 @到的资产是否还有未关联的（控制一键关联按钮可用状态）
+  const canLinkMentionedAssets = useMemo(() => {
+    const ids: string[] = [];
+    for (const tagName of extractTags(shot.visualDescription)) {
+      const assetId = assetIdByName.get(tagName.toLowerCase());
+      if (assetId && !ids.includes(assetId)) ids.push(assetId);
+    }
+    return ids.some((id) => !shot.relatedAssetIds?.includes(id));
+  }, [shot.visualDescription, shot.relatedAssetIds, assetIdByName]);
 
   // 故事板生成状态
   const [storyboardOpen, setStoryboardOpen] = useState(false);
@@ -1720,6 +1964,16 @@ function VideoCard({
   });
   const [storyboardRefImages, setStoryboardRefImages] = useState<string[]>([]);
   const [storyboardRefImageLabels, setStoryboardRefImageLabels] = useState<string[]>([]);
+
+  // 生成图片状态（带上卡片参考图，不附加提示词模板）
+  const [genImageOpen, setGenImageOpen] = useState(false);
+  const [genImagePrompt, setGenImagePrompt] = useState("");
+  const [genImageConfig, setGenImageConfig] = useState<AssetImageConfig>({
+    ...defaultImageConfig,
+  });
+  const [genImageRefImages, setGenImageRefImages] = useState<string[]>([]);
+  const [genImageRefImageLabels, setGenImageRefImageLabels] = useState<string[]>([]);
+  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
 
   /** 删除当前镜头（二次确认） */
   async function handleDeleteShot() {
@@ -1965,7 +2219,7 @@ function VideoCard({
     setStoryboardPrompt(buildStoryboardPromptText(useTemplate));
   }
 
-  /** 生成故事板图片 + 转存 COS + 保存为故事板资产 */
+  /** 生成故事板图片（服务端转存 COS）并保存为故事板资产 */
   async function handleGenerateStoryboard(params: ImageGenerationParams) {
     setStoryboardOpen(false);
     setStoryboardConfig(params.config);
@@ -1989,24 +2243,30 @@ function VideoCard({
           // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider，切页/刷新后可恢复轮询（按 provider 路由凭证）
           onUpdateShotField("imageTaskId", jobId);
           if (params.config.provider) onUpdateShotField("imageTaskProvider", params.config.provider);
-          // 立即落盘：jobId 写入即保存，避免 1.5s 防抖未触发就切路由/刷新导致恢复信息丢失
-          onPersistNow?.();
+          onUpdateShotField("imageTaskKind", "storyboard");
+          // 立即落盘（mutation 直写）：提交在飞时切页，组件卸载后 setState 无效，
+          // mutation 基于卸载前快照直写是 taskId 不丢的唯一保障
+          onPersistNow?.((ep) => ({
+            ...ep,
+            shots: ep.shots.map((s) =>
+              s.id === shot.id
+                ? {
+                    ...s,
+                    imageTaskId: jobId,
+                    ...(params.config.provider ? { imageTaskProvider: params.config.provider } : {}),
+                    imageTaskKind: "storyboard" as const,
+                  }
+                : s
+            ),
+          }));
         },
-        abortSignal
+        abortSignal,
+        { cosPrefix: "ai-script/storyboards" }
       );
-      let finalUrl = result.imageUrl;
+      // imageUrl 已经服务端 COS 转存，无需再转存
+      const finalUrl = result.imageUrl;
       onUpdateShotField("storyboardUrl", finalUrl);
       onUpdateShotField("imageTaskId", "");
-      // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；失败时回退使用临时 URL，不阻断后续入库
-      try {
-        if (await isCosConfigured()) {
-          const { url } = await transferAsset(result.imageUrl, "ai-script/storyboards");
-          finalUrl = url;
-          onUpdateShotField("storyboardUrl", finalUrl);
-        }
-      } catch (e) {
-        console.error("故事板转存存储失败：", (e as Error).message);
-      }
 
       // 保存为故事板资产：自动命名为“剧集名-镜头名-故事版n”
       const existingStoryboards = episode.assets.filter(
@@ -2029,6 +2289,30 @@ function VideoCard({
         shotId: shot.id,
       };
       onAddAsset(asset);
+      // DB 直写补丁：页面离开后组件已卸载，上面的 setState 链全部静默丢弃，
+      // 此处基于卸载前快照把故事板/参考图/资产/清 taskId 直写落库，保证图片不丢
+      onPersistNow?.((ep) => ({
+        ...ep,
+        shots: ep.shots.map((s) => {
+          if (s.id !== shot.id) return s;
+          const vc = s.videoConfig ?? defaultVideoConfig;
+          const urls = vc.referenceImageAssetUrls ?? [];
+          const vcNames = vc.referenceImageAssetNames ?? [];
+          return {
+            ...s,
+            storyboardUrl: finalUrl,
+            imageTaskId: "",
+            videoConfig: {
+              ...vc,
+              referenceImageAssetUrls: urls.includes(finalUrl) ? urls : [...urls, finalUrl],
+              referenceImageAssetNames: urls.includes(finalUrl) ? vcNames : [...vcNames, name],
+            },
+          };
+        }),
+        assets: ep.assets.some((a) => a.type === "storyboard" && a.imageUrl === finalUrl)
+          ? ep.assets
+          : [...ep.assets, asset],
+      }));
     } catch (e) {
       // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便重新挂载后恢复轮询；
       // 仅在真实失败（API 错误/超时）时清除 imageTaskId 并提示错误。
@@ -2044,11 +2328,150 @@ function VideoCard({
     }
   }
 
+  /** 打开生成图片弹框：带上卡片所有参考图（关联资产 + 手动/故事板参考图），不附加任何提示词模板 */
+  function openGenerateImageDialog() {
+    setGenImageConfig({ ...defaultImageConfig });
+    // 卡片参考图区域 = 关联资产（@ 引用，自动作为参考图）+ 手动/故事板添加的参考图
+    const linkedAssets = relatedAssets.filter((a) => a.imageUrl);
+    const manualUrls = config.referenceImageAssetUrls ?? [];
+    const manualNames = config.referenceImageAssetNames ?? [];
+    setGenImageRefImages([
+      ...linkedAssets.map((a) => a.imageUrl),
+      ...manualUrls,
+    ]);
+    setGenImageRefImageLabels([
+      ...linkedAssets.map((a) => a.name),
+      ...manualUrls.map((_, i) => getRefImgName(manualNames, i)),
+    ]);
+    // 预填分镜中对静态画面有视觉参考价值的信息（画面描述、景别、光影氛围），
+    // 不带运镜（动态）、音效/对白旁白（声音）、时长（时间）等与静态图片无关的字段
+    setGenImagePrompt(buildShotInfoBlockForImage(shot));
+    setGenImageOpen(true);
+  }
+
+  /** 基于卡片参考图单纯生图（服务端转存 COS）后加入参考图列表 */
+  async function handleGenerateImage(params: ImageGenerationParams) {
+    setGenImageOpen(false);
+    setGenImageConfig(params.config);
+    setIsGeneratingImage(true);
+    try {
+      const result = await generateImage(
+        params.prompt,
+        params.config,
+        params.images.length > 0 ? params.images : undefined,
+        (jobId) => {
+          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider + imageTaskKind，切页/刷新后可恢复轮询
+          onUpdateShotField("imageTaskId", jobId);
+          if (params.config.provider) onUpdateShotField("imageTaskProvider", params.config.provider);
+          onUpdateShotField("imageTaskKind", "genImage");
+          // 立即落盘（mutation 直写，组件卸载后仍有效）
+          onPersistNow?.((ep) => ({
+            ...ep,
+            shots: ep.shots.map((s) =>
+              s.id === shot.id
+                ? {
+                    ...s,
+                    imageTaskId: jobId,
+                    ...(params.config.provider ? { imageTaskProvider: params.config.provider } : {}),
+                    imageTaskKind: "genImage" as const,
+                  }
+                : s
+            ),
+          }));
+        },
+        abortSignal,
+        { cosPrefix: "ai-script/generated" }
+      );
+      onUpdateShotField("imageTaskId", "");
+      // imageUrl 已经服务端 COS 转存，无需再转存
+      const finalUrl = result.imageUrl;
+      const names = config.referenceImageAssetNames ?? [];
+      const newName = `生成图${nextGenImgNumber(names)}`;
+      onUpdateVideoConfig({
+        referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), finalUrl],
+        referenceImageAssetNames: [...names, newName],
+      });
+
+      // 存入资产库（类型：生成，避免重复入库）
+      const refImgExists = episode.assets.some(
+        (a) => a.type === "generated" && a.imageUrl === finalUrl
+      );
+      let createdAsset: Asset | null = null;
+      if (!refImgExists) {
+        const assetName = `${episode.title || "未命名剧集"}-镜头${index + 1}-${newName}`;
+        const asset: Asset = {
+          ...emptyAsset(assetName, "generated"),
+          imageUrl: finalUrl,
+          status: "ready",
+          description: params.prompt,
+          shotId: shot.id,
+        };
+        createdAsset = asset;
+        onAddAsset(asset);
+        void recordMediaAsset({
+          mediaType: "image",
+          url: finalUrl,
+          entityType: "generated",
+          entityName: assetName,
+          prompt: params.prompt,
+          source: "generated",
+          seriesId: episode.seriesId,
+          seriesTitle: seriesTitle ?? "",
+          episodeId: episode.id,
+          episodeTitle: episode.title,
+        });
+      }
+      // DB 直写补丁：页面离开后组件已卸载，上面的 setState 链全部静默丢弃，
+      // 此处基于卸载前快照把参考图/资产/清 taskId 直写落库，保证图片不丢
+      const assetToAdd = createdAsset;
+      onPersistNow?.((ep) => ({
+        ...ep,
+        shots: ep.shots.map((s) => {
+          if (s.id !== shot.id) return s;
+          const vc = s.videoConfig ?? defaultVideoConfig;
+          const urls = vc.referenceImageAssetUrls ?? [];
+          const vcNames = vc.referenceImageAssetNames ?? [];
+          return {
+            ...s,
+            imageTaskId: "",
+            videoConfig: {
+              ...vc,
+              referenceImageAssetUrls: urls.includes(finalUrl) ? urls : [...urls, finalUrl],
+              referenceImageAssetNames: urls.includes(finalUrl) ? vcNames : [...vcNames, newName],
+            },
+          };
+        }),
+        assets:
+          assetToAdd && !ep.assets.some((a) => a.type === "generated" && a.imageUrl === finalUrl)
+            ? [...ep.assets, assetToAdd]
+            : ep.assets,
+      }));
+    } catch (e) {
+      const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      if (!isAborted) {
+        onUpdateShotField("imageTaskId", "");
+        showError(`图片生成失败：${(e as Error).message}`);
+      }
+    } finally {
+      setIsGeneratingImage(false);
+    }
+  }
+
   return (
-    <div className="relative z-0 flex flex-col rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:z-30 hover:shadow-md">
+    <div id={`shot-card-${shot.id}`} className="relative z-0 flex scroll-mt-20 flex-col rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow hover:z-30 hover:shadow-md">
       {/* 卡片头 */}
       <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className="inline-flex h-6 w-6 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+            title={collapsed ? "展开卡片" : "折叠卡片"}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className={`transition-transform ${collapsed ? "" : "rotate-90"}`}>
+              <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
           <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-100 text-xs font-semibold text-brand-700">
             {index + 1}
           </span>
@@ -2178,8 +2601,20 @@ function VideoCard({
               <span className="text-xs">{STATUS_LABEL[videoStatus] || "处理中…"}（约 1-5 分钟）</span>
             </div>
           </div>
+        ) : collapsed ? (
+          <div className="flex h-[294px] items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 text-slate-400">
+            <div className="flex flex-col items-center gap-1.5">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="2" />
+                <path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none" />
+              </svg>
+              <span className="text-xs">视频未生成</span>
+            </div>
+          </div>
         ) : null}
 
+        {!collapsed && (
+        <div className="flex flex-col gap-3">
         {/* 分镜信息（含画面描述等全部字段，可编辑并同步回分镜表） */}
         <div className="rounded-md border border-slate-200 bg-slate-50/40">
           <button
@@ -2220,41 +2655,31 @@ function VideoCard({
                   <EditableCell
                     value={shot.duration}
                     onChange={(v) => onUpdateShotField("duration", v)}
-                    placeholder="10-15秒"
+                    placeholder="如 8秒"
                     minWidth="100%"
                   />
                 </div>
                 {/* 景别 */}
                 <div>
                   <label className="mb-1 block text-[11px] text-slate-500">🎥 景别</label>
-                  <select
+                  <OptionCombobox
                     value={shot.shotType}
-                    onChange={(e) => onUpdateShotField("shotType", e.target.value)}
-                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 hover:border-brand-300 focus:border-brand-400 focus:outline-none"
-                  >
-                    <option value="">选择…</option>
-                    {SHOT_TYPES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => onUpdateShotField("shotType", v)}
+                    options={SHOT_TYPES}
+                    placeholder="选择或输入…"
+                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 hover:border-brand-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                  />
                 </div>
                 {/* 运镜 */}
                 <div>
                   <label className="mb-1 block text-[11px] text-slate-500">🎬 运镜</label>
-                  <select
+                  <OptionCombobox
                     value={shot.cameraMovement}
-                    onChange={(e) => onUpdateShotField("cameraMovement", e.target.value)}
-                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 hover:border-brand-300 focus:border-brand-400 focus:outline-none"
-                  >
-                    <option value="">选择…</option>
-                    {CAMERA_MOVES.map((t) => (
-                      <option key={t} value={t}>
-                        {t}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(v) => onUpdateShotField("cameraMovement", v)}
+                    options={CAMERA_MOVES}
+                    placeholder="选择或输入…"
+                    className="w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 hover:border-brand-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+                  />
                 </div>
               </div>
               {/* 光影氛围 */}
@@ -2292,6 +2717,27 @@ function VideoCard({
               </div>
             </div>
           )}
+        </div>
+
+        {/* 模型与生成模式（决定输入素材类型，置于卡片内便于切换首尾帧/多模态） */}
+        <div className="grid grid-cols-2 gap-2.5">
+          <label className="block">
+            <span className="mb-1 block text-[11px] text-slate-500">模型</span>
+            <ModelPicker
+              options={videoOptions}
+              provider={config.provider}
+              model={config.model}
+              onSelect={(p, m) => changeModel(p, m)}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[11px] text-slate-500">生成模式</span>
+            <Select
+              value={config.mode}
+              onChange={(v) => onUpdateVideoConfig({ mode: v as VideoGenerationMode })}
+              options={cap.modes.map((m) => ({ value: m, label: MODE_LABELS[m] }))}
+            />
+          </label>
         </div>
 
         {/* 输入素材（按生成模式动态显示：首帧/首尾帧/多模态参考各显其上传，文生视频整块隐藏） */}
@@ -2362,13 +2808,20 @@ function VideoCard({
                         <span className="text-[11px] text-slate-500">
                           参考图（{relatedAssets.filter((a) => a.imageUrl).length + (config.referenceImageAssetUrls?.length ?? 0)}）· 关联资产自动作为参考图
                         </span>
+                        <button
+                          type="button"
+                          disabled={!canLinkMentionedAssets}
+                          onClick={onLinkMentionedAssets}
+                          className={`rounded px-1.5 py-1 text-[11px] transition-colors ${
+                            canLinkMentionedAssets
+                              ? "text-brand-600 hover:bg-brand-50"
+                              : "cursor-not-allowed text-slate-400"
+                          }`}
+                        >
+                          一键关联
+                        </button>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {relatedAssets.length === 0 && (
-                          <span className="text-[11px] text-slate-400">
-                            画面描述中无 @标签，未关联任何资产
-                          </span>
-                        )}
                         {relatedAssets.map((a) => {
                           const hasVoice = a.type === "character" && characterVoiceNames.has(a.name.toLowerCase());
                           return (
@@ -2438,10 +2891,10 @@ function VideoCard({
                             </div>
                           );
                         })}
-                        {isGeneratingStoryboard && (
+                        {(isGeneratingStoryboard || isGeneratingImage) && (
                           <div
                             className="relative flex w-20 flex-col items-center gap-1 rounded-md border border-dashed border-brand-300 bg-brand-50/50 p-1"
-                            title="故事板生成中…"
+                            title="生成中…"
                           >
                             <div className="flex h-16 w-full items-center justify-center rounded bg-white/60">
                               <Spinner size={16} />
@@ -2458,6 +2911,7 @@ function VideoCard({
                           onPickAsset={() => setPickerTarget("refImage")}
                           onPickPreset={() => setPresetPickerTarget("refImage")}
                           onGenerateFromStoryboard={openStoryboardDialog}
+                          onGenerateImage={openGenerateImageDialog}
                         />
                       </div>
                       {relatedAssets.length > 0 && relatedAssets.every((a) => !a.description) && (
@@ -2564,160 +3018,6 @@ function VideoCard({
           </div>
         )}
 
-        {/* 视频参数（卡片级，按模型能力动态渲染） */}
-        <div className="rounded-md border border-slate-200 bg-slate-50/40">
-          <button
-            type="button"
-            onClick={() => setShowVideoConfig(!showVideoConfig)}
-            className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-black"
-          >
-            <span className="flex items-center gap-1.5">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={`transition-transform ${showVideoConfig ? "rotate-90" : ""}`}>
-                <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              ⚙️ 视频参数
-            </span>
-            <span className="flex items-center gap-1.5 text-[11px] text-slate-400">
-              <span className="truncate max-w-[140px]">{selectedVidOption?.entry.label ?? config.model}</span>
-              <span className="rounded bg-slate-200 px-1 py-0.5">{MODE_LABELS[config.mode]}</span>
-              <span>{config.resolution} · {config.duration === -1 ? "自动" : `${config.duration}s`}</span>
-            </span>
-          </button>
-          {showVideoConfig && (
-            <div className="space-y-2.5 border-t border-slate-200 px-3 py-3">
-              <div className="grid grid-cols-2 gap-2.5">
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-slate-500">模型</span>
-                  <ModelPicker
-                    options={videoOptions}
-                    provider={config.provider}
-                    model={config.model}
-                    onSelect={(p, m) => changeModel(p, m)}
-                  />
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-slate-500">生成模式</span>
-                  <select value={config.mode} onChange={(e) => onUpdateVideoConfig({ mode: e.target.value as VideoGenerationMode })} className="input">
-                    {cap.modes.map((m) => (
-                      <option key={m} value={m}>{MODE_LABELS[m]}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-slate-500">分辨率</span>
-                  <select value={config.resolution} onChange={(e) => onUpdateVideoConfig({ resolution: e.target.value as VideoResolution })} className="input">
-                    {cap.resolutions.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-[11px] text-slate-500">宽高比</span>
-                  <select value={config.ratio} onChange={(e) => onUpdateVideoConfig({ ratio: e.target.value as VideoRatio })} className="input">
-                    {cap.ratios.map((r) => (
-                      <option key={r} value={r}>{RATIO_LABELS[r]}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="col-span-2 block">
-                  <span className="mb-1 block text-[11px] text-slate-500">时长（秒）{cap.durationAuto && " · 支持自动"}</span>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      min={cap.durationRange[0]}
-                      max={cap.durationRange[1]}
-                      value={config.duration === -1 ? "" : config.duration}
-                      disabled={config.duration === -1}
-                      onChange={(e) => onUpdateVideoConfig({ duration: Number(e.target.value) })}
-                      className="input"
-                    />
-                    {cap.durationAuto && (
-                      <label className="flex items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
-                        <input
-                          type="checkbox"
-                          checked={config.duration === -1}
-                          onChange={(e) => onUpdateVideoConfig({ duration: e.target.checked ? -1 : cap.durationRange[0] })}
-                          className="h-3.5 w-3.5"
-                        />
-                        自动
-                      </label>
-                    )}
-                  </div>
-                </label>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4 pt-0.5">
-                {cap.watermark !== false && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <input type="checkbox" checked={config.watermark} onChange={(e) => onUpdateVideoConfig({ watermark: e.target.checked })} className="h-3.5 w-3.5" />
-                    水印
-                  </label>
-                )}
-                {cap.audio && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <input type="checkbox" checked={config.generateAudio} onChange={(e) => onUpdateVideoConfig({ generateAudio: e.target.checked })} className="h-3.5 w-3.5" />
-                    有声视频
-                  </label>
-                )}
-                {!cap.audio && config.generateAudio && (
-                  <span className="text-[11px] text-slate-400">当前模型不支持有声，已自动关闭</span>
-                )}
-              </div>
-
-              {/* 高级参数（种子/固定镜头/返回尾帧/联网搜索/优先级/样片） */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-0.5">
-                {cap.seed && (
-                  <label className="flex items-center gap-1 text-[11px] text-slate-600">
-                    <span>种子</span>
-                    <input
-                      type="number"
-                      value={config.seed < 0 ? "" : config.seed}
-                      onChange={(e) => onUpdateVideoConfig({ seed: e.target.value === "" ? -1 : Math.max(0, parseInt(e.target.value, 10) || 0) })}
-                      placeholder="随机"
-                      className="w-16 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
-                    />
-                  </label>
-                )}
-                {cap.cameraFixed && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <input type="checkbox" checked={config.cameraFixed} onChange={(e) => onUpdateVideoConfig({ cameraFixed: e.target.checked })} className="h-3.5 w-3.5" />
-                    固定镜头
-                  </label>
-                )}
-                <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                  <input type="checkbox" checked={config.returnLastFrame} onChange={(e) => onUpdateVideoConfig({ returnLastFrame: e.target.checked })} className="h-3.5 w-3.5" />
-                  返回尾帧
-                </label>
-                {cap.webSearch && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <input type="checkbox" checked={config.webSearch} onChange={(e) => onUpdateVideoConfig({ webSearch: e.target.checked })} className="h-3.5 w-3.5" />
-                    联网搜索
-                  </label>
-                )}
-                {cap.priority && (
-                  <label className="flex items-center gap-1 text-[11px] text-slate-600">
-                    <span>优先级</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={9}
-                      value={config.priority}
-                      onChange={(e) => onUpdateVideoConfig({ priority: Math.max(0, Math.min(9, parseInt(e.target.value, 10) || 0)) })}
-                      className="w-12 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
-                    />
-                  </label>
-                )}
-                {cap.draft && (
-                  <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
-                    <input type="checkbox" checked={config.draft} onChange={(e) => onUpdateVideoConfig({ draft: e.target.checked })} className="h-3.5 w-3.5" />
-                    样片模式
-                  </label>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-
         {/* 视频提示词 */}
         <div>
           <div className="mb-1 flex items-center justify-between text-xs font-semibold text-black">
@@ -2804,7 +3104,10 @@ function VideoCard({
           <Button
             size="sm"
             variant="primary"
-            onClick={onGenerateVideo}
+            onClick={async () => {
+              const ok = await onPrecheckVideo();
+              if (ok) setVideoConfigOpen(true);
+            }}
             disabled={!hasPrompt || isVideoBusy || !videoConfigured}
             loading={isGeneratingVideo}
             title={!videoConfigured ? "请先在设置中配置视频 API" : !hasPrompt ? "请先生成提示词" : ""}
@@ -2822,7 +3125,147 @@ function VideoCard({
             </span>
           )}
         </div>
+        </div>
+        )}
       </div>
+
+      <Modal
+        open={videoConfigOpen}
+        onClose={() => setVideoConfigOpen(false)}
+        title={`镜头 ${index + 1} · 视频生成参数`}
+        width="max-w-xl"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setVideoConfigOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              loading={isGeneratingVideo}
+              onClick={() => {
+                setVideoConfigOpen(false);
+                onGenerateVideo();
+              }}
+            >
+              确认生成
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2.5">
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-slate-500">分辨率</span>
+              <Select
+                value={config.resolution}
+                onChange={(v) => onUpdateVideoConfig({ resolution: v as VideoResolution })}
+                options={cap.resolutions.map((r) => ({ value: r, label: r }))}
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-[11px] text-slate-500">宽高比</span>
+              <Select
+                value={config.ratio}
+                onChange={(v) => onUpdateVideoConfig({ ratio: v as VideoRatio })}
+                options={cap.ratios.map((r) => ({ value: r, label: RATIO_LABELS[r] }))}
+              />
+            </label>
+            <label className="col-span-2 block">
+              <span className="mb-1 block text-[11px] text-slate-500">时长（秒）{cap.durationAuto && " · 支持自动"}</span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={cap.durationRange[0]}
+                  max={cap.durationRange[1]}
+                  value={config.duration === -1 ? "" : config.duration}
+                  disabled={config.duration === -1}
+                  onChange={(e) => onUpdateVideoConfig({ duration: Number(e.target.value) })}
+                  className="input"
+                />
+                {cap.durationAuto && (
+                  <label className="flex items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
+                    <input
+                      type="checkbox"
+                      checked={config.duration === -1}
+                      onChange={(e) => onUpdateVideoConfig({ duration: e.target.checked ? -1 : cap.durationRange[0] })}
+                      className="h-3.5 w-3.5"
+                    />
+                    自动
+                  </label>
+                )}
+              </div>
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 pt-0.5">
+            {cap.watermark !== false && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                <input type="checkbox" checked={config.watermark} onChange={(e) => onUpdateVideoConfig({ watermark: e.target.checked })} className="h-3.5 w-3.5" />
+                水印
+              </label>
+            )}
+            {cap.audio && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                <input type="checkbox" checked={config.generateAudio} onChange={(e) => onUpdateVideoConfig({ generateAudio: e.target.checked })} className="h-3.5 w-3.5" />
+                有声视频
+              </label>
+            )}
+            {!cap.audio && config.generateAudio && (
+              <span className="text-[11px] text-slate-400">当前模型不支持有声，已自动关闭</span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-0.5">
+            {cap.seed && (
+              <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                <span>种子</span>
+                <input
+                  type="number"
+                  value={config.seed < 0 ? "" : config.seed}
+                  onChange={(e) => onUpdateVideoConfig({ seed: e.target.value === "" ? -1 : Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                  placeholder="随机"
+                  className="w-16 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+                />
+              </label>
+            )}
+            {cap.cameraFixed && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                <input type="checkbox" checked={config.cameraFixed} onChange={(e) => onUpdateVideoConfig({ cameraFixed: e.target.checked })} className="h-3.5 w-3.5" />
+                固定镜头
+              </label>
+            )}
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+              <input type="checkbox" checked={config.returnLastFrame} onChange={(e) => onUpdateVideoConfig({ returnLastFrame: e.target.checked })} className="h-3.5 w-3.5" />
+              返回尾帧
+            </label>
+            {cap.webSearch && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                <input type="checkbox" checked={config.webSearch} onChange={(e) => onUpdateVideoConfig({ webSearch: e.target.checked })} className="h-3.5 w-3.5" />
+                联网搜索
+              </label>
+            )}
+            {cap.priority && (
+              <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                <span>优先级</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={9}
+                  value={config.priority}
+                  onChange={(e) => onUpdateVideoConfig({ priority: Math.max(0, Math.min(9, parseInt(e.target.value, 10) || 0)) })}
+                  className="w-12 rounded border border-slate-300 px-1 py-0.5 text-[11px]"
+                />
+              </label>
+            )}
+            {cap.draft && (
+              <label className="flex items-center gap-1.5 text-[11px] text-slate-600">
+                <input type="checkbox" checked={config.draft} onChange={(e) => onUpdateVideoConfig({ draft: e.target.checked })} className="h-3.5 w-3.5" />
+                样片模式
+              </label>
+            )}
+          </div>
+        </div>
+      </Modal>
 
       {pickerTarget && (
         <AssetPicker
@@ -3005,6 +3448,23 @@ function VideoCard({
             <span className="text-xs text-slate-500">使用默认故事板模板</span>
           </label>
         }
+      />
+
+      <ImageGenerationDialog
+        open={genImageOpen}
+        onClose={() => setGenImageOpen(false)}
+        initialPrompt={genImagePrompt}
+        initialConfig={genImageConfig}
+        images={genImageRefImages}
+        onImagesChange={setGenImageRefImages}
+        imageLabels={genImageRefImageLabels}
+        onImageLabelsChange={setGenImageRefImageLabels}
+        imageOptions={imageOptions}
+        title="生成图片"
+        confirmText="生成图片"
+        loading={isGeneratingImage}
+        onConfirm={handleGenerateImage}
+        enablePresetPrompt
       />
     </div>
   );

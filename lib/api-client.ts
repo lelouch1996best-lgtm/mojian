@@ -1,6 +1,6 @@
 /** 服务端 API 客户端 */
 
-import type { AssetLibraryItem, MediaAsset, MediaAssetInput, PresetItem, PresetTag } from "@/lib/types";
+import type { AssetLibraryItem, ImageTaskRecord, MediaAsset, MediaAssetInput, PresetItem, PresetTag, VoicePersona } from "@/lib/types";
 
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 
@@ -29,6 +29,15 @@ export const apiClient = {
     request<void>(`/data/episodes/${id}`, { method: "DELETE" }),
   getEpisodesBySeries: (seriesId: string) =>
     request<any[]>(`/data/episodes?seriesId=${encodeURIComponent(seriesId)}`),
+
+  // Musics
+  getMusic: (id: string) => request<any>(`/data/musics/${id}`),
+  listMusics: (seriesId: string) =>
+    request<any[]>(`/data/musics?seriesId=${encodeURIComponent(seriesId)}`),
+  saveMusic: (music: any) =>
+    request<any>("/data/musics", { method: "POST", body: JSON.stringify(music) }),
+  deleteMusic: (id: string) =>
+    request<void>(`/data/musics/${id}`, { method: "DELETE" }),
 
   // Series
   listSeries: () => request<any[]>("/data/series"),
@@ -68,6 +77,18 @@ export const apiClient = {
       body: JSON.stringify({ ids }),
     }),
 
+  // Voice Personas（Suno 歌手音色，全局共享）
+  listVoicePersonas: () => request<VoicePersona[]>("/data/voice-personas"),
+  saveVoicePersona: (vp: VoicePersona) =>
+    request<{ ok: boolean }>("/data/voice-personas", {
+      method: "POST",
+      body: JSON.stringify(vp),
+    }),
+  deleteVoicePersona: (id: string) =>
+    request<void>(`/data/voice-personas/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
   // Preset Library
   listPresets: () => request<PresetItem[]>("/data/presets"),
   savePreset: (p: PresetItem) =>
@@ -98,4 +119,27 @@ export const apiClient = {
     }),
   deletePresetTag: (id: string) =>
     request<void>(`/data/preset-tags/${id}`, { method: "DELETE" }),
+
+  // Image Tasks（服务端图片任务中心）
+  getImageTasks: (ids: string[]) =>
+    request<{ tasks: ImageTaskRecord[] }>(
+      `/image-tasks?ids=${encodeURIComponent(ids.join(","))}`
+    ),
+  attachImageTask: (input: {
+    jobId: string;
+    provider: string;
+    apiKey: string;
+    baseURL: string;
+    model?: string;
+    cosPrefix?: string;
+  }) =>
+    request<{ task: ImageTaskRecord }>("/image-tasks", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  retryImageTask: (jobId: string) =>
+    request<{ task: ImageTaskRecord }>(
+      `/image-tasks/${encodeURIComponent(jobId)}/retry`,
+      { method: "POST" }
+    ),
 };

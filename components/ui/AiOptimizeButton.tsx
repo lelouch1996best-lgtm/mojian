@@ -19,10 +19,12 @@ export default function AiOptimizeButton({
   className = "",
 }: AiOptimizeButtonProps) {
   const [optimizing, setOptimizing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleOptimize() {
     if (!text.trim()) return;
+    setError(null);
     setOptimizing(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -37,7 +39,7 @@ export default function AiOptimizeButton({
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        // silently fail, user can retry
+        setError(e instanceof Error ? e.message : "优化失败，请重试");
       }
     } finally {
       setOptimizing(false);
@@ -49,47 +51,49 @@ export default function AiOptimizeButton({
     abortRef.current?.abort();
   }
 
-  if (optimizing) {
-    return (
-      <div className={`inline-flex items-center gap-1 ${className}`}>
+  return (
+    <div className={`inline-flex flex-col items-start ${className}`}>
+      {optimizing ? (
         <Button variant="ghost" size="sm" onClick={handleStop}>
           停止优化
         </Button>
-      </div>
-    );
-  }
-
-  return (
-    <Button
-      variant="ghost"
-      size="sm"
-      onClick={handleOptimize}
-      disabled={disabled || !text.trim()}
-      className={className}
-    >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        className="mr-0.5"
-      >
-        <path
-          d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09z"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M18.259 8.715L18 9.75l-.259-1.035a2.5 2.5 0 0 0-1.456-1.456L15.25 7l1.035-.259a2.5 2.5 0 0 0 1.456-1.456L18 4.25l.259 1.035a2.5 2.5 0 0 0 1.456 1.456L20.75 7l-1.035.259a2.5 2.5 0 0 0-1.456 1.456z"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-      AI 优化
-    </Button>
+      ) : (
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={handleOptimize}
+          disabled={disabled || !text.trim()}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            className="mr-0.5"
+          >
+            <path
+              d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09z"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d="M18.259 8.715L18 9.75l-.259-1.035a2.5 2.5 0 0 0-1.456-1.456L15.25 7l1.035-.259a2.5 2.5 0 0 0 1.456-1.456L18 4.25l.259 1.035a2.5 2.5 0 0 0 1.456 1.456L20.75 7l-1.035.259a2.5 2.5 0 0 0-1.456 1.456z"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          AI 优化
+        </Button>
+      )}
+      {error && (
+        <span className="mt-0.5 max-w-[16rem] truncate text-xs text-red-500" title={error}>
+          {error}
+        </span>
+      )}
+    </div>
   );
 }

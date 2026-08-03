@@ -51,6 +51,23 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_episodes_series_id ON episodes(series_id);
 
+    CREATE TABLE IF NOT EXISTS musics (
+      id           TEXT PRIMARY KEY,
+      series_id    TEXT NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+      title        TEXT NOT NULL DEFAULT '',
+      mode         TEXT NOT NULL DEFAULT 'inspiration',
+      status       TEXT NOT NULL DEFAULT 'idle',
+      error        TEXT,
+      params       TEXT NOT NULL DEFAULT '{}',
+      source       TEXT,
+      suno_task_id TEXT,
+      tracks       TEXT NOT NULL DEFAULT '[]',
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_musics_created_at ON musics(created_at);
+    CREATE INDEX IF NOT EXISTS idx_musics_series_id ON musics(series_id);
+
     CREATE TABLE IF NOT EXISTS settings (
       key        TEXT PRIMARY KEY,
       value      TEXT NOT NULL DEFAULT '',
@@ -77,6 +94,21 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_media_assets_media_type ON media_assets(media_type);
     CREATE INDEX IF NOT EXISTS idx_media_assets_entity_type ON media_assets(entity_type);
 
+    CREATE TABLE IF NOT EXISTS voice_personas (
+      id               TEXT PRIMARY KEY,
+      name             TEXT NOT NULL DEFAULT '',
+      persona_id       TEXT,
+      source_type      TEXT NOT NULL DEFAULT 'upload',
+      source_audio_url TEXT NOT NULL DEFAULT '',
+      description      TEXT,
+      status           TEXT NOT NULL DEFAULT 'idle',
+      error            TEXT,
+      suno_task_id     TEXT,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_personas_created_at ON voice_personas(created_at DESC);
+
     CREATE TABLE IF NOT EXISTS presets (
       id         TEXT PRIMARY KEY,
       name       TEXT NOT NULL DEFAULT '',
@@ -95,6 +127,25 @@ export function getDb(): Database.Database {
       name       TEXT NOT NULL UNIQUE,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS image_tasks (
+      job_id       TEXT PRIMARY KEY,
+      provider     TEXT NOT NULL,
+      api_key      TEXT NOT NULL DEFAULT '',
+      base_url     TEXT NOT NULL DEFAULT '',
+      model        TEXT NOT NULL DEFAULT '',
+      cos_prefix   TEXT NOT NULL DEFAULT 'ai-script/assets',
+      status       TEXT NOT NULL,
+      image_url    TEXT,
+      upstream_url TEXT,
+      error        TEXT,
+      fail_count   INTEGER NOT NULL DEFAULT 0,
+      created_at   INTEGER NOT NULL,
+      updated_at   INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_image_tasks_status ON image_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_image_tasks_created_at ON image_tasks(created_at);
   `);
 
   return db;

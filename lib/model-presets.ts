@@ -5,7 +5,7 @@
  * 自定义列表保存在服务端，读取时优先使用自定义列表，未自定义则 fallback 默认列表。
  */
 
-import type { LLMSettings, ImageGenSettings, VideoGenSettings, AudioGenSettings, AudioModelCapability } from "./types";
+import type { LLMSettings, ImageGenSettings, VideoGenSettings, AudioGenSettings, AudioModelCapability, MusicGenSettings } from "./types";
 import type {
   ShotVideoConfig,
   VideoGenerationMode,
@@ -103,6 +103,9 @@ export const DEFAULT_LLM_MODELS: Record<LLMSettings["provider"], ModelEntry[]> =
     { value: "minimax-m3", label: "MiniMax M3", hint: "进阶，512K 上下文" },
     { value: "kimi-k2.6", label: "Kimi K2.6", hint: "进阶，256K 上下文" },
     { value: "kimi-k2.7-code", label: "Kimi K2.7 Code", hint: "进阶，编程场景" },
+  ],
+  apimart: [
+    { value: "gpt-5", label: "GPT-5", isDefault: true },
   ],
   custom: [],
 };
@@ -408,6 +411,30 @@ export const DEFAULT_VIDEO_MODELS: Record<VideoGenSettings["provider"], ModelEnt
         returnLastFrame: false, watermark: false,
       },
     },
+    {
+      value: "MiniMax-H3", label: "MiniMax-H3（APIMart）",
+      hint: "APIMart MiniMax-H3，2K 直出带音轨，文生/图生/首尾帧/多模态参考，4-15s",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+        resolutions: ["2K"],
+        ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+        durationRange: [4, 15], durationAuto: false, audio: true, draft: false,
+        seed: false, cameraFixed: false, webSearch: false, priority: false,
+        returnLastFrame: false, watermark: true,
+      },
+    },
+    {
+      value: "wan2.7", label: "Wan2.7（APIMart）",
+      hint: "阿里云万相 2.7，文生/图生/首尾帧，720P/1080P，2-15s，支持种子与水印",
+      videoCapability: {
+        modes: ["text2video", "first-frame", "first-last-frame"],
+        resolutions: ["720P", "1080P"],
+        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        durationRange: [2, 15], durationAuto: false, audio: false, draft: false,
+        seed: true, cameraFixed: false, webSearch: false, priority: false,
+        returnLastFrame: false, watermark: true,
+      },
+    },
   ],
   custom: [],
 };
@@ -437,6 +464,14 @@ export const DEFAULT_AUDIO_MODELS: Record<AudioGenSettings["provider"], ModelEnt
         supportsPresetVoice: false, supportsVoiceDesign: false, supportsVoiceClone: true, supportsSinging: false,
       },
     },
+  ],
+  custom: [],
+};
+
+/** 音乐生成模型默认（按供应商） */
+export const DEFAULT_MUSIC_MODELS: Record<MusicGenSettings["provider"], ModelEntry[]> = {
+  apimart: [
+    { value: "suno", label: "Suno", isDefault: true },
   ],
   custom: [],
 };
@@ -781,6 +816,36 @@ export const VIDEO_MODEL_CAPABILITIES: Record<string, VideoModelCapability> = {
     returnLastFrame: false,
     watermark: false,
   },
+  "MiniMax-H3": {
+    modes: ["text2video", "first-frame", "first-last-frame", "multimodal-ref"],
+    resolutions: ["2K"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "adaptive"],
+    durationRange: [4, 15],
+    durationAuto: false,
+    audio: true,
+    draft: false,
+    seed: false,
+    cameraFixed: false,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: false,
+    watermark: true,
+  },
+  "wan2.7": {
+    modes: ["text2video", "first-frame", "first-last-frame"],
+    resolutions: ["720P", "1080P"],
+    ratios: ["16:9", "9:16", "1:1", "4:3", "3:4"],
+    durationRange: [2, 15],
+    durationAuto: false,
+    audio: false,
+    draft: false,
+    seed: true,
+    cameraFixed: false,
+    webSearch: false,
+    priority: false,
+    returnLastFrame: false,
+    watermark: true,
+  },
 };
 
 /** 未知/用户自定义模型的保守回退（1.0 Pro 级能力，无多模态/有声） */
@@ -1035,6 +1100,37 @@ export async function refreshBuiltInAudioModels(provider: AudioGenSettings["prov
 /** 纯 model value 数组 */
 export async function getAudioModelValues(provider: AudioGenSettings["provider"]): Promise<string[]> {
   const models = await getAudioModels(provider);
+  return models.map((m) => m.value);
+}
+
+// ---- 音乐 ----
+
+export async function getMusicModels(provider: MusicGenSettings["provider"]): Promise<ModelEntry[]> {
+  try {
+    const all = await apiClient.getSetting<Record<string, ModelEntry[]>>("models_music");
+    const custom = all?.[provider];
+    if (custom && custom.length > 0) return custom;
+  } catch { /* fall through */ }
+  return DEFAULT_MUSIC_MODELS[provider] ?? [];
+}
+
+export async function saveMusicModels(provider: MusicGenSettings["provider"], models: ModelEntry[]): Promise<void> {
+  let all: Record<string, ModelEntry[]> = {};
+  try { all = (await apiClient.getSetting<Record<string, ModelEntry[]>>("models_music")) ?? {}; } catch { /* empty */ }
+  all[provider] = models;
+  await apiClient.saveSetting("models_music", all);
+}
+
+export async function refreshBuiltInMusicModels(provider: MusicGenSettings["provider"]): Promise<ModelEntry[]> {
+  const current = await getMusicModels(provider);
+  const merged = mergeWithBuiltIn(DEFAULT_MUSIC_MODELS[provider] ?? [], current);
+  await saveMusicModels(provider, merged);
+  return merged;
+}
+
+/** 纯 model value 数组 */
+export async function getMusicModelValues(provider: MusicGenSettings["provider"]): Promise<string[]> {
+  const models = await getMusicModels(provider);
   return models.map((m) => m.value);
 }
 

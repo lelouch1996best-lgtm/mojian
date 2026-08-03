@@ -60,6 +60,13 @@ export const PROVIDER_PRESETS: Record<LLMSettings["provider"], ProviderPreset> =
     keyPrefix: "ark-",
     hint: "Agent Plan 订阅套餐，使用专属 Base URL 和专属 API Key（与标准方舟 Key 不同）。前往 console.volcengine.com/ark 订阅 Agent Plan 后获取专属 Key。兼容 OpenAI 格式，按套餐额度消费。",
   },
+  apimart: {
+    baseURL: "https://api.apimart.ai/v1",
+    model: "gpt-5",
+    label: "APIMart",
+    keyPrefix: "sk-",
+    hint: "APIMart 聚合对话 API，兼容 OpenAI 格式，通过 model 参数可调用所有支持的文本生成模型。前往 apimart.ai/keys 获取 API Key。",
+  },
   custom: { baseURL: "", model: "", label: "自定义" },
 };
 

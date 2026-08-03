@@ -7,6 +7,7 @@ export interface LLMSettings {
     | "mimo-plan" // 小米 MiMo Token Plan 套餐
     | "ark" // 火山方舟（豆包 Doubao）
     | "ark-agent-plan" // 火山方舟 Agent Plan（订阅套餐）
+    | "apimart" // APIMart 聚合对话 API
     | "custom";
   baseURL: string; // 例: https://api.deepseek.com/v1
   apiKey: string;
@@ -191,7 +192,7 @@ export interface StyleSettings {
 /** 分镜表单行 —— 进号不存储，由数组下标 +1 派生 */
 export interface Shot {
   id: string; // uuid，重排/删除时保持引用稳定
-  duration: string; // 时长（可编辑）- "10-15秒"
+  duration: string; // 时长（可编辑）- 如 "8秒"
   visualDescription: string; // 画面描述（可编辑）
   shotType: string; // 景别（可编辑）— 特写/近景/中景/全景/远景
   lightingMood: string; // 光影氛围（可编辑）
@@ -216,10 +217,12 @@ export interface Shot {
   imageTaskId?: string;
   /** 创建该故事板图片任务时使用的供应商（恢复轮询时按此选择凭证；旧数据缺省时回退当前设置） */
   imageTaskProvider?: ImageGenSettings["provider"];
+  /** 该图片任务的类型（恢复轮询时按此区分完成处理：storyboard 写故事板+入库；genImage 仅加入参考图；旧数据缺省视为 storyboard） */
+  imageTaskKind?: "storyboard" | "genImage";
 }
 
 /** 资产类型 */
-export type AssetType = "character" | "scene" | "object" | "screenshot" | "storyboard";
+export type AssetType = "character" | "scene" | "object" | "screenshot" | "storyboard" | "generated";
 
 /** 资产生成状态 */
 export type AssetStatus = "pending" | "ready" | "failed";
@@ -353,6 +356,8 @@ export interface ImageProxyRequest {
   quality?: string;
   /** 异步模式（供应商支持轮询时，前端设为 true，路由返回 jobId 而非 imageUrl） */
   asyncMode?: boolean;
+  /** 异步任务完成后的 COS 转存 key 前缀（服务端任务中心使用），默认 ai-script/assets */
+  cosPrefix?: string;
 }
 
 /** /api/image 非流式响应 */
@@ -390,6 +395,25 @@ export interface ImageQueryProxyResponse {
   error?: string;
 }
 
+/** 服务端 image_tasks 表记录（API 响应层已脱敏，不含 api_key） */
+export interface ImageTaskRecord {
+  jobId: string;
+  provider: ImageGenSettings["provider"];
+  baseURL: string;
+  model: string;
+  cosPrefix: string;
+  status: ImageTaskStatus;
+  /** 最终结果 URL（done 状态；COS 转存成功则为 COS URL，否则为上游原始 URL） */
+  imageUrl?: string;
+  /** 上游原始图片 URL */
+  upstreamUrl?: string;
+  error?: string;
+  failCount: number;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
 /** 腾讯云 COS 配置 */
 export interface CosSettings {
   secretId: string;
@@ -417,7 +441,7 @@ export type VideoGenerationMode =
   | "first-last-frame" // 图生视频-首尾帧
   | "multimodal-ref"; // 多模态参考生视频（仅 2.0）
 
-export type VideoResolution = "480p" | "720p" | "1080p" | "4k";
+export type VideoResolution = "480p" | "720p" | "1080p" | "4k" | "2K" | "720P" | "1080P";
 export type VideoRatio = "16:9" | "4:3" | "1:1" | "3:4" | "9:16" | "21:9" | "adaptive" | "3:2" | "2:3";
 
 /** 单个镜头的视频生成配置（卡片级，覆盖硬编码默认） */
@@ -505,6 +529,140 @@ export interface VoiceGenResult {
   voiceId: string;
 }
 
+/** 音乐生成 API 配置（多供应商） */
+export interface MusicGenSettings {
+  provider: "apimart" | "custom";
+  apiKey: string;
+  baseURL: string; // https://api.apib.ai/v1
+  model: string; // suno
+}
+
+/** 音乐生成模式 */
+export type MusicMode = "inspiration" | "custom" | "remix";
+
+/** 音乐生成状态 */
+export type MusicStatus = "idle" | "pending" | "completed" | "failed";
+
+/** 音乐模型版本 */
+export type MusicVersion =
+  | "v3.5"
+  | "v4"
+  | "v4.5"
+  | "v4.5+"
+  | "v4.5-all"
+  | "v5"
+  | "v5.5";
+
+/** 单个模式的生成参数（并集；各模式仅使用自身相关字段）
+ *  - 灵感模式：用 `prompt`（灵感提示词）
+ *  - 自定义 / 二次创作：用 `lyrics`（歌词）
+ */
+export interface MusicModeParams {
+  prompt?: string; // 灵感提示词（灵感模式）
+  lyrics?: string; // 歌词（自定义 / 二次创作）
+  tags?: string; // 风格标签
+  negativeTags?: string;
+  title?: string;
+  instrumental?: boolean; // 是否纯音乐
+  vocalGender?: "m" | "f";
+  styleWeight?: number; // 0-1
+  weirdnessConstraint?: number; // 0-1
+  audioWeight?: number; // 0-1
+  /** 对输入歌词进行二次创作（custom / inspo 生效） */
+  autoLyrics?: boolean;
+  /** Persona 风格 id（仅 custom 生效） */
+  personaId?: string;
+  version: MusicVersion;
+}
+
+/** 音乐生成参数 -- 三种模式各自独立存储，切换模式互不污染 */
+export interface MusicParams {
+  inspiration: MusicModeParams;
+  custom: MusicModeParams;
+  remix: MusicModeParams;
+}
+
+/** 二次创作源 */
+export interface MusicSource {
+  type: "asset" | "url" | "upload";
+  assetId?: string;
+  url?: string;
+  fileName?: string;
+  sunoTaskId?: string;
+  audioIndex?: number;
+}
+
+/** 单个音乐音轨（audioUrl/coverUrl 为 COS 持久地址） */
+export interface MusicTrack {
+  audioIndex: number;
+  title: string;
+  audioUrl: string;
+  coverUrl?: string;
+  duration?: number;
+  lyrics?: string;
+  tags?: string;
+}
+
+/** 音乐记录 */
+export interface Music {
+  id: string;
+  seriesId: string; // 所属系列 ID
+  title: string;
+  mode: MusicMode;
+  status: MusicStatus;
+  error?: string;
+  params: MusicParams;
+  source?: MusicSource;
+  sunoTaskId?: string;
+  tracks: MusicTrack[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 前端发给 /api/music/create 的请求体 */
+export interface MusicCreateProxyRequest {
+  action: "generate" | "inspo" | "lyrics" | "createVoice";
+  baseURL: string;
+  apiKey: string;
+  /** 完整的上游请求体（前端构造，直接透传） */
+  payload: Record<string, unknown>;
+}
+
+/** /api/music/create 响应 */
+export interface MusicCreateProxyResponse {
+  taskId: string;
+}
+
+/** 前端发给 /api/music/query 的请求体 */
+export interface MusicQueryProxyRequest {
+  baseURL: string;
+  apiKey: string;
+  taskId: string;
+}
+
+/** /api/music/query 响应 */
+export interface MusicQueryProxyResponse {
+  status: "pending" | "completed" | "failed";
+  progress?: number;
+  music?: Array<{
+    audioId?: string;
+    title?: string;
+    duration?: number;
+    lyrics?: string;
+    tags?: string;
+    audioUrl?: string;
+    imageUrl?: string;
+    videoUrl?: string;
+  }>;
+  lyrics?: string;
+  lyricsTitle?: string;
+  lyricsTags?: string;
+  /** createVoice 任务完成后的 persona_id */
+  personaId?: string;
+  error?: string;
+  rawResult?: unknown;
+}
+
 /** Seedance API content 数组项 */
 export interface VideoContentItem {
   type: "text" | "image_url" | "video_url" | "audio_url";
@@ -546,6 +704,8 @@ export interface VideoApimartUpstreamPayload {
   seed?: number;
   generate_audio?: boolean;
   return_last_frame?: boolean;
+  /** 是否添加 AIGC 水印（MiniMax-H3 支持） */
+  watermark?: boolean;
   tools?: Array<{ type: "web_search" }>;
   /** 参考图片 URL 数组（图生视频，与 image_with_roles 互斥） */
   image_urls?: string[];
@@ -594,7 +754,7 @@ export interface VideoQueryProxyResponse {
 export interface AssetLibraryItem {
   /** 唯一键，由来源派生（如 `asset-{epId}-{assetId}`） */
   id: string;
-  mediaType: "image" | "video" | "audio";
+  mediaType: "image" | "video" | "audio" | "music" | "voice";
   /** 图片/视频 URL（COS 持久 URL） */
   url: string;
   seriesId: string;
@@ -615,12 +775,12 @@ export interface AssetLibraryItem {
 /** 媒体资产记录（独立账本，与 series/episodes 无外键关联） */
 export interface MediaAsset {
   id: string;
-  mediaType: "image" | "video" | "audio";
+  mediaType: "image" | "video" | "audio" | "music" | "voice";
   url: string;
-  entityType: "character" | "scene" | "object" | "shot" | "screenshot" | "storyboard" | "other";
+  entityType: "character" | "scene" | "object" | "shot" | "screenshot" | "storyboard" | "generated" | "music" | "voicePersona" | "other";
   entityName: string;
   prompt: string;
-  source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene" | "manual" | "screenshot";
+  source: "asset" | "shot" | "profile-character" | "profile-object" | "profile-scene" | "manual" | "screenshot" | "generated" | "music" | "voicePersona";
   /** 来源企划 ID（纯文本标注，非外键） */
   seriesId: string;
   seriesTitle: string;
@@ -643,6 +803,35 @@ export interface MediaAssetInput {
   seriesTitle?: string;
   episodeId?: string;
   episodeTitle?: string;
+}
+
+/** Suno 歌手音色来源类型 */
+export type VoicePersonaSourceType = "upload" | "tts" | "url";
+
+/** Suno 歌手音色状态 */
+export type VoicePersonaStatus = "idle" | "pending" | "completed" | "failed";
+
+/** Suno 歌手音色（全局共享，不绑定企划） */
+export interface VoicePersona {
+  id: string;
+  /** 用户自定义名称 */
+  name: string;
+  /** Suno 返回的 persona_id，用于音乐生成 */
+  personaId: string;
+  /** 创建方式 */
+  sourceType: VoicePersonaSourceType;
+  /** 创建音色所用的源音频 URL（可播放预览） */
+  sourceAudioUrl: string;
+  /** TTS 模式的音色描述 */
+  description?: string;
+  /** 创建状态 */
+  status: VoicePersonaStatus;
+  /** 失败原因 */
+  error?: string;
+  /** Suno 任务 ID（用于断点轮询恢复） */
+  sunoTaskId?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** 预设库资源类型 */

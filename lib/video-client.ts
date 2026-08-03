@@ -227,6 +227,16 @@ export function isGrokVideoModel(model: string): boolean {
   return model === "grok-imagine-1.5-video-apimart" || model === "grok-imagine-1.5-video-ext";
 }
 
+/** 判断是否为 APIMart MiniMax-H3 视频模型 */
+export function isMinimaxH3VideoModel(model: string): boolean {
+  return model === "MiniMax-H3";
+}
+
+/** 判断是否为 APIMart wan2.7 视频模型 */
+export function isWan27VideoModel(model: string): boolean {
+  return model === "wan2.7";
+}
+
 /**
  * 构造发送给视频生成 API 的完整请求体（按 provider 选择 ark content[] 或 APIMart 扁平结构）
  */
@@ -245,8 +255,10 @@ export function buildVideoUpstreamPayload(params: {
   // ---- APIMart：扁平结构，size=宽高比，image_with_roles/image_urls/video_urls/audio_urls ----
   if (provider === "apimart") {
     const isGrok = isGrokVideoModel(config.model);
+    const isH3 = isMinimaxH3VideoModel(config.model);
+    const isWan27 = isWan27VideoModel(config.model);
     const p: VideoApimartUpstreamPayload = { model: config.model, prompt, size: config.ratio };
-    // 分辨率/质量：Grok 用 quality（480p/720p），Seedance 用 resolution
+    // 分辨率/质量：Grok 用 quality（480p/720p），Seedance/MiniMax-H3/wan2.7 用 resolution
     if (isGrok) {
       if (config.resolution) p.quality = config.resolution;
     } else {
@@ -254,10 +266,13 @@ export function buildVideoUpstreamPayload(params: {
     }
     // APIMart 无 duration=-1 自动档：-1 时省略，用上游默认
     if (typeof config.duration === "number" && config.duration !== -1) p.duration = config.duration;
-    if (typeof config.generateAudio === "boolean") p.generate_audio = config.generateAudio;
+    // generate_audio / return_last_frame 仅 Seedance 系列支持；wan2.7 无此参数，发送会被忽略故省略
+    if (!isWan27 && typeof config.generateAudio === "boolean") p.generate_audio = config.generateAudio;
     if (typeof config.seed === "number" && config.seed !== -1) p.seed = config.seed;
-    if (typeof config.returnLastFrame === "boolean") p.return_last_frame = config.returnLastFrame;
+    if (!isWan27 && typeof config.returnLastFrame === "boolean") p.return_last_frame = config.returnLastFrame;
     if (config.webSearch) p.tools = [{ type: "web_search" }];
+    // MiniMax-H3 / wan2.7 支持 AIGC 水印（其余 APIMart 视频模型不支持）
+    if ((isH3 || isWan27) && typeof config.watermark === "boolean") p.watermark = config.watermark;
     if (config.mode === "first-frame" && params.firstFrameUrl) {
       // Grok 图生视频用普通 image_urls（不支持角色）；Seedance 用 image_with_roles
       if (isGrok) {

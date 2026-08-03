@@ -6,6 +6,7 @@ import type {
   ImageAsyncCreateResponse,
   ImageQueryProxyRequest,
   ImageQueryProxyResponse,
+  ImageTaskRecord,
   ImageTaskStatus,
   ProviderCache,
   ProviderCacheEntry,
@@ -224,13 +225,15 @@ export async function getAllConfiguredImageModels(): Promise<ModelOption[]> {
 
 /**
  * 调用图片生成 API。
- * - 支持轮询的模型（cap.supportsPolling）：异步创建任务 → 立即回调 onJobCreated 持久化 jobId → 轮询至完成
+ * - 支持轮询的模型（cap.supportsPolling）：异步创建任务 → 立即回调 onJobCreated 持久化 jobId →
+ *   订阅服务端任务中心至完成（服务端负责轮询上游，前端取消订阅不影响任务本身）
  * - 不支持轮询的模型：同步等待上游返回（最多 5 分钟）
  * @param prompt 图片生成提示词
  * @param config 卡片级图片生成配置（尺寸/格式/水印等，含所选模型供应商 provider），缺省时使用 DEFAULT_ASSET_IMAGE_CONFIG
  * @param images 参考图列表（URL 或 base64 data URI），用于单图/多图生图
- * @param onJobCreated 异步任务创建后的回调（收到 jobId 后可持久化，用于刷新页面恢复轮询）
- * @param signal AbortSignal，用于取消轮询（切页/卸载时传入，避免孤儿轮询与恢复轮询产生重复）
+ * @param onJobCreated 异步任务创建后的回调（收到 jobId 后可持久化，用于刷新页面恢复订阅）
+ * @param signal AbortSignal，用于取消订阅（切页/卸载时传入；仅停止前端等待，服务端任务继续）
+ * @param options.cosPrefix 任务完成后服务端 COS 转存的 key 前缀（默认 ai-script/assets）
  * @returns ImageProxyResponse，imageUrl 可能是 URL 或 data URI
  */
 export async function generateImage(
@@ -238,7 +241,8 @@ export async function generateImage(
   config?: Partial<AssetImageConfig>,
   images?: string[],
   onJobCreated?: (jobId: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options?: { cosPrefix?: string }
 ): Promise<ImageProxyResponse> {
   const cfg = { ...DEFAULT_ASSET_IMAGE_CONFIG, ...config };
   // 未选择模型（且无任何已配置供应商可回退）时，明确提示先配置，避免发出空 model 的请求
@@ -276,14 +280,17 @@ export async function generateImage(
     body.images = images;
   }
 
-  // 支持轮询的模型：异步创建 + 轮询
+  // 支持轮询的模型：异步创建 + 订阅服务端任务中心
   if (cap.supportsPolling) {
     body.asyncMode = true;
+    if (options?.cosPrefix) body.cosPrefix = options.cosPrefix;
+    // 提交请求故意不绑定组件 signal：提交是秒级操作，且服务端在响应前已把任务
+    // 注册进任务中心。若绑定 signal，切页时 fetch 被取消会导致上游任务已创建
+    // 但 jobId 永远丢失（任务无人认领）。
     const createRes = await fetch("/api/image", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal,
     });
     if (!createRes.ok) {
       let msg = `HTTP ${createRes.status}`;
@@ -294,14 +301,11 @@ export async function generateImage(
       throw new Error(msg);
     }
     const created = (await createRes.json()) as ImageAsyncCreateResponse;
-    // 立即回调，让调用方持久化 jobId（刷新页面后可恢复轮询）
+    // 立即回调，让调用方持久化 jobId（刷新页面后可恢复订阅）
     onJobCreated?.(created.jobId);
-    // 轮询至完成（传入 signal，切页/卸载时取消轮询，保留 jobId 供恢复）
-    const final = await pollImageTask(created.jobId, creds.apiKey, creds.baseURL, undefined, 3000, 5 * 60 * 1000, signal, creds.provider);
-    if (final.status === "done" && final.imageUrl) {
-      return { imageUrl: final.imageUrl, model };
-    }
-    throw new Error(final.error || "图片生成失败");
+    // 订阅服务端任务中心至完成（signal 仅取消前端等待，服务端任务继续，jobId 保留供恢复）
+    const final = await waitImageTask(created.jobId, signal);
+    return { imageUrl: final.imageUrl, model };
   }
 
   // 不支持轮询的模型：同步等待
@@ -405,29 +409,110 @@ export async function pollImageTask(
   return { status: "expired", error: "轮询超时" };
 }
 
+const WAIT_TASK_INTERVAL_MS = 3000;
+/** 前端订阅上限（大于服务端 30 分钟硬超时；服务端 expired 会先触发自动重试） */
+const WAIT_TASK_TIMEOUT_MS = 35 * 60 * 1000;
+
+function waitInterruptible(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(t);
+      resolve();
+    }, { once: true });
+  });
+}
+
 /**
- * 恢复图片生成轮询（页面刷新后，对已创建但未完成的任务恢复轮询）。
+ * 订阅服务端图片任务中心的任务状态直到终态。
+ * - 仅服务端明确返回 failed / expired（自动重试一次后仍 expired）才抛错；
+ *   本地 API 瞬态失败（服务重启/抖动）不计终态，下一轮继续。
+ * - signal abort 时抛 "已取消"：仅停止前端等待，服务端任务继续，jobId 保留供恢复。
+ */
+export async function waitImageTask(
+  jobId: string,
+  signal?: AbortSignal,
+  onUpdate?: (task: ImageTaskRecord) => void
+): Promise<ImageProxyResponse> {
+  const start = Date.now();
+  let expiredRetried = false;
+  let missingCount = 0;
+  while (Date.now() - start < WAIT_TASK_TIMEOUT_MS) {
+    if (signal?.aborted) throw new Error("已取消");
+    let task: ImageTaskRecord | undefined;
+    try {
+      const { tasks } = await apiClient.getImageTasks([jobId]);
+      task = tasks[0];
+    } catch {
+      await waitInterruptible(WAIT_TASK_INTERVAL_MS, signal);
+      continue;
+    }
+    if (!task) {
+      missingCount += 1;
+      if (missingCount >= 20) throw new Error("任务记录不存在或已过期清理");
+      await waitInterruptible(WAIT_TASK_INTERVAL_MS, signal);
+      continue;
+    }
+    missingCount = 0;
+    onUpdate?.(task);
+    if (task.status === "done" && task.imageUrl) {
+      return { imageUrl: task.imageUrl };
+    }
+    if (task.status === "failed") {
+      throw new Error(task.error || "图片生成失败");
+    }
+    if (task.status === "expired") {
+      if (!expiredRetried) {
+        expiredRetried = true;
+        try {
+          await apiClient.retryImageTask(jobId);
+        } catch { /* ignore */ }
+        await waitInterruptible(WAIT_TASK_INTERVAL_MS, signal);
+        continue;
+      }
+      throw new Error(task.error || "图片生成超时");
+    }
+    await waitInterruptible(WAIT_TASK_INTERVAL_MS, signal);
+  }
+  throw new Error("等待图片任务超时");
+}
+
+/**
+ * 恢复图片任务订阅（页面刷新/切页后，对已创建但未完成的任务恢复等待）。
+ * attach 到服务端任务中心（幂等：已注册为空操作，未注册则登记并由服务端接管轮询），
+ * 随后订阅至终态。任务已完成时直接返回结果。
  * @param jobId 已持久化的任务 ID
  * @param provider 创建该任务时使用的供应商（按此解析凭证，支持跨供应商恢复；缺省回退当前激活供应商）
  * @param onUpdate 状态回调（可选）
- * @param signal AbortSignal（可选）
+ * @param signal AbortSignal（可选；仅取消前端等待，任务不丢）
  * @returns 成功时返回 ImageProxyResponse，失败/超时抛出错误
  */
 export async function resumeImageGeneration(
   jobId: string,
   provider?: ImageGenSettings["provider"],
-  onUpdate?: (r: ImageQueryProxyResponse) => void,
+  onUpdate?: (task: ImageTaskRecord) => void,
   signal?: AbortSignal
 ): Promise<ImageProxyResponse> {
   const creds = await resolveImageCredentials(provider);
   if (!creds || !creds.apiKey) {
     throw new Error("未配置图片生成 API，请先在「图片 API 设置」中填写");
   }
-  const final = await pollImageTask(jobId, creds.apiKey, creds.baseURL, onUpdate, 3000, 5 * 60 * 1000, signal, creds.provider);
-  if (final.status === "done" && final.imageUrl) {
-    return { imageUrl: final.imageUrl };
+  const { task } = await apiClient.attachImageTask({
+    jobId,
+    provider: creds.provider,
+    apiKey: creds.apiKey,
+    baseURL: creds.baseURL,
+  });
+  if (task.status === "done" && task.imageUrl) {
+    return { imageUrl: task.imageUrl };
   }
-  throw new Error(final.error || "图片生成失败");
+  if (task.status === "failed") {
+    // 存量失败任务自动重试一次（旧版可能把瞬态错误误判为失败）
+    try {
+      await apiClient.retryImageTask(jobId);
+    } catch { /* ignore */ }
+  }
+  return waitImageTask(jobId, signal, onUpdate);
 }
 
 /**

@@ -6,9 +6,11 @@ import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
 import { useConfirm } from "./ui/ConfirmDialog";
 import AssetPicker, { type PickedAssetItem } from "./AssetPicker";
+import PresetPicker from "./PresetPicker";
+import ImageLightbox from "./ImageLightbox";
 import { ImageConfigFields } from "./ImageConfigFields";
 import { getImageModelCapability, findModelOption, type ModelOption } from "@/lib/model-presets";
-import type { AssetImageConfig } from "@/lib/types";
+import type { AssetImageConfig, PickedPresetItem } from "@/lib/types";
 
 /** 弹框确认时回传的完整生成参数 */
 export interface ImageGenerationParams {
@@ -93,6 +95,7 @@ export function ImageGenerationDialog({
   promptHeaderExtra,
   promptFooterExtra,
   keepMentionPrefix = false,
+  enablePresetPrompt = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -125,6 +128,8 @@ export function ImageGenerationDialog({
   promptFooterExtra?: React.ReactNode;
   /** 确认时是否保留 @ 提及前缀（默认 false 会去除 @ 前缀）。故事板等需要后续做 @名称->图片N 替换的场景应设为 true */
   keepMentionPrefix?: boolean;
+  /** 是否启用「添加提示词 -> 从预设库获取」按钮（提示词标题栏右侧） */
+  enablePresetPrompt?: boolean;
 }) {
   const [prompt, setPrompt] = useState(initialPrompt);
   const [config, setConfig] = useState<AssetImageConfig>(initialConfig);
@@ -134,6 +139,7 @@ export function ImageGenerationDialog({
   const [imgError, setImgError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [presetPromptOpen, setPresetPromptOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const confirm = useConfirm();
 
@@ -666,6 +672,36 @@ export function ImageGenerationDialog({
               )}
             </label>
             <div className="flex items-center gap-2">
+              {enablePresetPrompt && (
+                <div className="group relative">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-brand-600 hover:bg-brand-50 hover:text-brand-700"
+                    title="从预设库获取提示词文本"
+                  >
+                    <svg className="mr-0.5 h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M12 8v8M8 12h8" />
+                    </svg>
+                    添加提示词
+                    <svg className="ml-0.5 h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </Button>
+                  <div className="absolute right-0 top-full z-50 hidden flex-col pt-1 group-hover:flex">
+                    <div className="w-max min-w-[8rem] rounded-md border border-slate-100 bg-white py-1 shadow-lg">
+                      <button
+                        type="button"
+                        onClick={() => setPresetPromptOpen(true)}
+                        className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
+                      >
+                        从预设库获取
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
               {promptHeaderExtra}
               <AiOptimizeButton text={prompt} onOptimized={setPrompt} />
               <span className={`text-xs ${promptLen > 300 ? "text-amber-500" : "text-slate-400"}`}>
@@ -783,8 +819,10 @@ export function ImageGenerationDialog({
                   className={`group relative h-16 w-16 overflow-hidden rounded-md border ${isTemplateRef ? "border-amber-400 ring-1 ring-amber-300" : "border-slate-200"}`}
                   title={mentionValues[i]}
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={src} alt={mentionValues[i]} className="h-full w-full object-cover" />
+                  <ImageLightbox src={src} alt={mentionValues[i]} className="h-full w-full">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt={mentionValues[i]} className="h-full w-full object-cover" />
+                  </ImageLightbox>
                   {isTemplateRef && (
                     <span className="absolute left-0 top-0 rounded-br bg-amber-500 px-1 text-[9px] font-medium text-white">
                       风格参考
@@ -940,6 +978,25 @@ export function ImageGenerationDialog({
             );
           }
           setPickerOpen(false);
+        }}
+      />
+
+      <PresetPicker
+        open={presetPromptOpen}
+        onClose={() => setPresetPromptOpen(false)}
+        type="text"
+        multiple
+        onConfirm={(items: PickedPresetItem[]) => {
+          const texts = items
+            .map((i) => i.content ?? "")
+            .filter((t) => t.trim());
+          if (texts.length > 0) {
+            const block = texts.join("\n");
+            const base = stripKnownSuffixes(prompt);
+            const newBase = base.trim() ? `${base.trim()}\n${block}` : block;
+            setPrompt(rebuildWithSuffixes(newBase, useTemplate, useImageRef));
+          }
+          setPresetPromptOpen(false);
         }}
       />
     </div>,

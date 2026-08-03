@@ -8,11 +8,12 @@ import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
 import { callLLM, streamLLM } from "@/lib/llm-client";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, resumeImageGeneration, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
+import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
+import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { type ModelOption } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
 import { assetMessages, regenerateAssetMessages } from "@/lib/prompts";
-import { isCosConfigured, transferAsset, uploadRefBase64, uploadRefFile } from "@/lib/cos-client";
+import { isCosConfigured, uploadRefBase64, uploadRefFile } from "@/lib/cos-client";
 import { recordMediaAsset } from "@/lib/storage";
 import { getActiveStyle, getAssetTemplate, getAssetReferenceImage, styleToText, styleTemplateForType } from "@/lib/style-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
@@ -34,8 +35,9 @@ interface AssetPreparationProps {
   onUpdateAsset: (id: string, field: keyof Asset, value: string) => void;
   onReplaceAssets: (assets: Asset[]) => void;
   /** 立即落盘当前 episode（绕过 1500ms 防抖）。用于 imageTaskId 等关键恢复字段，
-   *  确保任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。 */
-  onPersistNow?: () => void;
+   *  确保任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。
+   *  可传 mutate 基于快照构造补丁直写（组件卸载后仍有效）。 */
+  onPersistNow?: (mutate?: (ep: Episode) => Episode) => void;
   onBackToStep2: () => void;
   /** 系列级风格设定设定（优先使用，不传则用全局） */
   seriesStyleSettings?: StyleSettings | null;
@@ -69,6 +71,7 @@ const TYPE_BADGE_CLASS: Record<AssetType, string> = {
   object: "bg-[#FDF3E3] text-[#92400E]",
   screenshot: "bg-slate-100 text-slate-600",
   storyboard: "bg-amber-50 text-amber-700",
+  generated: "bg-violet-50 text-violet-700",
 };
 
 /**
@@ -218,98 +221,98 @@ export default function AssetPreparation({
   const episodeRef = useRef(episode);
   episodeRef.current = episode;
 
-  // 切页/刷新回来后，立即根据 imageTaskId 恢复资产生成中占位（不等待 imageConfigured/imageOptions 加载完成）。
-  // 仅对有 imageTaskId 且 status==="pending" 的资产显示占位（已完成的不显示）。
-  const didRestoreLoading = useRef(false);
-  useEffect(() => {
-    if (didRestoreLoading.current) return;
-    didRestoreLoading.current = true;
-    const ids = (episode.assets ?? []).filter((a) => a.imageTaskId && a.status === "pending").map((a) => a.id);
-    if (ids.length > 0) {
-      setGeneratingImageIds((prev) => {
-        const next = new Set(prev);
-        ids.forEach((id) => next.add(id));
-        return next;
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episode.assets]);
-
-  // 进入 Step3 时，恢复未完成的资产生图轮询（刷新/切页后任务不丢失）。
+  // 进入 Step3 时，恢复未完成的资产生图任务订阅（刷新/切页后任务不丢失）。
+  // 服务端任务中心负责轮询上游/COS 转存/容错，前端仅订阅本地任务状态；
+  // 切页/卸载仅取消前端等待（cleanup abort），任务在服务端继续，imageTaskId 保留待下次恢复。
   const resumeRef = useRef(false);
   useEffect(() => {
     if (resumeRef.current) return;
+    // 数据就绪守卫：图片配置异步加载完成后才执行（episode 由父页加载完成后才渲染本组件），
+    // 防止空数据时消耗 run-once 守卫
     if (!imageConfigured || imageOptions.length === 0) return;
     resumeRef.current = true;
-    const signal = abortRef.current?.signal;
+    const ac = new AbortController();
 
-    for (const asset of episode.assets ?? []) {
-      // 切页期间已完成的资产 status 已被置为 ready（与 imageUrl 同步写入），
-      // 此处按 status 过滤即可；不能用 imageUrl 判断——重新生成场景下资产带有旧图，会被误判跳过
-      if (asset.status !== "pending" || !asset.imageTaskId) continue;
-      // 仅对支持轮询的模型恢复（按创建任务时的供应商路由凭证）
-      const provider = asset.imageTaskProvider ?? asset.imageConfig?.provider;
-      const model = asset.imageConfig?.model ?? imageOptions[0]?.entry.value ?? "";
-      if (!isPollingSupported(model, provider)) continue;
-
-      setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
-
-      resumeImageGeneration(asset.imageTaskId, provider, undefined, signal)
-        .then(async (result) => {
-          // 读取最新资产状态做去重判断（避免闭包捕获过期数据；切页期间原轮询可能已完成写回）
-          // 注意必须同时检查 status：重新生成场景下资产带有旧图，仅看 imageUrl 会误杀本次恢复结果
-          const latestAsset = episodeRef.current.assets.find((a) => a.id === asset.id);
-          if (latestAsset?.status === "ready" && latestAsset.imageUrl) {
-            // 已被其他路径完成，仅清理残留 taskId，不覆盖已写入的（可能是 COS 持久 URL）
-            onUpdateAsset(asset.id, "imageTaskId", "");
-            return;
-          }
-          onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
-          onUpdateAsset(asset.id, "status", "ready");
-          onUpdateAsset(asset.id, "imageTaskId", "");
-          let finalAssetUrl = result.imageUrl;
-          // 转存到存储（Seedream 图片 URL 只有 24h 有效期）；使用 isCosConfigured() 避免 cosConfigured 状态闭包过期
-          try {
-            if (await isCosConfigured()) {
-              const { url } = await transferAsset(result.imageUrl, "ai-script/assets");
-              onUpdateAsset(asset.id, "imageUrl", url);
-              finalAssetUrl = url;
-            }
-          } catch (e) {
-            console.error("资产转存失败：", (e as Error).message);
-          }
-          void recordMediaAsset({
-            mediaType: "image",
-            url: finalAssetUrl,
-            entityType: asset.type,
-            entityName: asset.name || "未命名资产",
-            prompt: asset.description || "",
-            source: "asset",
-            seriesId: episode.seriesId,
-            seriesTitle: seriesTitle ?? "",
-            episodeId: episode.id,
-            episodeTitle: episode.title,
-          });
-        })
-        .catch((err) => {
-          // 切页/卸载导致轮询被取消时，保留 imageTaskId 以便下次重新挂载后继续恢复；
-          // 仅在真实失败（API 错误/超时）时置 failed 并清除 imageTaskId。
-          // 不依赖共享 signal.aborted：卸载后所有并发恢复轮询共享 signal 会被 abort，
-          // 真实失败也会被误判为取消而静默。
-          const isAborted = (err as Error)?.name === "AbortError" || (err as Error)?.message === "已取消";
-          if (!isAborted) {
-            onUpdateAsset(asset.id, "status", "failed");
-            onUpdateAsset(asset.id, "imageTaskId", "");
-          }
-        })
-        .finally(() => {
-          setGeneratingImageIds((prev) => {
-            const next = new Set(prev);
-            next.delete(asset.id);
-            return next;
-          });
-        });
+    // 切页/刷新回来后，立即根据 imageTaskId 恢复资产生成中占位。
+    // 仅对有 imageTaskId 且 status==="pending" 的资产恢复（已完成的不显示）；
+    // 不能用 imageUrl 判断——重新生成场景下资产带有旧图，会被误判跳过
+    const pendingAssets = (episodeRef.current.assets ?? []).filter(
+      (a) => a.imageTaskId && a.status === "pending"
+    );
+    if (pendingAssets.length > 0) {
+      setGeneratingImageIds((prev) => {
+        const next = new Set(prev);
+        pendingAssets.forEach((a) => next.add(a.id));
+        return next;
+      });
     }
+
+    // 仅对支持轮询的模型恢复（按创建任务时的供应商路由凭证）
+    const entries = pendingAssets
+      .filter((a) =>
+        isPollingSupported(
+          a.imageConfig?.model ?? imageOptions[0]?.entry.value ?? "",
+          a.imageTaskProvider ?? a.imageConfig?.provider
+        )
+      )
+      .map((a) => ({
+        key: a.id,
+        jobId: a.imageTaskId!,
+        provider: a.imageTaskProvider ?? a.imageConfig?.provider,
+      }));
+
+    const clearPlaceholder = (assetId: string) =>
+      setGeneratingImageIds((prev) => {
+        const next = new Set(prev);
+        next.delete(assetId);
+        return next;
+      });
+
+    recoverImageTasks(entries, {
+      onDone: (assetId, imageUrl) => {
+        // 读取最新资产状态做去重判断（避免闭包捕获过期数据；切页期间原订阅可能已完成写回）
+        // 注意必须同时检查 status：重新生成场景下资产带有旧图，仅看 imageUrl 会误杀本次恢复结果
+        const latestAsset = episodeRef.current.assets.find((a) => a.id === assetId);
+        if (!latestAsset) {
+          clearPlaceholder(assetId);
+          return;
+        }
+        if (latestAsset.status === "ready" && latestAsset.imageUrl) {
+          // 已被其他路径完成，仅清理残留 taskId，不覆盖已写入的 COS 持久 URL
+          onUpdateAsset(assetId, "imageTaskId", "");
+          clearPlaceholder(assetId);
+          return;
+        }
+        // imageUrl 已经服务端 COS 转存，直接写回，无需前端再转存
+        onUpdateAsset(assetId, "imageUrl", imageUrl);
+        onUpdateAsset(assetId, "status", "ready");
+        onUpdateAsset(assetId, "imageTaskId", "");
+        void recordMediaAsset({
+          mediaType: "image",
+          url: imageUrl,
+          entityType: latestAsset.type,
+          entityName: latestAsset.name || "未命名资产",
+          prompt: latestAsset.description || "",
+          source: "asset",
+          seriesId: episode.seriesId,
+          seriesTitle: seriesTitle ?? "",
+          episodeId: episode.id,
+          episodeTitle: episode.title,
+        });
+        clearPlaceholder(assetId);
+      },
+      onFailed: (assetId, error) => {
+        // 仅真实失败（API 错误/超时）才回调：置 failed 并清除 imageTaskId；
+        // 取消（切页/卸载）不回调，imageTaskId 保留待下次恢复
+        onUpdateAsset(assetId, "status", "failed");
+        onUpdateAsset(assetId, "imageTaskId", "");
+        const name = episodeRef.current.assets.find((a) => a.id === assetId)?.name;
+        showError(`「${name || "未命名资产"}」图片生成失败：${error}`);
+        clearPlaceholder(assetId);
+      },
+    }, ac.signal);
+
+    return () => ac.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageConfigured, imageOptions]);
 
@@ -602,7 +605,7 @@ export default function AssetPreparation({
     setGenConfigOpen(true);
   }
 
-  /** 单个资产生成图片 + 自动转存 COS */
+  /** 单个资产生成图片（任务完成后服务端已转存 COS，前端无需再转存） */
   async function generateImageForAsset(asset: Asset, params: ImageGenerationParams) {
     setGeneratingImageIds((prev) => new Set(prev).add(asset.id));
     onUpdateAsset(asset.id, "status", "pending");
@@ -612,21 +615,28 @@ export default function AssetPreparation({
       const images = params.images.length > 0 ? params.images : undefined;
       const config = params.config;
       const result = await generateImage(prompt, config, images, (jobId) => {
-        // 异步任务创建后立即持久化 jobId + imageTaskProvider，刷新页面后可恢复轮询（按 provider 路由凭证）
+        // 异步任务创建后立即持久化 jobId + imageTaskProvider，刷新页面后可恢复订阅（按 provider 路由凭证）
         onUpdateAsset(asset.id, "imageTaskId", jobId);
         if (config.provider) onUpdateAsset(asset.id, "imageTaskProvider", config.provider);
-        // 立即落盘：jobId 写入即保存，避免 1.5s 防抖未触发就切路由/刷新导致恢复信息丢失
-        onPersistNow?.();
-      }, abortRef.current?.signal);
+        // 立即落盘（mutation 直写）：提交在飞时切页，组件卸载后 setState 无效，
+        // mutation 基于卸载前快照直写是 taskId 不丢的唯一保障
+        onPersistNow?.((ep) => ({
+          ...ep,
+          assets: ep.assets.map((a) =>
+            a.id === asset.id
+              ? { ...a, imageTaskId: jobId, ...(config.provider ? { imageTaskProvider: config.provider } : {}) }
+              : a
+          ),
+        }));
+      }, abortRef.current?.signal, { cosPrefix: "ai-script/assets" });
+      // imageUrl 已经服务端 COS 转存，直接写回
       onUpdateAsset(asset.id, "imageUrl", result.imageUrl);
       onUpdateAsset(asset.id, "status", "ready");
       onUpdateAsset(asset.id, "imageTaskId", "");
 
-      // 自动转存到 COS（Seedream 图片 URL 只有 24h 有效期）
-      const finalUrl = await transferImageToCos(asset, result.imageUrl);
       void recordMediaAsset({
         mediaType: "image",
-        url: finalUrl,
+        url: result.imageUrl,
         entityType: asset.type,
         entityName: asset.name || "未命名资产",
         prompt: asset.description || "",
@@ -653,19 +663,6 @@ export default function AssetPreparation({
         next.delete(asset.id);
         return next;
       });
-    }
-  }
-
-  /** 将 Seedream 生成的图片 URL 转存到存储（24h 过期保护），返回最终 URL */
-  async function transferImageToCos(asset: Asset, sourceUrl: string): Promise<string> {
-    if (!cosConfigured) return sourceUrl;
-    try {
-      const { url } = await transferAsset(sourceUrl, "ai-script/assets");
-      onUpdateAsset(asset.id, "imageUrl", url);
-      return url;
-    } catch {
-      // 转存失败不阻断流程，保留原始 URL（24h 内仍可访问）
-      return sourceUrl;
     }
   }
 
@@ -893,188 +890,179 @@ export default function AssetPreparation({
       </div>
 
       {/* 资产卡片网格 */}
-      {preparationAssets.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/50 py-16 text-center">
-          <div className="mb-2 text-4xl opacity-40">🖼️</div>
-          <p className="text-sm text-slate-500">
-            还没有资产生成。点击上方「一键生成资产信息」开始。
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {preparationAssets.map((asset) => {
-            const commonProps = {
-              asset,
-              onUpdate: (field: keyof Asset, value: string) => onUpdateAsset(asset.id, field, value),
-              onDelete: onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined,
-              seriesId: episode.seriesId,
-              isGenerating: generatingImageIds.has(asset.id),
-              onGenerateImage: () => openGenerateImageDialog(asset),
-              isUploading: uploadingIds.has(asset.id),
-              onUploadImage: cosConfigured ? (file: File) => handleUploadImage(asset, file) : undefined,
-              isRegenerating: regeneratingIds.has(asset.id),
-              onRegenerate: () => handleRegenerateAsset(asset),
-            };
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {preparationAssets.map((asset) => {
+          const commonProps = {
+            asset,
+            onUpdate: (field: keyof Asset, value: string) => onUpdateAsset(asset.id, field, value),
+            onDelete: onDeleteAsset ? () => onDeleteAsset(asset.id) : undefined,
+            seriesId: episode.seriesId,
+            isGenerating: generatingImageIds.has(asset.id),
+            onGenerateImage: () => openGenerateImageDialog(asset),
+            isUploading: uploadingIds.has(asset.id),
+            onUploadImage: cosConfigured ? (file: File) => handleUploadImage(asset, file) : undefined,
+            isRegenerating: regeneratingIds.has(asset.id),
+            onRegenerate: () => handleRegenerateAsset(asset),
+          };
 
-            if (asset.type === "character") {
-              const versions = characterVersionsByName.get(asset.name.trim()) ?? [];
-              return (
-                <CharacterAssetCard
-                  key={asset.id}
-                  {...commonProps}
-                  versions={versions}
-                  onExtract={onSaveCharacterSettings ? () => handleExtractCharacter(asset) : undefined}
-                />
-              );
-            }
-            if (asset.type === "object") {
-              const versions = objectVersionsByName.get(asset.name.trim()) ?? [];
-              return (
-                <ObjectAssetCard
-                  key={asset.id}
-                  {...commonProps}
-                  versions={versions}
-                  onExtract={onSaveObjectSettings ? () => handleExtractObject(asset) : undefined}
-                />
-              );
-            }
-            const versions = sceneVersionsByName.get(asset.name.trim()) ?? [];
+          if (asset.type === "character") {
+            const versions = characterVersionsByName.get(asset.name.trim()) ?? [];
             return (
-              <SceneAssetCard
+              <CharacterAssetCard
                 key={asset.id}
                 {...commonProps}
                 versions={versions}
-                onExtract={onSaveSceneSettings ? () => handleExtractScene(asset) : undefined}
+                onExtract={onSaveCharacterSettings ? () => handleExtractCharacter(asset) : undefined}
               />
             );
-          })}
-          {/* 添加资产占位卡片 */}
-          {!showAddCard ? (
-            <button
-              onClick={() => { setShowAddCard(true); }}
-              className="group flex aspect-[4/3] min-h-[220px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white/60 text-slate-400 transition-colors hover:border-brand-400 hover:text-brand-500"
-            >
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
-                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-              </svg>
-              <span className="text-xs font-medium">添加资产</span>
-            </button>
-          ) : (
-            <div className="flex flex-col overflow-hidden rounded-xl border-2 border-dashed border-brand-400 bg-white shadow-sm">
-              {/* 模式切换 */}
-              <div className="flex border-b border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => { setAddMode("new"); setSelectedSettingId(""); }}
-                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "new" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
-                >
-                  新建资产
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { setAddMode("select"); setNewAssetName(""); }}
-                  className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "select" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
-                >
-                  从设定选择
-                </button>
-              </div>
-              {addMode === "new" ? (
-                <>
-                  <div className="flex aspect-[4/3] items-center justify-center bg-slate-50">
-                    <div className="flex flex-col items-center gap-2 px-4 text-center">
-                      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="text-brand-400">
-                        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
-                        <path d="M12 10v6M9 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                      </svg>
-                      <span className="text-xs font-medium text-slate-500">新建资产</span>
-                    </div>
+          }
+          if (asset.type === "object") {
+            const versions = objectVersionsByName.get(asset.name.trim()) ?? [];
+            return (
+              <ObjectAssetCard
+                key={asset.id}
+                {...commonProps}
+                versions={versions}
+                onExtract={onSaveObjectSettings ? () => handleExtractObject(asset) : undefined}
+              />
+            );
+          }
+          const versions = sceneVersionsByName.get(asset.name.trim()) ?? [];
+          return (
+            <SceneAssetCard
+              key={asset.id}
+              {...commonProps}
+              versions={versions}
+              onExtract={onSaveSceneSettings ? () => handleExtractScene(asset) : undefined}
+            />
+          );
+        })}
+        {/* 添加资产占位卡片 */}
+        {!showAddCard ? (
+          <button
+            onClick={() => { setShowAddCard(true); }}
+            className="group flex aspect-[4/3] min-h-[220px] cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white/60 text-slate-400 transition-colors hover:border-brand-400 hover:text-brand-500"
+          >
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+            <span className="text-xs font-medium">添加资产</span>
+          </button>
+        ) : (
+          <div className="flex flex-col overflow-hidden rounded-xl border-2 border-dashed border-brand-400 bg-white shadow-sm">
+            {/* 模式切换 */}
+            <div className="flex border-b border-slate-200">
+              <button
+                type="button"
+                onClick={() => { setAddMode("new"); setSelectedSettingId(""); }}
+                className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "new" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                新建资产
+              </button>
+              <button
+                type="button"
+                onClick={() => { setAddMode("select"); setNewAssetName(""); }}
+                className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${addMode === "select" ? "bg-brand-50 text-brand-700" : "text-slate-500 hover:bg-slate-50"}`}
+              >
+                从设定选择
+              </button>
+            </div>
+            {addMode === "new" ? (
+              <>
+                <div className="flex aspect-[4/3] items-center justify-center bg-slate-50">
+                  <div className="flex flex-col items-center gap-2 px-4 text-center">
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" className="text-brand-400">
+                      <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" strokeWidth="1.5" />
+                      <path d="M12 10v6M9 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    </svg>
+                    <span className="text-xs font-medium text-slate-500">新建资产</span>
                   </div>
-                  <div className="flex flex-col gap-2.5 p-3">
-                    <div>
-                      <label className="mb-0.5 block text-xs text-slate-400">资产名称</label>
-                      <input
-                        type="text"
-                        value={newAssetName}
-                        onChange={(e) => setNewAssetName(e.target.value)}
-                        placeholder="如：小明、咖啡馆"
-                        className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
-                        onKeyDown={(e) => { if (e.key === "Enter") handleAddAsset(); }}
-                        autoFocus
-                      />
-                    </div>
-                    <div>
-                      <label className="mb-0.5 block text-xs text-slate-400">类型</label>
-                      <select
-                        value={newAssetType}
-                        onChange={(e) => setNewAssetType(e.target.value as AssetType)}
-                        className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
-                      >
-                        {TYPE_OPTIONS.map((o) => (
-                          <option key={o.value} value={o.value}>{o.label}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <Button size="sm" className="flex-1" onClick={handleAddAsset}>确认</Button>
-                      <Button variant="ghost" size="sm" className="flex-1" onClick={resetAddCard}>取消</Button>
-                    </div>
-                  </div>
-                </>
-              ) : (
+                </div>
                 <div className="flex flex-col gap-2.5 p-3">
                   <div>
-                    <label className="mb-0.5 block text-xs text-slate-400">设定类型</label>
+                    <label className="mb-0.5 block text-xs text-slate-400">资产名称</label>
+                    <input
+                      type="text"
+                      value={newAssetName}
+                      onChange={(e) => setNewAssetName(e.target.value)}
+                      placeholder="如：小明、咖啡馆"
+                      className="w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+                      onKeyDown={(e) => { if (e.key === "Enter") handleAddAsset(); }}
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-0.5 block text-xs text-slate-400">类型</label>
                     <select
                       value={newAssetType}
-                      onChange={(e) => { setNewAssetType(e.target.value as AssetType); setSelectedSettingId(""); }}
+                      onChange={(e) => setNewAssetType(e.target.value as AssetType)}
                       className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
                     >
                       {TYPE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>{o.label}设定</option>
+                        <option key={o.value} value={o.value}>{o.label}</option>
                       ))}
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-0.5 block text-xs text-slate-400">选择设定</label>
-                    {availableSettings.length === 0 ? (
-                      <p className="rounded-md bg-slate-50 px-2.5 py-2 text-xs text-slate-400">
-                        暂无可选的{ASSET_TYPE_LABELS[newAssetType]}设定，或已全部添加
-                      </p>
-                    ) : (
-                      <div className="max-h-48 space-y-1 overflow-y-auto">
-                        {availableSettings.map((s) => (
-                          <label
-                            key={s.id}
-                            className={`flex cursor-pointer items-center justify-between rounded-md border px-2.5 py-1.5 text-sm transition-colors ${selectedSettingId === s.id ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-200 text-slate-700 hover:bg-slate-50"}`}
-                          >
-                            <span className="flex items-center gap-2">
-                              <input
-                                type="radio"
-                                name="setting-select"
-                                value={s.id}
-                                checked={selectedSettingId === s.id}
-                                onChange={() => setSelectedSettingId(s.id)}
-                                className="h-3.5 w-3.5"
-                              />
-                              {s.label}
-                              <span className="text-xs text-slate-400">{s.sub}</span>
-                            </span>
-                            {s.hasImage && <span className="text-xs text-emerald-600">有图</span>}
-                          </label>
-                        ))}
-                      </div>
-                    )}
-                  </div>
                   <div className="flex items-center gap-2 pt-1">
-                    <Button size="sm" className="flex-1" onClick={handleAddFromSettings} disabled={!selectedSettingId}>确认添加</Button>
+                    <Button size="sm" className="flex-1" onClick={handleAddAsset}>确认</Button>
                     <Button variant="ghost" size="sm" className="flex-1" onClick={resetAddCard}>取消</Button>
                   </div>
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+              </>
+            ) : (
+              <div className="flex flex-col gap-2.5 p-3">
+                <div>
+                  <label className="mb-0.5 block text-xs text-slate-400">设定类型</label>
+                  <select
+                    value={newAssetType}
+                    onChange={(e) => { setNewAssetType(e.target.value as AssetType); setSelectedSettingId(""); }}
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-700 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/25"
+                  >
+                    {TYPE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}设定</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-0.5 block text-xs text-slate-400">选择设定</label>
+                  {availableSettings.length === 0 ? (
+                    <p className="rounded-md bg-slate-50 px-2.5 py-2 text-xs text-slate-400">
+                      暂无可选的{ASSET_TYPE_LABELS[newAssetType]}设定，或已全部添加
+                    </p>
+                  ) : (
+                    <div className="max-h-48 space-y-1 overflow-y-auto">
+                      {availableSettings.map((s) => (
+                        <label
+                          key={s.id}
+                          className={`flex cursor-pointer items-center justify-between rounded-md border px-2.5 py-1.5 text-sm transition-colors ${selectedSettingId === s.id ? "border-brand-500 bg-brand-50 text-brand-700" : "border-slate-200 text-slate-700 hover:bg-slate-50"}`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <input
+                              type="radio"
+                              name="setting-select"
+                              value={s.id}
+                              checked={selectedSettingId === s.id}
+                              onChange={() => setSelectedSettingId(s.id)}
+                              className="h-3.5 w-3.5"
+                            />
+                            {s.label}
+                            <span className="text-xs text-slate-400">{s.sub}</span>
+                          </span>
+                          {s.hasImage && <span className="text-xs text-emerald-600">有图</span>}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button size="sm" className="flex-1" onClick={handleAddFromSettings} disabled={!selectedSettingId}>确认添加</Button>
+                  <Button variant="ghost" size="sm" className="flex-1" onClick={resetAddCard}>取消</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       <ImageGenerationDialog
         open={genConfigOpen}

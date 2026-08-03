@@ -239,6 +239,29 @@ export function removeTagPrefix(text: string, tagName: string): string {
 }
 
 /**
+ * 安全兜底：确保指定标签名在文本中都以 @ 前缀出现。
+ * 用于单行智能标注后，防止 LLM 误删已有 @标签。
+ * 仅对「当前缺少 @ 前缀」的裸名称补回 @；按边界匹配，避免误伤子串（如标签"明"不会误标"小明"）。
+ * 与 removeTagPrefix / extractTags 使用一致的边界字符集。
+ */
+export function ensureExistingTagsPrefixed(text: string, tags: string[]): string {
+  if (!text || tags.length === 0) return text ?? "";
+  // 标签前置边界字符集（不含 @：@ 前缀的视为已标注，不重复处理）
+  const leadingBoundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·]";
+  // 标签尾部边界字符集（与 removeTagPrefix 一致，含 @）
+  const trailingBoundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
+  let result = text;
+  for (const tag of tags) {
+    if (!tag) continue;
+    const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // 匹配「起始或前置边界字符 + 裸名称 + 尾部边界」；@ 前缀的因 @ 不在 leadingBoundary 内故不会被匹配
+    const re = new RegExp(`(^|${leadingBoundary})${escaped}(?=${trailingBoundary}|$)`, "g");
+    result = result.replace(re, (_m, p1: string) => `${p1}@${tag}`);
+  }
+  return result;
+}
+
+/**
  * 解析提示词中的 @资产名称（发送给 Seedance API 前的确定性替换，不依赖 LLM）。
  * - 有参考图的资产：@资产名称 -> 图片N（N 与参考图上传顺序一致）
  * - 无参考图的资产：@资产名称 -> 资产名称（去掉 @ 和尾随空格）
@@ -317,6 +340,40 @@ export function extractTagItems(text: string): TagItem[] {
   return [];
 }
 
+/** 从 LLM 返回文本中提取单行标注结果：{"text":"..."}；兼容 items 数组格式（取首项 text） */
+export function extractSingleTagText(raw: string): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  const tryParse = (s: string): string | null => {
+    try {
+      const parsed = JSON.parse(s);
+      if (parsed && typeof parsed.text === "string") return parsed.text;
+      if (parsed && Array.isArray(parsed.items) && typeof parsed.items[0]?.text === "string") {
+        return parsed.items[0].text;
+      }
+      if (Array.isArray(parsed) && typeof parsed[0]?.text === "string") {
+        return parsed[0].text;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  };
+  const direct = tryParse(trimmed);
+  if (direct !== null) return direct;
+  const codeBlock = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (codeBlock) {
+    const r = tryParse(codeBlock[1].trim());
+    if (r !== null) return r;
+  }
+  const objMatch = trimmed.match(/\{[\s\S]*\}/);
+  if (objMatch) {
+    const r = tryParse(objMatch[0]);
+    if (r !== null) return r;
+  }
+  return "";
+}
+
 /** 资产类型的中文标签 */
 export const ASSET_TYPE_LABELS: Record<string, string> = {
   character: "人物",
@@ -324,6 +381,7 @@ export const ASSET_TYPE_LABELS: Record<string, string> = {
   object: "物品",
   screenshot: "截屏",
   storyboard: "故事板",
+  generated: "生成",
 };
 
 /** 从 LLM 返回文本中提取资产数组 */
@@ -372,12 +430,13 @@ export function extractAssets(text: string): RawAsset[] {
 
 /** 规范化资产 type 字段 */
 export function normalizeAssetType(t?: string): AssetType {
-  if (t === "character" || t === "scene" || t === "object" || t === "screenshot") return t;
+  if (t === "character" || t === "scene" || t === "object" || t === "screenshot" || t === "generated") return t;
   // 兼容中文
   if (t === "人物") return "character";
   if (t === "场景") return "scene";
   if (t === "物品" || t === "道具") return "object";
   if (t === "截屏") return "screenshot";
+  if (t === "生成" || t === "参考图") return "generated";
   return "character";
 }
 

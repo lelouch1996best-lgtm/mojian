@@ -51,6 +51,15 @@ import {
   clearAudioProviderKey,
 } from "@/lib/audio-client";
 import {
+  getMusicSettings,
+  saveMusicSettings,
+  DEFAULT_MUSIC_SETTINGS,
+  MUSIC_PROVIDER_PRESETS,
+  getMusicProviderKey,
+  saveMusicProviderKey,
+  clearMusicProviderKey,
+} from "@/lib/music-client";
+import {
   getLLMModels,
   saveLLMModels,
   refreshBuiltInLLMModels,
@@ -63,6 +72,9 @@ import {
   getAudioModels,
   saveAudioModels,
   refreshBuiltInAudioModels,
+  getMusicModels,
+  saveMusicModels,
+  refreshBuiltInMusicModels,
   getCodeDefaultImageCapability,
   getCodeDefaultVideoCapability,
   getDefaultShotVideoConfig,
@@ -71,7 +83,9 @@ import {
   DEFAULT_IMAGE_MODELS,
   DEFAULT_VIDEO_MODELS,
   DEFAULT_AUDIO_MODELS,
+  DEFAULT_MUSIC_MODELS,
   DEFAULT_SHOT_VIDEO_CONFIG,
+  getDefaultModelValue,
   type ModelEntry,
   type ModelOption,
   type ImageModelCapability,
@@ -81,7 +95,7 @@ import {
   getCosSettings,
   saveCosSettings,
 } from "@/lib/cos-client";
-import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
+import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, MusicGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
 import { ModelPicker } from "@/components/ModelPicker";
 
 export default function SettingsPage() {
@@ -152,6 +166,17 @@ export default function SettingsPage() {
   const [showAudioManager, setShowAudioManager] = useState(false);
   const [newAudioValue, setNewAudioValue] = useState("");
   const [newAudioLabel, setNewAudioLabel] = useState("");
+
+  // ---- 音乐 API 状态 ----
+  const [musSettings, setMusSettings] = useState<MusicGenSettings>(DEFAULT_MUSIC_SETTINGS);
+  const [musicPanelOpen, setMusicPanelOpen] = useState(false);
+  const [musicProviderKeys, setMusicProviderKeys] = useState<ProviderCache>({});
+
+  // ---- 音乐模型管理 ----
+  const [musicModels, setMusicModels] = useState<ModelEntry[]>([]);
+  const [showMusicManager, setShowMusicManager] = useState(false);
+  const [newMusicValue, setNewMusicValue] = useState("");
+  const [newMusicLabel, setNewMusicLabel] = useState("");
 
   // ---- COS 存储状态 ----
   const [cosSettings, setCosSettings] = useState<CosSettings>({
@@ -267,6 +292,21 @@ export default function SettingsPage() {
     setShowAudioManager(false);
     setNewAudioValue("");
     setNewAudioLabel("");
+
+    // 音乐
+    const mus = await getMusicSettings();
+    const musProvider = mus?.provider ?? "apimart";
+    setMusSettings(mus ?? { ...DEFAULT_MUSIC_SETTINGS });
+    setMusicPanelOpen(!!mus?.apiKey);
+
+    // 加载各音乐 provider 缓存的 API Key
+    setMusicProviderKeys(await getMusicProviderKey());
+
+    // 音乐模型列表
+    setMusicModels(await getMusicModels(musProvider));
+    setShowMusicManager(false);
+    setNewMusicValue("");
+    setNewMusicLabel("");
 
     // COS
     const cos = await getCosSettings();
@@ -669,6 +709,88 @@ export default function SettingsPage() {
     await saveAudioModels(audSettings.provider, updated);
   }
 
+  // ---- 音乐 API ----
+  async function handleMusicProviderChange(p: MusicGenSettings["provider"]) {
+    if (p === musSettings.provider) return;
+    const updatedKeys: ProviderCache = {
+      ...musicProviderKeys,
+      [musSettings.provider]: { apiKey: musSettings.apiKey, baseURL: musSettings.baseURL },
+    };
+    setMusicProviderKeys(updatedKeys);
+    await saveMusicProviderKey(musSettings.provider, { apiKey: musSettings.apiKey, baseURL: musSettings.baseURL });
+
+    const preset = MUSIC_PROVIDER_PRESETS[p];
+    const cached = updatedKeys[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    const models = await getMusicModels(p);
+    const newSettings = { ...musSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "", model: getDefaultModelValue(models) ?? "" };
+    setMusSettings(newSettings);
+    setMusicModels(models);
+    setShowMusicManager(false);
+    setNewMusicValue("");
+    setNewMusicLabel("");
+  }
+
+  function updateMus<K extends keyof MusicGenSettings>(key: K, value: MusicGenSettings[K]) {
+    setMusSettings((prev) => ({ ...prev, [key]: value }));
+  }
+
+  // ---- 音乐模型管理 ----
+  async function handleAddMusicModel() {
+    const v = newMusicValue.trim();
+    if (!v) return;
+    if (musicModels.some((m) => m.value === v)) return;
+    const label = newMusicLabel.trim() || undefined;
+    const updated = [...musicModels, { value: v, label }];
+    setMusicModels(updated);
+    await saveMusicModels(musSettings.provider, updated);
+    setNewMusicValue("");
+    setNewMusicLabel("");
+  }
+
+  async function handleDeleteMusicModel(value: string) {
+    const updated = musicModels.filter((m) => m.value !== value);
+    setMusicModels(updated);
+    await saveMusicModels(musSettings.provider, updated);
+  }
+
+  async function handleRefreshMusicModels() {
+    const merged = await refreshBuiltInMusicModels(musSettings.provider);
+    setMusicModels(merged);
+    if (!merged.some((m) => m.value === musSettings.model)) {
+      updateMus("model", getDefaultModelValue(merged) ?? "");
+    }
+  }
+
+  /** 初始化当前音乐供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
+  async function handleInitMusicProvider() {
+    const p = musSettings.provider;
+    if (!await confirm({
+      message: "确定要初始化当前供应商为默认配置吗？baseURL 将恢复为预设值，API Key 将被清空，内置模型列表将刷新为代码最新（自定义模型保留）。",
+      confirmText: "初始化",
+    })) return;
+    const preset = MUSIC_PROVIDER_PRESETS[p];
+    const fbBase = p !== "custom" ? preset.baseURL : "";
+    // 更新缓存状态（清除当前 provider 缓存条目）
+    const updatedKeys = { ...musicProviderKeys };
+    delete updatedKeys[p];
+    setMusicProviderKeys(updatedKeys);
+    await clearMusicProviderKey(p);
+    // 联动刷新内置模型列表
+    const merged = await refreshBuiltInMusicModels(p);
+    // 重置供应商配置到预设默认
+    setMusSettings({ ...musSettings, provider: p, baseURL: fbBase, apiKey: "", model: getDefaultModelValue(merged) ?? "" });
+    setMusicModels(merged);
+    setShowMusicManager(false);
+  }
+
+  async function handleSetDefaultMusicModel(value: string) {
+    const updated = musicModels.map((m) => ({ ...m, isDefault: m.value === value }));
+    setMusicModels(updated);
+    await saveMusicModels(musSettings.provider, updated);
+    updateMus("model", value);
+  }
+
   // ---- 默认生成参数（用户自定义，即改即存） ----
   async function updateDefaultImageConfig(patch: Partial<AssetImageConfig>) {
     const next = { ...defaultImageConfig, ...patch };
@@ -771,6 +893,18 @@ export default function SettingsPage() {
     []
   );
 
+  const persistMus = useCallback(
+    debounce(async (s: MusicGenSettings, models: ModelEntry[]) => {
+      if (!s.apiKey && !s.baseURL) return;
+      await saveMusicSettings(s);
+      await saveMusicModels(s.provider, models);
+      await saveMusicProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
+      setMusicProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
+      showSavedHint();
+    }, AUTOSAVE_DEBOUNCE_MS),
+    []
+  );
+
   const persistCos = useCallback(
     debounce(async (s: CosSettings) => {
       if (!s.secretId || !s.secretKey || !s.bucket) return;
@@ -804,6 +938,12 @@ export default function SettingsPage() {
     if (skipAutoSave.current) return;
     persistAud(audSettings, audioModels);
   }, [audSettings, audioModels, persistAud]);
+
+  // 音乐配置变化时自动保存
+  useEffect(() => {
+    if (skipAutoSave.current) return;
+    persistMus(musSettings, musicModels);
+  }, [musSettings, musicModels, persistMus]);
 
   // COS 配置变化时自动保存
   useEffect(() => {
@@ -1339,6 +1479,110 @@ export default function SettingsPage() {
           )}
         </fieldset>
 
+        {/* ========= 音乐 API 折叠区域 ========= */}
+        <fieldset className={`rounded-xl border transition-colors ${musicPanelOpen ? "border-brand-200" : "border-slate-200"}`}>
+          <legend className="px-2">
+            <button
+              onClick={() => setMusicPanelOpen(!musicPanelOpen)}
+              className="flex items-center gap-1.5 text-sm font-semibold transition-colors"
+              style={{ color: musicPanelOpen ? "#D97706" : "#57534E" }}
+            >
+              <svg
+                width="14" height="14" viewBox="0 0 24 24" fill="none"
+                className={`transition-transform ${musicPanelOpen ? "rotate-90" : ""}`}
+              >
+                <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              音乐生成 API
+              {!musSettings.apiKey && musicPanelOpen && (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
+              )}
+              {musSettings.apiKey && !musicPanelOpen && (
+                <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              )}
+            </button>
+          </legend>
+
+          {musicPanelOpen && (
+            <div className="space-y-3 p-4 pt-0">
+              <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                用于系列页「音乐」面板的音乐生成。接入 APIMart 的 suno 音乐生成模型，生成的音乐会转存到 COS 并可在资产库中查看。
+              </div>
+
+              {/* --- 供应商选择 --- */}
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {(Object.keys(MUSIC_PROVIDER_PRESETS) as MusicGenSettings["provider"][]).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => handleMusicProviderChange(p)}
+                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
+                        musSettings.provider === p
+                          ? "border-brand-500 bg-brand-50 text-brand-700"
+                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                      }`}
+                    >
+                      {MUSIC_PROVIDER_PRESETS[p].label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Field label="Base URL">
+                <input type="text" value={musSettings.baseURL} onChange={(e) => updateMus("baseURL", e.target.value)} placeholder="https://api.apib.ai/v1" className="input" />
+              </Field>
+
+              <Field label="API Key">
+                <input type="password" value={musSettings.apiKey} onChange={(e) => updateMus("apiKey", e.target.value)} placeholder={MUSIC_PROVIDER_PRESETS[musSettings.provider]?.keyPrefix ? `${MUSIC_PROVIDER_PRESETS[musSettings.provider].keyPrefix}...` : "API Key..."} className="input" autoComplete="off" />
+              </Field>
+
+              {MUSIC_PROVIDER_PRESETS[musSettings.provider]?.hint && (
+                <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                  <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                  <span>{MUSIC_PROVIDER_PRESETS[musSettings.provider].hint}</span>
+                </div>
+              )}
+
+              {/* --- 音乐模型列表管理 --- */}
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <label className="text-sm font-medium text-slate-700">模型列表</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowMusicManager(!showMusicManager)}
+                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                  >
+                    {showMusicManager ? "收起管理" : "管理模型"}
+                  </button>
+                </div>
+                <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在音乐编辑页的「模型」下拉中。</p>
+
+                {showMusicManager && (
+                  <ModelManagerPanel
+                    models={musicModels}
+                    modelType="music"
+                    provider={musSettings.provider}
+                    builtInValues={new Set((DEFAULT_MUSIC_MODELS[musSettings.provider] ?? []).map((m) => m.value))}
+                    newValue={newMusicValue}
+                    newLabel={newMusicLabel}
+                    onNewValueChange={setNewMusicValue}
+                    onNewLabelChange={setNewMusicLabel}
+                    onAdd={handleAddMusicModel}
+                    onDelete={handleDeleteMusicModel}
+                    onRefresh={handleRefreshMusicModels}
+                    onSetDefault={handleSetDefaultMusicModel}
+                  />
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={handleInitMusicProvider}>初始化默认配置</Button>
+              </div>
+            </div>
+          )}
+        </fieldset>
+
         {/* ========= 存储折叠区域 ========= */}
         <fieldset className={`rounded-xl border transition-colors ${cosPanelOpen ? "border-brand-200" : "border-slate-200"}`}>
           <legend className="px-2">
@@ -1468,7 +1712,7 @@ function ModelManagerPanel({
   currentModel,
 }: {
   models: ModelEntry[];
-  modelType?: "llm" | "image" | "video" | "audio";
+  modelType?: "llm" | "image" | "video" | "audio" | "music";
   provider?: string;
   builtInValues?: Set<string>;
   newValue: string;
@@ -1492,8 +1736,8 @@ function ModelManagerPanel({
   const isVideo = modelType === "video";
   const hasCapability = isImage || isVideo;
   // 默认模型改为在「默认生成参数」编辑器中通过跨供应商 ModelPicker 设置；
-  // 模型管理面板的星标仅保留给音频（音频仍沿用当前供应商的默认星标机制）
-  const canSetDefault = modelType === "audio" && !!onSetDefault;
+  // 模型管理面板的星标仅保留给音频/音乐（仍沿用当前供应商的默认星标机制）
+  const canSetDefault = (modelType === "audio" || modelType === "music") && !!onSetDefault;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -1543,7 +1787,7 @@ function ModelManagerPanel({
                         当前
                       </span>
                     )}
-                    {m.isDefault && modelType === "audio" && (
+                    {m.isDefault && (modelType === "audio" || modelType === "music") && (
                       <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700">
                         默认
                       </span>
@@ -1817,7 +2061,7 @@ function VideoCapabilityEditor({
 }) {
   const cap = capability ?? {};
 
-  const allResolutions = ["480p", "720p", "1080p", "4k"];
+  const allResolutions = ["480p", "720p", "1080p", "4k", "2K", "720P", "1080P"];
   const allRatios = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive"];
   const allModes = ["text2video", "first-frame", "first-last-frame", "multimodal-ref"];
 
@@ -2196,7 +2440,7 @@ function DefaultVideoConfigEditor({
       <div className="flex items-center gap-2">
         <span className="w-20 shrink-0 text-slate-500">分辨率</span>
         <div className="flex flex-wrap gap-1">
-          {(["480p", "720p", "1080p", "4k"] as const).map((r) => (
+          {(["480p", "720p", "1080p", "4k", "2K", "720P", "1080P"] as const).map((r) => (
             <button
               key={r}
               type="button"

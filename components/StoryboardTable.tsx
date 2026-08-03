@@ -4,11 +4,12 @@ import { useMemo, useState } from "react";
 import StoryboardRow from "./StoryboardRow";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
+import { SmartAddShotDialog } from "./SmartAddShotDialog";
 import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import { callLLM } from "@/lib/llm-client";
-import { taggingMessages, storyboardMessages } from "@/lib/prompts";
-import { downloadJSON, extractTagItems, extractAllTags, extractShots, toShot } from "@/lib/utils";
-import type { Episode, Shot } from "@/lib/types";
+import { taggingMessages, singleRowTaggingMessages, storyboardMessages } from "@/lib/prompts";
+import { downloadJSON, extractTagItems, extractAllTags, extractTags, extractSingleTagText, ensureExistingTagsPrefixed, extractShots, toShot } from "@/lib/utils";
+import type { Episode, Shot, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
 
 interface StoryboardTableProps {
   episode: Episode;
@@ -16,6 +17,7 @@ interface StoryboardTableProps {
   /** 批量更新多个镜头的画面描述（用于智能标注） */
   onUpdateManyVisuals: (updates: { id: string; visualDescription: string }[]) => void;
   onAddRow: () => void;
+  onAddSmartShot: (shot: Shot) => void;
   onDeleteRow: (id: string) => void;
   onMoveRow: (id: string, direction: "up" | "down") => void;
   onBackToStep1: () => void;
@@ -24,16 +26,20 @@ interface StoryboardTableProps {
   onRemoveTag?: (tagName: string) => void;
   /** 重新生成分镜：用全新 shots 替换现有分镜 */
   onReplaceShots?: (shots: Shot[]) => void;
+  worldSettings?: WorldSettings | null;
+  characterSettings?: CharacterProfile[] | null;
+  objectSettings?: ObjectProfile[] | null;
+  sceneSettings?: SceneProfile[] | null;
 }
 
 const COLUMNS = [
   { key: "duration", label: "时长", w: "80px" },
   { key: "visualDescription", label: "画面描述", w: "200px" },
-  { key: "shotType", label: "景别", w: "90px" },
+  { key: "shotType", label: "景别", w: "100px" },
   { key: "lightingMood", label: "光影氛围", w: "130px" },
   { key: "dialogueVoiceover", label: "对白旁白", w: "150px" },
   { key: "soundEffects", label: "音效", w: "120px" },
-  { key: "cameraMovement", label: "运镜", w: "90px" },
+  { key: "cameraMovement", label: "运镜", w: "100px" },
 ];
 
 export default function StoryboardTable({
@@ -41,15 +47,22 @@ export default function StoryboardTable({
   onUpdateShot,
   onUpdateManyVisuals,
   onAddRow,
+  onAddSmartShot,
   onDeleteRow,
   onMoveRow,
   onBackToStep1,
   onEnterStep3,
   onRemoveTag,
   onReplaceShots,
+  worldSettings,
+  characterSettings,
+  objectSettings,
+  sceneSettings,
 }: StoryboardTableProps) {
   const [tagging, setTagging] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  const [rowTaggingId, setRowTaggingId] = useState<string | null>(null);
+  const [smartAddOpen, setSmartAddOpen] = useState(false);
   const confirm = useConfirm();
   const showError = useErrorDialog();
 
@@ -93,6 +106,33 @@ export default function StoryboardTable({
       showError((e as Error).message);
     } finally {
       setTagging(false);
+    }
+  }
+
+  /** 单行智能标注：仅标注当前镜头，保留已有 @标签，仅补充新标签 */
+  async function handleRowTagging(shot: Shot) {
+    if (!shot.visualDescription?.trim()) return;
+    setRowTaggingId(shot.id);
+    try {
+      // 1) 代码先标记已有标签：提取当前行已标注的 @标签，作为不可丢失的基线
+      const existingTags = extractTags(shot.visualDescription);
+      // 2) 让 LLM 在保留已有标签的前提下，仅补充尚未标注的新实体
+      const raw = await callLLM(singleRowTaggingMessages(shot, existingTags, tags), {
+        responseFormat: "json_object",
+        temperature: 0.3,
+      });
+      const text = extractSingleTagText(raw);
+      if (!text) {
+        showError("标注失败：未能解析返回结果，请重试");
+        return;
+      }
+      // 3) 代码兜底：确保已有标签仍带 @ 前缀（防止 LLM 误删）
+      const finalText = ensureExistingTagsPrefixed(text, existingTags);
+      onUpdateShot(shot.id, "visualDescription", finalText);
+    } catch (e) {
+      showError((e as Error).message);
+    } finally {
+      setRowTaggingId(null);
     }
   }
 
@@ -192,7 +232,7 @@ export default function StoryboardTable({
             size="sm"
             onClick={handleTagging}
             loading={tagging}
-            disabled={episode.shots.length === 0}
+            disabled={episode.shots.length === 0 || rowTaggingId !== null}
           >
             {tagging ? "标注中…" : "智能标注"}
           </Button>
@@ -271,6 +311,9 @@ export default function StoryboardTable({
                 onDelete={() => handleDeleteShot(shot.id, i)}
                 onMove={(dir) => onMoveRow(shot.id, dir)}
                 atMentionOptions={atMentionOptions}
+                onTagRow={() => handleRowTagging(shot)}
+                rowTagging={rowTaggingId === shot.id}
+                tagDisabled={tagging || rowTaggingId !== null || !shot.visualDescription?.trim()}
               />
             ))}
             {episode.shots.length === 0 && (
@@ -288,6 +331,9 @@ export default function StoryboardTable({
         <Button variant="secondary" size="sm" onClick={onAddRow}>
           + 添加行
         </Button>
+        <Button variant="secondary" size="sm" onClick={() => setSmartAddOpen(true)}>
+          ✨ 智能添加行
+        </Button>
         {tagging && (
           <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
             <Spinner size={12} /> 正在标注…
@@ -301,8 +347,19 @@ export default function StoryboardTable({
       </div>
 
       <p className="text-xs text-slate-400">
-        提示：点击单元格可直接编辑；景别与运镜可下拉选择；在画面描述中输入 @ 可弹出已添加标签并选择，输入新名称即可新建标签；琥珀色 @标签 是第三步资产准备的依据，可由「智能标注」自动生成或手动添加。
+        提示：点击单元格可直接编辑；景别与运镜可选择或自行输入；在画面描述中输入 @ 可弹出已添加标签并选择，输入新名称即可新建标签；琥珀色 @标签 是第三步资产准备的依据，可由「智能标注」自动生成或手动添加。
       </p>
+
+      <SmartAddShotDialog
+        open={smartAddOpen}
+        onClose={() => setSmartAddOpen(false)}
+        onApply={onAddSmartShot}
+        title="智能添加行"
+        worldSettings={worldSettings}
+        characterSettings={characterSettings}
+        objectSettings={objectSettings}
+        sceneSettings={sceneSettings}
+      />
     </div>
   );
 }
