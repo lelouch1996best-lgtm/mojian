@@ -8,6 +8,6 @@ npm-debug.log*
 .env*.local
 .env.production
 next-env.d.ts
-data/
+/data/
 dist-installer
 dist-electron
