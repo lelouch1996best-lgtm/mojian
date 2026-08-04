@@ -5,10 +5,10 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "next dev",
-    "predev": "rm -rf .next",
+    "predev": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
     "dev:turbo": "next dev --turbo",
     "build": "next build",
-    "prebuild": "rm -rf .next",
+    "prebuild": "node -e \"require('fs').rmSync('.next',{recursive:true,force:true})\"",
     "start": "next start",
     "electron:dev": "concurrently -k \"next dev\" \"wait-on tcp:3000 && tsc -p electron/tsconfig.json && cross-env NODE_ENV=development electron dist-electron/main.js\"",
     "electron:build:next": "cross-env NEXT_PUBLIC_STORAGE_TOKEN=mojian-electron-local-token next build",
