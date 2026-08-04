@@ -88,8 +88,8 @@ function waitForServer(port: number, timeoutMs = 30000): Promise<void> {
 async function startNextServer(): Promise<number> {
   if (app.isPackaged) {
     // 生产模式：require Next standalone 产物（由 electron-builder 复制到 resources/app）
-    // 注意：standalone 内含的 better-sqlite3 为原生模块，需由 @electron/rebuild
-    // 针对 Electron ABI 重新构建（属构建流程另一任务）。
+    // 注意：standalone 内含的 better-sqlite3 为原生模块，electron-builder 打包时
+    // 会通过 prebuild-install 自动下载对应 Electron ABI 的预编译二进制，无需本地编译。
     const port = await findFreePort(3000);
     process.env.PORT = String(port);
     process.env.HOSTNAME = "127.0.0.1";
