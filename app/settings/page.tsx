@@ -4,9 +4,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
+import Modal from "@/components/ui/Modal";
 import { useConfirm } from "@/components/ui/ConfirmDialog";
 import ImageLightbox from "@/components/ImageLightbox";
-import { debounce, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
+import { debounce } from "@/lib/utils";
 import {
   getSettings,
   saveSettings,
@@ -29,7 +30,6 @@ import {
   getImageProviderKeys,
   saveImageProviderKey,
   clearImageProviderKey,
-  getAllConfiguredImageModels,
 } from "@/lib/image-client";
 import {
   getVideoSettings,
@@ -39,7 +39,6 @@ import {
   getVideoProviderKeys,
   saveVideoProviderKey,
   clearVideoProviderKey,
-  getAllConfiguredVideoModels,
 } from "@/lib/video-client";
 import {
   getAudioSettings,
@@ -87,7 +86,6 @@ import {
   DEFAULT_SHOT_VIDEO_CONFIG,
   getDefaultModelValue,
   type ModelEntry,
-  type ModelOption,
   type ImageModelCapability,
   type VideoModelCapability,
 } from "@/lib/model-presets";
@@ -96,7 +94,32 @@ import {
   saveCosSettings,
 } from "@/lib/cos-client";
 import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, MusicGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
-import { ModelPicker } from "@/components/ModelPicker";
+import { apiClient } from "@/lib/api-client";
+
+/** 设置页自动保存防抖间隔（ms）—— 比全局 1500ms 更短，配置类操作更跟手 */
+const SETTINGS_AUTOSAVE_DEBOUNCE_MS = 500;
+
+// 批量管理：所有分类供应商品牌的并集（排除 custom）
+const BULK_BRANDS: string[] = Array.from(
+  new Set([
+    ...Object.keys(PROVIDER_PRESETS),
+    ...Object.keys(IMAGE_PROVIDER_PRESETS),
+    ...Object.keys(VIDEO_PROVIDER_PRESETS),
+    ...Object.keys(AUDIO_PROVIDER_PRESETS),
+    ...Object.keys(MUSIC_PROVIDER_PRESETS),
+  ])
+).filter((b) => b !== "custom");
+
+/** 取某品牌在任意分类预设中的 label / keyPrefix */
+function getBrandMeta(brand: string): { label: string; keyPrefix?: string } {
+  const src =
+    (PROVIDER_PRESETS as Record<string, any>)[brand] ||
+    (IMAGE_PROVIDER_PRESETS as Record<string, any>)[brand] ||
+    (VIDEO_PROVIDER_PRESETS as Record<string, any>)[brand] ||
+    (AUDIO_PROVIDER_PRESETS as Record<string, any>)[brand] ||
+    (MUSIC_PROVIDER_PRESETS as Record<string, any>)[brand];
+  return { label: src?.label ?? brand, keyPrefix: src?.keyPrefix };
+}
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -135,8 +158,6 @@ export default function SettingsPage() {
 
   // ---- 图片模型管理 ----
   const [imageModels, setImageModels] = useState<ModelEntry[]>([]);
-  // 所有「已配置 API Key」图片供应商的全部模型（聚合，供默认模型选择弹框使用）
-  const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   const [showImageManager, setShowImageManager] = useState(false);
   const [newImageValue, setNewImageValue] = useState("");
   const [newImageLabel, setNewImageLabel] = useState("");
@@ -150,8 +171,6 @@ export default function SettingsPage() {
 
   // ---- 视频模型管理 ----
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
-  // 所有「已配置 API Key」视频供应商的全部模型（聚合，供默认模型选择弹框使用）
-  const [videoOptions, setVideoOptions] = useState<ModelOption[]>([]);
   const [showVideoManager, setShowVideoManager] = useState(false);
   const [newVideoValue, setNewVideoValue] = useState("");
   const [newVideoLabel, setNewVideoLabel] = useState("");
@@ -177,6 +196,16 @@ export default function SettingsPage() {
   const [showMusicManager, setShowMusicManager] = useState(false);
   const [newMusicValue, setNewMusicValue] = useState("");
   const [newMusicLabel, setNewMusicLabel] = useState("");
+
+  // ---- API Key 批量管理 ----
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  // key 为品牌名（如 apimart/ark/deepseek），值为该品牌的 apiKey
+  const [bulkKeyMap, setBulkKeyMap] = useState<Record<string, string>>({});
+  // 当前下拉选中的品牌
+  const [bulkSelectedBrand, setBulkSelectedBrand] = useState<string>("");
+  // 勾选项：同时将该品牌设为各分类的默认供应商
+  const [bulkSetAsDefault, setBulkSetAsDefault] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   // ---- COS 存储状态 ----
   const [cosSettings, setCosSettings] = useState<CosSettings>({
@@ -243,15 +272,18 @@ export default function SettingsPage() {
     const is = await getImageSettings();
     const imgProvider = is?.provider ?? "ark";
     setImgSettings(is ?? { ...DEFAULT_IMAGE_SETTINGS });
-    setImagePanelOpen(!!is?.apiKey);
     setImgTestResult(null);
 
     // 加载各图片 provider 缓存的 API Key
-    setImageProviderKeys(await getImageProviderKeys());
+    const imgKeys = await getImageProviderKeys();
+    setImageProviderKeys(imgKeys);
+    // 任意供应商有 apiKey 即视为已配置，自动展开面板
+    setImagePanelOpen(!!is?.apiKey || Object.values(imgKeys).some((e) => !!e?.apiKey));
 
-    // 图片模型列表
-    setImageModels(await getImageModels(imgProvider));
-    setImageOptions(await getAllConfiguredImageModels());
+    // 图片模型列表（标记 isDefault：优先用已加载的 imgSettings.model，否则取 getDefaultModelValue）
+    const imgModels = await getImageModels(imgProvider);
+    const imgDefaultModel = is?.model || getDefaultModelValue(imgModels) || "";
+    setImageModels(imgModels.map((m) => ({ ...m, isDefault: m.value === imgDefaultModel })));
     setShowImageManager(false);
     setNewImageValue("");
     setNewImageLabel("");
@@ -263,20 +295,22 @@ export default function SettingsPage() {
     const vs = await getVideoSettings();
     const vidProvider = vs?.provider ?? "ark";
     setVidSettings(vs ?? { ...DEFAULT_VIDEO_SETTINGS });
-    setVideoPanelOpen(!!vs?.apiKey);
 
     // 加载各视频 provider 缓存的 API Key
-    setVideoProviderKeys(await getVideoProviderKeys());
+    const vidKeys = await getVideoProviderKeys();
+    setVideoProviderKeys(vidKeys);
+    // 任意供应商有 apiKey 即视为已配置，自动展开面板
+    setVideoPanelOpen(!!vs?.apiKey || Object.values(vidKeys).some((e) => !!e?.apiKey));
 
-    // 视频模型列表
-    setVideoModels(await getVideoModels(vidProvider));
-    setVideoOptions(await getAllConfiguredVideoModels());
+    // 视频模型列表 + 默认生成参数（标记 isDefault：优先用 defaultVideoConfig.model，否则取 getDefaultModelValue）
+    const vidModels = await getVideoModels(vidProvider);
+    const vidCfg = await getDefaultShotVideoConfig();
+    setDefaultVideoConfig(vidCfg);
+    const vidDefaultModel = (vidCfg.provider === vidProvider ? vidCfg.model : undefined) || getDefaultModelValue(vidModels) || "";
+    setVideoModels(vidModels.map((m) => ({ ...m, isDefault: m.value === vidDefaultModel })));
     setShowVideoManager(false);
     setNewVideoValue("");
     setNewVideoLabel("");
-
-    // 视频默认生成参数
-    setDefaultVideoConfig(await getDefaultShotVideoConfig());
 
     // 音频
     const aus = await getAudioSettings();
@@ -337,13 +371,19 @@ export default function SettingsPage() {
     const cached = updatedKeys[p];
     const fallbackBaseURL = p !== "custom" ? preset.baseURL : "";
     const fallbackModel = p !== "custom" ? preset.model : "";
+    // 切换 provider 时重新加载模型列表，并确保当前使用的 model 标记为默认（星号显示）
+    const loadedModels = await getLLMModels(p);
+    const resolvedModel =
+      (cached?.model && loadedModels.some((m) => m.value === cached.model))
+        ? cached.model
+        : (getDefaultModelValue(loadedModels) ?? fallbackModel);
+    const modelsWithDefault = loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel }));
     // 优先恢复缓存（保留用户编辑过的 baseURL/model），无缓存时回退到预设/空
     setBaseURL(cached?.baseURL ?? fallbackBaseURL);
-    setModel(cached?.model ?? fallbackModel);
+    setModel(resolvedModel);
     setApiKey(cached?.apiKey ?? "");
     setTestResult(null);
-    // 切换 provider 时重新加载模型列表
-    setLLMModels(await getLLMModels(p));
+    setLLMModels(modelsWithDefault);
     setShowLLMManager(false);
     setNewLLMValue("");
     setNewLLMLabel("");
@@ -391,6 +431,13 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSetDefaultLLMModel(value: string) {
+    const updated = llmModels.map((m) => ({ ...m, isDefault: m.value === value }));
+    setLLMModels(updated);
+    await saveLLMModels(provider, updated);
+    setModel(value);
+  }
+
   /** 初始化当前 LLM 供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
   async function handleInitLLMProvider() {
     const p = provider;
@@ -411,6 +458,8 @@ export default function SettingsPage() {
     setModel(fbModel);
     setApiKey("");
     setTestResult(null);
+    // 主动保存清空后的主配置（persistLlm 在 apiKey 为空时会跳过，需手动落盘避免刷新后旧 key 回来）
+    await saveSettings({ provider: p, baseURL: fbBase, apiKey: "", model: fbModel });
     // 联动刷新内置模型列表
     const merged = await refreshBuiltInLLMModels(p);
     setLLMModels(merged);
@@ -433,13 +482,20 @@ export default function SettingsPage() {
     const cached = updatedKeys[p];
     const fbBase = p !== "custom" ? preset.baseURL : "";
     const fbModel = p !== "custom" ? preset.model : "";
-    // 一次性设置新 provider + 恢复的配置，优先用缓存保留用户编辑，无缓存回退到预设/空
-    const newSettings = { ...imgSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, model: cached?.model ?? fbModel, apiKey: cached?.apiKey ?? "" };
+    // 切换 provider 时重新加载模型列表，并确保默认模型标记正确（星号显示）
+    const loadedModels = await getImageModels(p);
+    const cachedModel = cached?.model;
+    const resolvedModel =
+      (cachedModel && loadedModels.some((m) => m.value === cachedModel))
+        ? cachedModel
+        : (getDefaultModelValue(loadedModels) ?? fbModel);
+    const modelsWithDefault = loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel }));
+    const newSettings = { ...imgSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, model: resolvedModel, apiKey: cached?.apiKey ?? "" };
     setImgSettings(newSettings);
     setImgTestResult(null);
-    // 切换 provider 时重新加载模型列表与聚合选项
-    setImageModels(await getImageModels(p));
-    setImageOptions(await getAllConfiguredImageModels());
+    setImageModels(modelsWithDefault);
+    // 同步默认生成参数的模型与供应商
+    await updateDefaultImageConfig({ model: resolvedModel, provider: p });
     setShowImageManager(false);
     setNewImageValue("");
     setNewImageLabel("");
@@ -480,7 +536,9 @@ export default function SettingsPage() {
     setImageModels(updated);
     await saveImageModels(imgSettings.provider, updated);
     if (imgSettings.model === value && updated.length > 0) {
-      updateImg("model", updated[0].value);
+      const nextModel = getDefaultModelValue(updated) ?? updated[0].value;
+      updateImg("model", nextModel);
+      await updateDefaultImageConfig({ model: nextModel, provider: imgSettings.provider });
     }
   }
 
@@ -507,8 +565,18 @@ export default function SettingsPage() {
     const merged = await refreshBuiltInImageModels(imgSettings.provider);
     setImageModels(merged);
     if (!merged.some((m) => m.value === imgSettings.model) && merged.length > 0) {
-      updateImg("model", merged[0].value);
+      const nextModel = getDefaultModelValue(merged) ?? merged[0].value;
+      updateImg("model", nextModel);
+      await updateDefaultImageConfig({ model: nextModel, provider: imgSettings.provider });
     }
+  }
+
+  async function handleSetDefaultImageModel(value: string) {
+    const updated = imageModels.map((m) => ({ ...m, isDefault: m.value === value }));
+    setImageModels(updated);
+    await saveImageModels(imgSettings.provider, updated);
+    updateImg("model", value);
+    await updateDefaultImageConfig({ model: value, provider: imgSettings.provider });
   }
 
   /** 初始化当前供应商的默认配置：重置 baseURL/model 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
@@ -527,12 +595,14 @@ export default function SettingsPage() {
     setImageProviderKeys(updatedKeys);
     await clearImageProviderKey(p);
     // 重置供应商配置到预设默认
-    setImgSettings({ ...imgSettings, provider: p, baseURL: fbBase, model: fbModel, apiKey: "" });
+    const resetImg = { ...imgSettings, provider: p, baseURL: fbBase, model: fbModel, apiKey: "" };
+    setImgSettings(resetImg);
     setImgTestResult(null);
+    // 主动保存清空后的主配置（persistImg 在 apiKey 为空时会跳过，需手动落盘）
+    await saveImageSettings(resetImg);
     // 联动刷新内置模型列表
     const merged = await refreshBuiltInImageModels(p);
     setImageModels(merged);
-    setImageOptions(await getAllConfiguredImageModels());
     setShowImageManager(false);
   }
 
@@ -551,12 +621,19 @@ export default function SettingsPage() {
     const preset = VIDEO_PROVIDER_PRESETS[p];
     const cached = updatedKeys[p];
     const fbBase = p !== "custom" ? preset.baseURL : "";
-    // 一次性设置新 provider + 恢复的配置，优先用缓存保留用户编辑，无缓存回退到预设/空
+    // 切换 provider 时重新加载模型列表，并确保默认模型标记正确（星号显示）
+    const loadedModels = await getVideoModels(p);
+    const cachedModel = defaultVideoConfig.provider === p ? defaultVideoConfig.model : undefined;
+    const resolvedModel =
+      (cachedModel && loadedModels.some((m) => m.value === cachedModel))
+        ? cachedModel
+        : (getDefaultModelValue(loadedModels) ?? "");
+    const modelsWithDefault = loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel }));
     const newSettings = { ...vidSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "" };
     setVidSettings(newSettings);
-    // 切换 provider 时重新加载模型列表与聚合选项
-    setVideoModels(await getVideoModels(p));
-    setVideoOptions(await getAllConfiguredVideoModels());
+    setVideoModels(modelsWithDefault);
+    // 同步默认生成参数的模型与供应商
+    await updateDefaultVideoConfig({ model: resolvedModel, provider: p });
     setShowVideoManager(false);
     setNewVideoValue("");
     setNewVideoLabel("");
@@ -583,6 +660,10 @@ export default function SettingsPage() {
     const updated = videoModels.filter((m) => m.value !== value);
     setVideoModels(updated);
     await saveVideoModels(vidSettings.provider, updated);
+    if (defaultVideoConfig.model === value && updated.length > 0) {
+      const nextModel = getDefaultModelValue(updated) ?? updated[0].value;
+      await updateDefaultVideoConfig({ model: nextModel, provider: vidSettings.provider });
+    }
   }
 
   async function handleUpdateVideoCapability(value: string, videoCapability: Partial<VideoModelCapability>) {
@@ -607,6 +688,17 @@ export default function SettingsPage() {
   async function handleRefreshVideoModels() {
     const merged = await refreshBuiltInVideoModels(vidSettings.provider);
     setVideoModels(merged);
+    if (!merged.some((m) => m.value === defaultVideoConfig.model) && merged.length > 0) {
+      const nextModel = getDefaultModelValue(merged) ?? merged[0].value;
+      await updateDefaultVideoConfig({ model: nextModel, provider: vidSettings.provider });
+    }
+  }
+
+  async function handleSetDefaultVideoModel(value: string) {
+    const updated = videoModels.map((m) => ({ ...m, isDefault: m.value === value }));
+    setVideoModels(updated);
+    await saveVideoModels(vidSettings.provider, updated);
+    await updateDefaultVideoConfig({ model: value, provider: vidSettings.provider });
   }
 
   /** 初始化当前视频供应商的默认配置：重置 baseURL 到预设默认值、清空 apiKey、清缓存、刷新内置模型列表 */
@@ -624,11 +716,13 @@ export default function SettingsPage() {
     setVideoProviderKeys(updatedKeys);
     await clearVideoProviderKey(p);
     // 重置供应商配置到预设默认
-    setVidSettings({ ...vidSettings, provider: p, baseURL: fbBase, apiKey: "" });
+    const resetVid = { ...vidSettings, provider: p, baseURL: fbBase, apiKey: "" };
+    setVidSettings(resetVid);
+    // 主动保存清空后的主配置（persistVid 在 apiKey 为空时会跳过，需手动落盘）
+    await saveVideoSettings(resetVid);
     // 联动刷新内置模型列表
     const merged = await refreshBuiltInVideoModels(p);
     setVideoModels(merged);
-    setVideoOptions(await getAllConfiguredVideoModels());
     setShowVideoManager(false);
   }
 
@@ -647,7 +741,10 @@ export default function SettingsPage() {
     const fbBase = p !== "custom" ? preset.baseURL : "";
     const newSettings = { ...audSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "" };
     setAudSettings(newSettings);
-    setAudioModels(await getAudioModels(p));
+    // 切换 provider 时重新加载模型列表，并确保默认模型标记正确（星号显示）
+    const loadedAudModels = await getAudioModels(p);
+    const audDefault = getDefaultModelValue(loadedAudModels);
+    setAudioModels(loadedAudModels.map((m) => ({ ...m, isDefault: m.value === audDefault })));
     setShowAudioManager(false);
     setNewAudioValue("");
     setNewAudioLabel("");
@@ -696,7 +793,10 @@ export default function SettingsPage() {
     setAudioProviderKeys(updatedKeys);
     await clearAudioProviderKey(p);
     // 重置供应商配置到预设默认
-    setAudSettings({ ...audSettings, provider: p, baseURL: fbBase, apiKey: "" });
+    const resetAud = { ...audSettings, provider: p, baseURL: fbBase, apiKey: "" };
+    setAudSettings(resetAud);
+    // 主动保存清空后的主配置（persistAud 在 apiKey 为空时会跳过，需手动落盘）
+    await saveAudioSettings(resetAud);
     // 联动刷新内置模型列表
     const merged = await refreshBuiltInAudioModels(p);
     setAudioModels(merged);
@@ -723,9 +823,11 @@ export default function SettingsPage() {
     const cached = updatedKeys[p];
     const fbBase = p !== "custom" ? preset.baseURL : "";
     const models = await getMusicModels(p);
-    const newSettings = { ...musSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "", model: getDefaultModelValue(models) ?? "" };
+    const resolvedMusModel = getDefaultModelValue(models) ?? "";
+    const newSettings = { ...musSettings, provider: p, baseURL: cached?.baseURL ?? fbBase, apiKey: cached?.apiKey ?? "", model: resolvedMusModel };
     setMusSettings(newSettings);
-    setMusicModels(models);
+    // 确保默认模型标记正确（星号显示）
+    setMusicModels(models.map((m) => ({ ...m, isDefault: m.value === resolvedMusModel })));
     setShowMusicManager(false);
     setNewMusicValue("");
     setNewMusicLabel("");
@@ -779,7 +881,10 @@ export default function SettingsPage() {
     // 联动刷新内置模型列表
     const merged = await refreshBuiltInMusicModels(p);
     // 重置供应商配置到预设默认
-    setMusSettings({ ...musSettings, provider: p, baseURL: fbBase, apiKey: "", model: getDefaultModelValue(merged) ?? "" });
+    const resetMus = { ...musSettings, provider: p, baseURL: fbBase, apiKey: "", model: getDefaultModelValue(merged) ?? "" };
+    setMusSettings(resetMus);
+    // 主动保存清空后的主配置（persistMus 在 apiKey 为空时会跳过，需手动落盘）
+    await saveMusicSettings(resetMus);
     setMusicModels(merged);
     setShowMusicManager(false);
   }
@@ -804,6 +909,177 @@ export default function SettingsPage() {
     setDefaultVideoConfig(next);
     await saveDefaultShotVideoConfig(next);
     showSavedHint();
+  }
+
+  // ---- API Key 批量管理 ----
+  /** 打开弹框：从独立的 bulk_api_keys 存储读取批量管理的 key（与各 API 设置解耦） */
+  async function openBulkModal() {
+    try {
+      const stored = await apiClient.getSetting<Record<string, string>>("bulk_api_keys");
+      setBulkKeyMap(stored ?? {});
+    } catch {
+      setBulkKeyMap({});
+    }
+    // 默认选中当前对话供应商（若不在 BULK_BRANDS 中则取第一个）
+    setBulkSelectedBrand(
+      BULK_BRANDS.includes(provider) ? provider : (BULK_BRANDS[0] ?? "")
+    );
+    setBulkSetAsDefault(false);
+    setBulkModalOpen(true);
+  }
+
+  /** 应用：把选中品牌的 Key 同步覆盖到所有分类中该品牌的供应商；若勾选「同时设为默认供应商」则切换各分类激活供应商 */
+  async function handleBulkApplyApiKeys() {
+    const brand = bulkSelectedBrand;
+    if (!brand) return;
+    const k = (bulkKeyMap[brand] ?? "").trim();
+    if (!k) return;
+    const setAsDefault = bulkSetAsDefault;
+    if (!await confirm({
+      message: setAsDefault
+        ? `确定将「${getBrandMeta(brand).label}」的 API Key 应用到所有分类中该品牌的供应商，并切换为默认供应商吗？`
+        : `确定将「${getBrandMeta(brand).label}」的 API Key 应用到所有分类中该品牌的供应商吗？`,
+      confirmText: "应用",
+    })) return;
+    setBulkBusy(true);
+    try {
+      // 1. 持久化批量管理的 key 到独立存储（与 API 设置解耦）
+      await apiClient.saveSetting("bulk_api_keys", bulkKeyMap);
+
+      const newLlmKeys: ProviderCache = { ...providerKeys };
+      const newImgKeys: ProviderCache = { ...imageProviderKeys };
+      const newVidKeys: ProviderCache = { ...videoProviderKeys };
+      const newAudKeys: ProviderCache = { ...audioProviderKeys };
+      const newMusKeys: ProviderCache = { ...musicProviderKeys };
+
+      // LLM
+      if ((PROVIDER_PRESETS as Record<string, any>)[brand]) {
+        const p = brand as LLMSettings["provider"];
+        const cached = providerKeys[p];
+        const preset = PROVIDER_PRESETS[p];
+        const baseURL = cached?.baseURL ?? preset.baseURL;
+        const model = cached?.model ?? preset.model;
+        const entry = { apiKey: k, baseURL, model };
+        newLlmKeys[p] = entry;
+        await saveProviderKey(p, entry);
+        if (setAsDefault) {
+          setProvider(p);
+          setBaseURL(baseURL);
+          setApiKey(k);
+          const loadedModels = await getLLMModels(p);
+          const resolvedModel =
+            (model && loadedModels.some((m) => m.value === model)) ? model : (getDefaultModelValue(loadedModels) ?? preset.model);
+          setModel(resolvedModel);
+          setLLMModels(loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel })));
+          setShowLLMManager(false);
+          setNewLLMValue("");
+          setNewLLMLabel("");
+        } else if (p === provider) {
+          setApiKey(k);
+        }
+      }
+      // 图片
+      if ((IMAGE_PROVIDER_PRESETS as Record<string, any>)[brand]) {
+        const p = brand as ImageGenSettings["provider"];
+        const cached = imageProviderKeys[p];
+        const preset = IMAGE_PROVIDER_PRESETS[p];
+        const baseURL = cached?.baseURL ?? preset.baseURL;
+        const model = cached?.model ?? preset.model;
+        const entry = { apiKey: k, baseURL, model };
+        newImgKeys[p] = entry;
+        await saveImageProviderKey(p, entry);
+        if (setAsDefault) {
+          const loadedModels = await getImageModels(p);
+          const resolvedModel =
+            (model && loadedModels.some((m) => m.value === model)) ? model : (getDefaultModelValue(loadedModels) ?? preset.model);
+          setImgSettings({ ...imgSettings, provider: p, baseURL, model: resolvedModel, apiKey: k });
+          setImageModels(loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel })));
+          await updateDefaultImageConfig({ model: resolvedModel, provider: p });
+          setShowImageManager(false);
+          setNewImageValue("");
+          setNewImageLabel("");
+        } else if (p === imgSettings.provider) {
+          setImgSettings((prev) => ({ ...prev, apiKey: k }));
+        }
+      }
+      // 视频
+      if ((VIDEO_PROVIDER_PRESETS as Record<string, any>)[brand]) {
+        const p = brand as VideoGenSettings["provider"];
+        const cached = videoProviderKeys[p];
+        const preset = VIDEO_PROVIDER_PRESETS[p];
+        const baseURL = cached?.baseURL ?? preset.baseURL;
+        const entry = { apiKey: k, baseURL };
+        newVidKeys[p] = entry;
+        await saveVideoProviderKey(p, entry);
+        if (setAsDefault) {
+          const loadedModels = await getVideoModels(p);
+          const cachedModel = defaultVideoConfig.provider === p ? defaultVideoConfig.model : undefined;
+          const resolvedModel =
+            (cachedModel && loadedModels.some((m) => m.value === cachedModel)) ? cachedModel : (getDefaultModelValue(loadedModels) ?? "");
+          setVidSettings({ ...vidSettings, provider: p, baseURL, apiKey: k });
+          setVideoModels(loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel })));
+          await updateDefaultVideoConfig({ model: resolvedModel, provider: p });
+          setShowVideoManager(false);
+          setNewVideoValue("");
+          setNewVideoLabel("");
+        } else if (p === vidSettings.provider) {
+          setVidSettings((prev) => ({ ...prev, apiKey: k }));
+        }
+      }
+      // 音频
+      if ((AUDIO_PROVIDER_PRESETS as Record<string, any>)[brand]) {
+        const p = brand as AudioGenSettings["provider"];
+        const cached = audioProviderKeys[p];
+        const preset = AUDIO_PROVIDER_PRESETS[p];
+        const baseURL = cached?.baseURL ?? preset.baseURL;
+        const entry = { apiKey: k, baseURL };
+        newAudKeys[p] = entry;
+        await saveAudioProviderKey(p, entry);
+        if (setAsDefault) {
+          const loadedModels = await getAudioModels(p);
+          const resolvedModel = getDefaultModelValue(loadedModels) ?? "";
+          setAudSettings({ ...audSettings, provider: p, baseURL, apiKey: k });
+          setAudioModels(loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel })));
+          setShowAudioManager(false);
+          setNewAudioValue("");
+          setNewAudioLabel("");
+        } else if (p === audSettings.provider) {
+          setAudSettings((prev) => ({ ...prev, apiKey: k }));
+        }
+      }
+      // 音乐
+      if ((MUSIC_PROVIDER_PRESETS as Record<string, any>)[brand]) {
+        const p = brand as MusicGenSettings["provider"];
+        const cached = musicProviderKeys[p];
+        const preset = MUSIC_PROVIDER_PRESETS[p];
+        const baseURL = cached?.baseURL ?? preset.baseURL;
+        const entry = { apiKey: k, baseURL };
+        newMusKeys[p] = entry;
+        await saveMusicProviderKey(p, entry);
+        if (setAsDefault) {
+          const loadedModels = await getMusicModels(p);
+          const resolvedModel = getDefaultModelValue(loadedModels) ?? "";
+          setMusSettings({ ...musSettings, provider: p, baseURL, apiKey: k, model: resolvedModel });
+          setMusicModels(loadedModels.map((m) => ({ ...m, isDefault: m.value === resolvedModel })));
+          setShowMusicManager(false);
+          setNewMusicValue("");
+          setNewMusicLabel("");
+        } else if (p === musSettings.provider) {
+          setMusSettings((prev) => ({ ...prev, apiKey: k }));
+        }
+      }
+
+      setProviderKeys(newLlmKeys);
+      setImageProviderKeys(newImgKeys);
+      setVideoProviderKeys(newVidKeys);
+      setAudioProviderKeys(newAudKeys);
+      setMusicProviderKeys(newMusKeys);
+
+      showSavedHint();
+      setBulkModalOpen(false);
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   // ---- COS handlers ----
@@ -847,71 +1123,65 @@ export default function SettingsPage() {
 
   const persistLlm = useCallback(
     debounce(async (p: typeof provider, b: string, k: string, m: string, models: ModelEntry[]) => {
-      if (!b || !k || !m) return;
       await saveSettings({ provider: p, baseURL: b, apiKey: k, model: m });
       await saveLLMModels(p, models);
       await saveProviderKey(p, { apiKey: k, baseURL: b, model: m });
       setProviderKeys((prev) => ({ ...prev, [p]: { apiKey: k, baseURL: b, model: m } }));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
   const persistImg = useCallback(
     debounce(async (s: ImageGenSettings, models: ModelEntry[]) => {
-      if (!s.apiKey) return;
       await saveImageSettings(s);
       await saveImageModels(s.provider, models);
       await saveImageProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model });
       setImageProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL, model: s.model } }));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
   const persistVid = useCallback(
     debounce(async (s: VideoGenSettings, models: ModelEntry[]) => {
-      if (!s.apiKey && !s.baseURL) return;
       await saveVideoSettings(s);
       await saveVideoModels(s.provider, models);
       await saveVideoProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
       setVideoProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
   const persistAud = useCallback(
     debounce(async (s: AudioGenSettings, models: ModelEntry[]) => {
-      if (!s.apiKey && !s.baseURL) return;
       await saveAudioSettings(s);
       await saveAudioModels(s.provider, models);
       await saveAudioProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
       setAudioProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
   const persistMus = useCallback(
     debounce(async (s: MusicGenSettings, models: ModelEntry[]) => {
-      if (!s.apiKey && !s.baseURL) return;
       await saveMusicSettings(s);
       await saveMusicModels(s.provider, models);
       await saveMusicProviderKey(s.provider, { apiKey: s.apiKey, baseURL: s.baseURL });
       setMusicProviderKeys((prev) => ({ ...prev, [s.provider]: { apiKey: s.apiKey, baseURL: s.baseURL } }));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
   const persistCos = useCallback(
     debounce(async (s: CosSettings) => {
-      if (!s.secretId || !s.secretKey || !s.bucket) return;
       await saveCosSettings(s);
-      setCosConfigured(true);
+      setCosConfigured(!!(s.secretId && s.secretKey && s.bucket));
       showSavedHint();
-    }, AUTOSAVE_DEBOUNCE_MS),
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
     []
   );
 
@@ -975,6 +1245,22 @@ export default function SettingsPage() {
         </div>
         <div className="flex items-center gap-2">
           {savedHint && <span className="text-xs text-emerald-600">已保存 ✓</span>}
+          <button
+            onClick={openBulkModal}
+            className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50"
+            title="API Key 批量管理"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M14 7a4 4 0 1 1-5.66 5.66L4 17v3h3l4.34-4.34A4 4 0 0 1 14 7z"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            Key 批量管理
+          </button>
         </div>
       </header>
 
@@ -994,11 +1280,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               对话 API
-              {!apiKey && llmPanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {apiKey && !llmPanelOpen && (
+              {apiKey ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1010,7 +1295,9 @@ export default function SettingsPage() {
                 服务商
               </label>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {(Object.keys(PROVIDER_PRESETS) as LLMSettings["provider"][]).map((p) => (
+                {(Object.keys(PROVIDER_PRESETS) as LLMSettings["provider"][]).map((p) => {
+                  const isDefault = p === provider;
+                  return (
                   <button
                     key={p}
                     onClick={() => handleProviderChange(p)}
@@ -1021,8 +1308,10 @@ export default function SettingsPage() {
                     }`}
                   >
                     {PROVIDER_PRESETS[p].label}
+                    {isDefault && <DefaultProviderStar />}
                   </button>
-                ))}
+                  );
+                })}
               </div>
             </div>
             <Field label="Base URL">
@@ -1045,34 +1334,21 @@ export default function SettingsPage() {
               />
             </Field>
 
-            {/* --- LLM 模型选择器 + 管理 --- */}
+            {/* --- LLM 模型列表管理 --- */}
             <div>
               <div className="mb-1.5 flex items-baseline justify-between">
-                <label className="text-sm font-medium text-slate-700">模型名称</label>
-                {provider !== "custom" && (
-                  <button
-                    type="button"
-                    onClick={() => setShowLLMManager(!showLLMManager)}
-                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
-                  >
-                    {showLLMManager ? "收起管理" : "管理模型"}
-                  </button>
-                )}
+                <label className="text-sm font-medium text-slate-700">模型列表</label>
+                <button
+                  type="button"
+                  onClick={() => setShowLLMManager(!showLLMManager)}
+                  className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                >
+                  {showLLMManager ? "收起管理" : "管理模型"}
+                </button>
               </div>
-              {provider !== "custom" ? (
-                <select value={model} onChange={(e) => setModel(e.target.value)} className="input">
-                  {llmModels.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label ? `${m.label}（${m.value}）` : m.value}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input type="text" value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" className="input" />
-              )}
+              <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在对话页的「模型」下拉中。</p>
 
-              {/* LLM 模型管理面板 */}
-              {showLLMManager && provider !== "custom" && (
+              {showLLMManager && (
                 <ModelManagerPanel
                   models={llmModels}
                   modelType="llm"
@@ -1085,7 +1361,7 @@ export default function SettingsPage() {
                   onAdd={handleAddLLMModel}
                   onDelete={handleDeleteLLMModel}
                   onRefresh={handleRefreshLLMModels}
-                  currentModel={model}
+                  onSetDefault={handleSetDefaultLLMModel}
                 />
               )}
             </div>
@@ -1125,11 +1401,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               图片生成 API
-              {!imgSettings.apiKey && imagePanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {imgSettings.apiKey && !imagePanelOpen && (
+              {(imgSettings.apiKey || Object.values(imageProviderKeys).some((e) => !!e?.apiKey)) ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1144,7 +1419,9 @@ export default function SettingsPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {(Object.keys(IMAGE_PROVIDER_PRESETS) as ImageGenSettings["provider"][]).map((p) => (
+                  {(Object.keys(IMAGE_PROVIDER_PRESETS) as ImageGenSettings["provider"][]).map((p) => {
+                    const isDefault = p === imgSettings.provider;
+                    return (
                     <button
                       key={p}
                       onClick={() => handleImageProviderChange(p)}
@@ -1155,8 +1432,10 @@ export default function SettingsPage() {
                       }`}
                     >
                       {IMAGE_PROVIDER_PRESETS[p].label}
+                      {isDefault && <DefaultProviderStar />}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1187,6 +1466,7 @@ export default function SettingsPage() {
                     models={imageModels}
                     modelType="image"
                     provider={imgSettings.provider}
+                    currentModel={imgSettings.model}
                     builtInValues={new Set((DEFAULT_IMAGE_MODELS[imgSettings.provider] ?? []).map((m) => m.value))}
                     newValue={newImageValue}
                     newLabel={newImageLabel}
@@ -1197,6 +1477,7 @@ export default function SettingsPage() {
                     onRefresh={handleRefreshImageModels}
                     onUpdateCapability={handleUpdateImageCapability}
                     onInitCapability={handleInitImageModelCapability}
+                    onSetDefault={handleSetDefaultImageModel}
                   />
                 )}
               </div>
@@ -1213,10 +1494,10 @@ export default function SettingsPage() {
                     {showDefaultImageConfig ? "收起" : "展开"}
                   </button>
                 </div>
-                <p className="mb-1.5 text-xs text-slate-400">每次打开图片生成弹框时使用的默认参数（资产卡片已单独调整的参数不受影响）。默认模型可在下方跨供应商选择，生成时按所选模型所属供应商自动路由凭证。</p>
+                <p className="mb-1.5 text-xs text-slate-400">每次打开图片生成弹框时使用的默认参数（资产卡片已单独调整的参数不受影响）。默认模型在上方「管理模型」中通过星标设置，与当前供应商绑定。</p>
                 {showDefaultImageConfig && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50">
-                    <DefaultImageConfigEditor config={defaultImageConfig} onChange={updateDefaultImageConfig} imageOptions={imageOptions} />
+                    <DefaultImageConfigEditor config={defaultImageConfig} onChange={updateDefaultImageConfig} />
                   </div>
                 )}
               </div>
@@ -1265,11 +1546,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               视频生成 API
-              {!vidSettings.apiKey && videoPanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {vidSettings.apiKey && !videoPanelOpen && (
+              {(vidSettings.apiKey || Object.values(videoProviderKeys).some((e) => !!e?.apiKey)) ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1284,7 +1564,9 @@ export default function SettingsPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {(Object.keys(VIDEO_PROVIDER_PRESETS) as VideoGenSettings["provider"][]).map((p) => (
+                  {(Object.keys(VIDEO_PROVIDER_PRESETS) as VideoGenSettings["provider"][]).map((p) => {
+                    const isDefault = p === vidSettings.provider;
+                    return (
                     <button
                       key={p}
                       onClick={() => handleVideoProviderChange(p)}
@@ -1295,8 +1577,10 @@ export default function SettingsPage() {
                       }`}
                     >
                       {VIDEO_PROVIDER_PRESETS[p].label}
+                      {isDefault && <DefaultProviderStar />}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1304,7 +1588,7 @@ export default function SettingsPage() {
                 <input type="text" value={vidSettings.baseURL} onChange={(e) => updateVid("baseURL", e.target.value)} placeholder="https://ark.cn-beijing.volces.com/api/v3" className="input" />
               </Field>
 
-              <Field label="API Key" hint={vidSettings.provider !== "custom" ? "留空则自动复用图片 API 的 Key" : undefined}>
+              <Field label="API Key">
                 <input type="password" value={vidSettings.apiKey} onChange={(e) => updateVid("apiKey", e.target.value)} placeholder={VIDEO_PROVIDER_PRESETS[vidSettings.provider]?.keyPrefix ? `${VIDEO_PROVIDER_PRESETS[vidSettings.provider].keyPrefix}...` : "API Key..."} className="input" autoComplete="off" />
               </Field>
 
@@ -1334,6 +1618,7 @@ export default function SettingsPage() {
                     models={videoModels}
                     modelType="video"
                     provider={vidSettings.provider}
+                    currentModel={defaultVideoConfig.model}
                     builtInValues={new Set((DEFAULT_VIDEO_MODELS[vidSettings.provider] ?? []).map((m) => m.value))}
                     newValue={newVideoValue}
                     newLabel={newVideoLabel}
@@ -1344,6 +1629,7 @@ export default function SettingsPage() {
                     onRefresh={handleRefreshVideoModels}
                     onUpdateVideoCapability={handleUpdateVideoCapability}
                     onInitCapability={handleInitVideoModelCapability}
+                    onSetDefault={handleSetDefaultVideoModel}
                   />
                 )}
               </div>
@@ -1360,10 +1646,10 @@ export default function SettingsPage() {
                     {showDefaultVideoConfig ? "收起" : "展开"}
                   </button>
                 </div>
-                <p className="mb-1.5 text-xs text-slate-400">每个新增镜头卡片使用的默认视频参数（已调整过参数的镜头卡片不受影响）。默认模型可在下方跨供应商选择，生成时按所选模型所属供应商自动路由凭证。</p>
+                <p className="mb-1.5 text-xs text-slate-400">每个新增镜头卡片使用的默认视频参数（已调整过参数的镜头卡片不受影响）。默认模型在上方「管理模型」中通过星标设置，与当前供应商绑定。</p>
                 {showDefaultVideoConfig && (
                   <div className="rounded-lg border border-slate-200 bg-slate-50">
-                    <DefaultVideoConfigEditor config={defaultVideoConfig} onChange={updateDefaultVideoConfig} videoOptions={videoOptions} />
+                    <DefaultVideoConfigEditor config={defaultVideoConfig} onChange={updateDefaultVideoConfig} />
                   </div>
                 )}
               </div>
@@ -1390,11 +1676,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               音频生成 API
-              {!audSettings.apiKey && audioPanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {audSettings.apiKey && !audioPanelOpen && (
+              {audSettings.apiKey ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1409,7 +1694,9 @@ export default function SettingsPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {(Object.keys(AUDIO_PROVIDER_PRESETS) as AudioGenSettings["provider"][]).map((p) => (
+                  {(Object.keys(AUDIO_PROVIDER_PRESETS) as AudioGenSettings["provider"][]).map((p) => {
+                    const isDefault = p === audSettings.provider;
+                    return (
                     <button
                       key={p}
                       onClick={() => handleAudioProviderChange(p)}
@@ -1420,8 +1707,10 @@ export default function SettingsPage() {
                       }`}
                     >
                       {AUDIO_PROVIDER_PRESETS[p].label}
+                      {isDefault && <DefaultProviderStar />}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1494,11 +1783,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               音乐生成 API
-              {!musSettings.apiKey && musicPanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {musSettings.apiKey && !musicPanelOpen && (
+              {musSettings.apiKey ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1513,7 +1801,9 @@ export default function SettingsPage() {
               <div>
                 <label className="mb-1.5 block text-sm font-medium text-slate-700">服务商</label>
                 <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                  {(Object.keys(MUSIC_PROVIDER_PRESETS) as MusicGenSettings["provider"][]).map((p) => (
+                  {(Object.keys(MUSIC_PROVIDER_PRESETS) as MusicGenSettings["provider"][]).map((p) => {
+                    const isDefault = p === musSettings.provider;
+                    return (
                     <button
                       key={p}
                       onClick={() => handleMusicProviderChange(p)}
@@ -1524,8 +1814,10 @@ export default function SettingsPage() {
                       }`}
                     >
                       {MUSIC_PROVIDER_PRESETS[p].label}
+                      {isDefault && <DefaultProviderStar />}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1598,11 +1890,10 @@ export default function SettingsPage() {
                 <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
               存储
-              {!cosConfigured && cosPanelOpen && (
-                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
-              )}
-              {cosConfigured && !cosPanelOpen && (
+              {cosConfigured ? (
                 <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-normal text-emerald-700">已配置</span>
+              ) : (
+                <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-normal text-amber-700">未配置</span>
               )}
             </button>
           </legend>
@@ -1685,6 +1976,86 @@ export default function SettingsPage() {
           box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.25);
         }
       `}</style>
+
+      {/* ========= API Key 批量管理弹框 ========= */}
+      <Modal
+        open={bulkModalOpen}
+        onClose={() => setBulkModalOpen(false)}
+        title="API Key 批量管理"
+        width="max-w-lg"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setBulkModalOpen(false)} disabled={bulkBusy}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={handleBulkApplyApiKeys}
+              loading={bulkBusy}
+              disabled={!bulkSelectedBrand || !(bulkKeyMap[bulkSelectedBrand] ?? "").trim()}
+            >
+              应用
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-xs leading-relaxed text-slate-500">
+            选择一个供应商品牌并填写 API Key，点击「应用」后会同步覆盖到所有分类（对话/图片/视频/音频/音乐）中该品牌的供应商。勾选「同时设置为默认供应商」可一并切换各分类的激活供应商。
+          </p>
+          {/* 供应商下拉选择 */}
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-700">供应商</label>
+            <select
+              value={bulkSelectedBrand}
+              onChange={(e) => setBulkSelectedBrand(e.target.value)}
+              className="input"
+            >
+              {BULK_BRANDS.map((brand) => {
+                const { label } = getBrandMeta(brand);
+                const cats: string[] = [];
+                if ((PROVIDER_PRESETS as Record<string, any>)[brand]) cats.push("对话");
+                if ((IMAGE_PROVIDER_PRESETS as Record<string, any>)[brand]) cats.push("图片");
+                if ((VIDEO_PROVIDER_PRESETS as Record<string, any>)[brand]) cats.push("视频");
+                if ((AUDIO_PROVIDER_PRESETS as Record<string, any>)[brand]) cats.push("音频");
+                if ((MUSIC_PROVIDER_PRESETS as Record<string, any>)[brand]) cats.push("音乐");
+                return (
+                  <option key={brand} value={brand}>
+                    {label}（{cats.join(" / ")}）
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          {/* 选中品牌的 API Key 输入 */}
+          {bulkSelectedBrand && (() => {
+            const { keyPrefix } = getBrandMeta(bulkSelectedBrand);
+            return (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-700">API Key</label>
+                <input
+                  type="password"
+                  value={bulkKeyMap[bulkSelectedBrand] ?? ""}
+                  onChange={(e) => setBulkKeyMap((prev) => ({ ...prev, [bulkSelectedBrand]: e.target.value }))}
+                  placeholder={keyPrefix ? `${keyPrefix}...` : "API Key..."}
+                  className="input"
+                  autoComplete="off"
+                />
+              </div>
+            );
+          })()}
+          {/* 同时设置为默认供应商 */}
+          <label className="flex items-center gap-2 text-xs text-slate-700">
+            <input
+              type="checkbox"
+              checked={bulkSetAsDefault}
+              onChange={(e) => setBulkSetAsDefault(e.target.checked)}
+              className="rounded border-slate-300"
+            />
+            同时设置为默认供应商
+          </label>
+        </div>
+      </Modal>
     </main>
   );
 }
@@ -1735,9 +2106,8 @@ function ModelManagerPanel({
   const isImage = modelType === "image";
   const isVideo = modelType === "video";
   const hasCapability = isImage || isVideo;
-  // 默认模型改为在「默认生成参数」编辑器中通过跨供应商 ModelPicker 设置；
-  // 模型管理面板的星标仅保留给音频/音乐（仍沿用当前供应商的默认星标机制）
-  const canSetDefault = (modelType === "audio" || modelType === "music") && !!onSetDefault;
+  // 默认模型改为通过模型管理面板的星标设置（沿用当前供应商的默认星标机制，与对话 API 一致）
+  const canSetDefault = (modelType === "llm" || modelType === "audio" || modelType === "music" || modelType === "image" || modelType === "video") && !!onSetDefault;
 
   return (
     <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -1787,7 +2157,7 @@ function ModelManagerPanel({
                         当前
                       </span>
                     )}
-                    {m.isDefault && (modelType === "audio" || modelType === "music") && (
+                    {m.isDefault && (modelType === "audio" || modelType === "music" || modelType === "image" || modelType === "video") && (
                       <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700">
                         默认
                       </span>
@@ -2220,6 +2590,19 @@ function Field({
   );
 }
 
+/** 供应商按钮上的「当前默认供应商」星标 */
+function DefaultProviderStar() {
+  return (
+    <svg
+      width="10" height="10" viewBox="0 0 24 24" fill="currentColor"
+      className="ml-1 inline-block shrink-0 align-middle text-amber-500"
+      aria-label="当前默认供应商"
+    >
+      <path d="M12 2l2.4 7.4H22l-6 4.4 2.3 7.2-6.3-4.6-6.3 4.6L7.9 13.8 2 9.4h7.6z" />
+    </svg>
+  );
+}
+
 /** 默认参数编辑器共用的胶囊按钮样式 */
 function defaultCfgPill(active: boolean) {
   return `rounded-full px-2 py-0.5 text-xs transition-colors ${
@@ -2233,12 +2616,9 @@ function defaultCfgPill(active: boolean) {
 function DefaultImageConfigEditor({
   config,
   onChange,
-  imageOptions,
 }: {
   config: AssetImageConfig;
   onChange: (patch: Partial<AssetImageConfig>) => void;
-  /** 所有已配置供应商的图片模型聚合列表（默认模型选择弹框使用） */
-  imageOptions: ModelOption[];
 }) {
   const boolRow = (
     label: string,
@@ -2287,16 +2667,6 @@ function DefaultImageConfigEditor({
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5 text-xs">
-      <div className="flex items-center gap-2">
-        <span className="w-20 shrink-0 text-slate-500">默认模型</span>
-        <ModelPicker
-          options={imageOptions}
-          provider={config.provider}
-          model={config.model}
-          onSelect={(p, m) => onChange({ model: m, provider: p as AssetImageConfig["provider"] })}
-          buttonClassName="max-w-[280px]"
-        />
-      </div>
       <div className="flex items-center gap-2">
         <span className="w-20 shrink-0 text-slate-500">分辨率</span>
         <div className="flex flex-wrap gap-1">
@@ -2355,12 +2725,9 @@ function DefaultImageConfigEditor({
 function DefaultVideoConfigEditor({
   config,
   onChange,
-  videoOptions,
 }: {
   config: ShotVideoConfig;
   onChange: (patch: Partial<ShotVideoConfig>) => void;
-  /** 所有已配置供应商的视频模型聚合列表（默认模型选择弹框使用） */
-  videoOptions: ModelOption[];
 }) {
   const boolRow = (
     label: string,
@@ -2407,16 +2774,6 @@ function DefaultVideoConfigEditor({
 
   return (
     <div className="flex flex-col gap-2 px-3 py-2.5 text-xs">
-      <div className="flex items-center gap-2">
-        <span className="w-20 shrink-0 text-slate-500">默认模型</span>
-        <ModelPicker
-          options={videoOptions}
-          provider={config.provider}
-          model={config.model}
-          onSelect={(p, m) => onChange({ model: m, provider: p as ShotVideoConfig["provider"] })}
-          buttonClassName="max-w-[280px]"
-        />
-      </div>
       <div className="flex items-center gap-2">
         <span className="w-20 shrink-0 text-slate-500">生成模式</span>
         <div className="flex flex-wrap gap-1">

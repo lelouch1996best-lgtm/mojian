@@ -13,6 +13,7 @@ import {
   generateLyrics,
   getMusicSettings,
   isMusicConfigured,
+  MUSIC_PROVIDER_PRESETS,
   pollMusicTask,
 } from "@/lib/music-client";
 import { MUSIC_STYLE_CATEGORIES } from "@/lib/music-styles";
@@ -262,6 +263,9 @@ export default function MusicPage() {
   const [savedHint, setSavedHint] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress] = useState<number | null>(null);
+  // 当前音乐供应商/模型（仅展示，不可选择，沿用设置页配置）
+  const [musicProviderLabel, setMusicProviderLabel] = useState("");
+  const [musicModelLabel, setMusicModelLabel] = useState("");
   const [lyricsTheme, setLyricsTheme] = useState("");
   const [lyricsLoading, setLyricsLoading] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -339,6 +343,16 @@ export default function MusicPage() {
     }
     persist(music);
   }, [music, persist]);
+
+  // 加载当前音乐供应商/模型用于展示
+  useEffect(() => {
+    getMusicSettings().then((s) => {
+      if (s) {
+        setMusicProviderLabel(MUSIC_PROVIDER_PRESETS[s.provider]?.label ?? s.provider);
+        setMusicModelLabel(s.model || "");
+      }
+    });
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -1197,25 +1211,35 @@ export default function MusicPage() {
         )}
       </section>
 
-      <section className="mb-4 flex items-center justify-end gap-3">
-        {generating && (
-          <span className="text-xs text-slate-400">
-            {progress != null ? `生成中 ${progress}%` : "生成中…"}
+      <section className="mb-4 flex items-center justify-between gap-3">
+        {musicProviderLabel && (
+          <span
+            className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500"
+            title={`当前音乐 API 供应商：${musicProviderLabel}${musicModelLabel ? ` · ${musicModelLabel}` : ""}`}
+          >
+            {musicProviderLabel}{musicModelLabel ? ` · ${musicModelLabel}` : ""}
           </span>
         )}
-        <Button
-          variant="primary"
-          size="md"
-          loading={generating}
-          disabled={generating}
-          onClick={handleGenerate}
-        >
-          {generating
-            ? "生成中…"
-            : music.status === "failed" || music.tracks.length > 0
-              ? "重新生成"
-              : "生成音乐"}
-        </Button>
+        <div className="flex items-center gap-3">
+          {generating && (
+            <span className="text-xs text-slate-400">
+              {progress != null ? `生成中 ${progress}%` : "生成中…"}
+            </span>
+          )}
+          <Button
+            variant="primary"
+            size="md"
+            loading={generating}
+            disabled={generating}
+            onClick={handleGenerate}
+          >
+            {generating
+              ? "生成中…"
+              : music.status === "failed" || music.tracks.length > 0
+                ? "重新生成"
+                : "生成音乐"}
+          </Button>
+        </div>
       </section>
 
       {music.status === "failed" && music.error && (

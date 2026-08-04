@@ -107,7 +107,7 @@ export const DEFAULT_ASSET_IMAGE_CONFIG: AssetImageConfig = {
 
 /**
  * 用户自定义的图片生成默认参数（设置页「图片生成 API」区域维护）。
- * 每次打开图片生成弹框时以其为基础（模型字段仍优先取模型列表中的「默认」星标）。
+ * 每次打开图片生成弹框时以其为基础。默认模型由设置页供应商面板的星标驱动，切换供应商/星标时同步写入。
  * 缺省/读取失败时回退 DEFAULT_ASSET_IMAGE_CONFIG。
  */
 export async function getDefaultAssetImageConfig(): Promise<AssetImageConfig> {
@@ -123,13 +123,21 @@ export async function saveDefaultAssetImageConfig(cfg: AssetImageConfig): Promis
 }
 
 /**
- * 若用户尚未设置默认图片模型（存储值 model 为空），则把当前生成所用模型+供应商持久化为默认。
- * 仅在「首次生成」时落盘一次；用户已在「默认生成参数」中主动选择模型时为空操作。
+ * 若当前默认图片供应商未配置 apiKey，则把本次生成所用模型+供应商持久化为默认。
+ * 用于「默认供应商未配置但用户使用了其他已配置供应商」时，首次生成自动落盘为默认。
+ * 默认供应商已配置 apiKey 时为空操作（避免覆盖用户主动设置的默认）。
  */
-export async function saveDefaultAssetImageConfigIfEmpty(config: AssetImageConfig): Promise<void> {
-  const current = await getDefaultAssetImageConfig();
-  if (current.model) return;
-  await saveDefaultAssetImageConfig({ ...current, model: config.model, provider: config.provider });
+export async function persistDefaultImageIfProviderUnconfigured(cfg: AssetImageConfig): Promise<void> {
+  try {
+    const defaultCfg = await getDefaultAssetImageConfig();
+    const defaultCreds = await resolveImageCredentials(defaultCfg.provider);
+    if (defaultCreds?.apiKey) return; // 默认供应商已配置，不覆盖
+    await saveDefaultAssetImageConfig({
+      ...defaultCfg,
+      model: cfg.model || defaultCfg.model,
+      provider: cfg.provider || defaultCfg.provider,
+    });
+  } catch { /* ignore persist failure */ }
 }
 
 export async function getImageSettings(): Promise<ImageGenSettings | null> {
@@ -245,12 +253,10 @@ export async function generateImage(
   options?: { cosPrefix?: string }
 ): Promise<ImageProxyResponse> {
   const cfg = { ...DEFAULT_ASSET_IMAGE_CONFIG, ...config };
-  // 未选择模型（且无任何已配置供应商可回退）时，明确提示先配置，避免发出空 model 的请求
+  // 未选择模型时明确提示，避免发出空 model 的请求
   if (!cfg.model) {
-    throw new Error("未选择图片生成模型，请先在「设置 -> 默认生成参数」中选择默认模型，或先配置图片生成 API");
+    throw new Error("未选择图片生成模型，请先在弹框中选择一个模型后再生成");
   }
-  // 首次生成时把当前选用模型落盘为默认（用户未主动设置默认模型时生效一次）
-  await saveDefaultAssetImageConfigIfEmpty(cfg);
   // 按所选模型所属供应商解析凭证（跨供应商生成）；缺省回退当前激活供应商
   const creds = await resolveImageCredentials(cfg.provider);
   if (!creds || !creds.apiKey) {
@@ -305,6 +311,8 @@ export async function generateImage(
     onJobCreated?.(created.jobId);
     // 订阅服务端任务中心至完成（signal 仅取消前端等待，服务端任务继续，jobId 保留供恢复）
     const final = await waitImageTask(created.jobId, signal);
+    // 默认供应商未配置 apiKey 时，把本次使用的供应商+模型落盘为默认（首次生成生效）
+    void persistDefaultImageIfProviderUnconfigured({ ...cfg, model, provider: creds.provider });
     return { imageUrl: final.imageUrl, model };
   }
 
@@ -326,6 +334,8 @@ export async function generateImage(
     throw new Error(msg);
   }
   const data = (await res.json()) as ImageProxyResponse;
+  // 默认供应商未配置 apiKey 时，把本次使用的供应商+模型落盘为默认（首次生成生效）
+  void persistDefaultImageIfProviderUnconfigured({ ...cfg, model, provider: creds.provider });
   return data;
 }
 

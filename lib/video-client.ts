@@ -11,7 +11,6 @@ import type {
   ProviderCache,
   ProviderCacheEntry,
 } from "./types";
-import { getImageSettings } from "./image-client";
 import { apiClient } from "./api-client";
 import { getVideoModels, getDefaultShotVideoConfig, saveDefaultShotVideoConfig, type ModelOption } from "./model-presets";
 
@@ -57,20 +56,7 @@ export const DEFAULT_VIDEO_SETTINGS: VideoGenSettings = {
 
 export async function getVideoSettings(): Promise<VideoGenSettings | null> {
   try {
-    const s = await apiClient.getSetting<VideoGenSettings>("video");
-    if (s) {
-      return s;
-    }
-    // 未配置时，尝试复用图片 API 的 Key（当图片 provider 同为火山引擎系时）
-    const img = await getImageSettings();
-    if (img?.apiKey && (img.provider === "ark" || img.provider === "ark-plan")) {
-      return { ...DEFAULT_VIDEO_SETTINGS, apiKey: img.apiKey, baseURL: img.baseURL };
-    }
-    // APIMart 图片与视频同平台同 Key：复用图片 Key + APIMart 视频 baseURL
-    if (img?.apiKey && img.provider === "apimart") {
-      return { provider: "apimart", apiKey: img.apiKey, baseURL: VIDEO_PROVIDER_PRESETS.apimart.baseURL };
-    }
-    return null;
+    return await apiClient.getSetting<VideoGenSettings>("video");
   } catch { return null; }
 }
 
@@ -137,6 +123,24 @@ async function resolveVideoCredentials(
 }
 
 /**
+ * 若当前默认视频供应商未配置 apiKey，则把本次生成所用模型+供应商持久化为默认。
+ * 用于「默认供应商未配置但用户使用了其他已配置供应商」时，首次生成自动落盘为默认。
+ * 默认供应商已配置 apiKey 时为空操作（避免覆盖用户主动设置的默认）。
+ */
+export async function persistDefaultVideoIfProviderUnconfigured(config: ShotVideoConfig): Promise<void> {
+  try {
+    const defaultCfg = await getDefaultShotVideoConfig();
+    const defaultCreds = await resolveVideoCredentials(defaultCfg.provider);
+    if (defaultCreds?.apiKey) return; // 默认供应商已配置，不覆盖
+    await saveDefaultShotVideoConfig({
+      ...defaultCfg,
+      model: config.model || defaultCfg.model,
+      provider: config.provider || defaultCfg.provider,
+    });
+  } catch { /* ignore persist failure */ }
+}
+
+/**
  * 聚合所有「已配置 API Key」的视频供应商的全部模型（供模型选择弹框使用）。
  * - 已配置 = 当前激活供应商有 apiKey，或在 video_provider_keys 缓存中有 apiKey 的供应商；
  * - 每个模型条目携带其供应商与供应商显示名，便于按供应商分组展示与生成时路由凭证。
@@ -160,16 +164,6 @@ export async function getAllConfiguredVideoModels(): Promise<ModelOption[]> {
     }
   }
   return options;
-}
-
-/**
- * 若用户尚未设置默认视频模型（存储值 model 为空），则把当前生成所用模型+供应商持久化为默认。
- * 仅在「首次生成」时落盘一次；用户已在「默认生成参数」中主动选择模型时为空操作。
- */
-export async function saveDefaultShotVideoConfigIfEmpty(config: ShotVideoConfig): Promise<void> {
-  const current = await getDefaultShotVideoConfig();
-  if (current.model) return;
-  await saveDefaultShotVideoConfig({ ...current, model: config.model, provider: config.provider });
 }
 
 /**
@@ -346,8 +340,6 @@ export async function createVideoTask(params: {
   if (!config.model) {
     throw new Error("未选择视频生成模型，请先在「设置 -> 默认生成参数」中选择默认模型，或先配置视频生成 API");
   }
-  // 首次生成时把当前选用模型落盘为默认（用户未主动设置默认模型时生效一次）
-  await saveDefaultShotVideoConfigIfEmpty(config);
   // 按所选模型所属供应商解析凭证（跨供应商生成）；缺省回退当前激活供应商
   const creds = await resolveVideoCredentials(config.provider);
   if (!creds || !creds.apiKey) {
@@ -380,6 +372,8 @@ export async function createVideoTask(params: {
     throw new Error(msg);
   }
   const response = (await res.json()) as VideoCreateProxyResponse;
+  // 默认供应商未配置 apiKey 时，把本次使用的供应商+模型落盘为默认（首次生成生效）
+  void persistDefaultVideoIfProviderUnconfigured({ ...config, provider: creds.provider });
   // 始终回传实际使用的供应商，供调用方持久化到 Shot.videoTaskProvider（恢复轮询时按此路由凭证）
   return { ...response, provider: creds.provider };
 }

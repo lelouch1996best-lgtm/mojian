@@ -17,7 +17,6 @@ import {
   createVideoTask,
   cancelVideoTask,
   pollVideoTask,
-  getVideoSettings,
   isGrokVideoModel,
   getAllConfiguredVideoModels,
 } from "@/lib/video-client";
@@ -29,7 +28,7 @@ import {
 } from "@/lib/prompts";
 import { isCosConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "@/lib/cos-client";
 import { recordMediaAsset } from "@/lib/storage";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
+import { generateImage, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
 import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { ASSET_TYPE_LABELS, emptyAsset, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
 import {
@@ -272,11 +271,14 @@ export default function VideoGeneration({
   const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
 
   const [videoConfigured, setVideoConfigured] = useState(false);
+  // 视频未配置时弹框提示前往设置
+  const [showVideoNotConfiguredModal, setShowVideoNotConfiguredModal] = useState(false);
   useEffect(() => {
     (async () => {
-      const settings = await getVideoSettings();
-      setVideoConfigured(!!settings?.apiKey);
-      setVideoOptions(await getAllConfiguredVideoModels());
+      // 任意供应商有 apiKey 即视为已配置（聚合所有已配置供应商的模型）
+      const options = await getAllConfiguredVideoModels();
+      setVideoOptions(options);
+      setVideoConfigured(options.length > 0);
     })();
     getDefaultShotVideoConfig().then(setDefaultVideoConfig);
   }, [seriesStyleSettings]);
@@ -287,9 +289,10 @@ export default function VideoGeneration({
   const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   useEffect(() => {
     (async () => {
-      const s = await getImageSettings();
-      setImageConfigured(!!s?.apiKey);
-      setImageOptions(await getAllConfiguredImageModels());
+      // 任意供应商有 apiKey 即视为已配置
+      const options = await getAllConfiguredImageModels();
+      setImageOptions(options);
+      setImageConfigured(options.length > 0);
     })();
     getDefaultAssetImageConfig().then(setDefaultImageConfig);
   }, []);
@@ -686,7 +689,7 @@ export default function VideoGeneration({
       return false;
     }
     if (!videoConfigured) {
-      showError("未配置视频生成 API，请先在设置中配置");
+      setShowVideoNotConfiguredModal(true);
       return false;
     }
 
@@ -914,6 +917,13 @@ export default function VideoGeneration({
       audioNameToNo.set(`${name}音频`, ++audioNo);
     });
 
+    // 校验：所选模型是否属于已配置 apiKey 的供应商（不在 videoOptions 中说明供应商未配置）
+    const selectedOption = findModelOption(videoOptions, config.provider, config.model);
+    if (!selectedOption) {
+      showError(`镜头 ${shotIndex} 未选择有效的视频模型，请先在卡片中选择一个已配置 API Key 的供应商模型`);
+      return false;
+    }
+
     if (opts?.validateOnly) return true;
     setVideoGeneratingIds((prev) => new Set(prev).add(shot.id));
     onUpdateVideoStatus(shot.id, "queued");
@@ -1005,7 +1015,7 @@ export default function VideoGeneration({
   /** 批量生成所有镜头视频 */
   async function generateAllVideos() {
     if (!videoConfigured) {
-      showError("未配置视频生成 API");
+      setShowVideoNotConfiguredModal(true);
       return;
     }
     const pending = episode.shots.filter(
@@ -1415,6 +1425,29 @@ export default function VideoGeneration({
         sceneSettings={sceneSettings}
       />
       <ShotToc shots={episode.shots} />
+
+      <Modal
+        open={showVideoNotConfiguredModal}
+        onClose={() => setShowVideoNotConfiguredModal(false)}
+        title="未配置视频生成 API"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setShowVideoNotConfiguredModal(false)}>
+              稍后配置
+            </Button>
+            <Button variant="primary" onClick={() => {
+              setShowVideoNotConfiguredModal(false);
+              window.location.href = "/settings";
+            }}>
+              前往设置
+            </Button>
+          </>
+        }
+      >
+        <p className="text-sm text-slate-600">
+          视频生成 API 尚未配置。请前往「设置」页面，在「视频生成 API」区域填写至少一个供应商的 API Key。
+        </p>
+      </Modal>
     </div>
   );
 }
@@ -1922,6 +1955,8 @@ function VideoCard({
   // 能力查询使用所选模型所属供应商的模型条目（同一模型名在不同供应商下能力可能不同）
   const selectedVidOption = findModelOption(videoOptions, config.provider, config.model);
   const cap = getVideoModelCapability(config.model, selectedVidOption ? [selectedVidOption.entry] : undefined);
+  // 模型所属供应商未配置 apiKey（不在 videoOptions 中）时，ModelPicker 显示空让用户自选
+  const displayModel = (config.model && selectedVidOption) ? config.model : "";
   const [videoConfigOpen, setVideoConfigOpen] = useState(false);
   const [showInputMaterials, setShowInputMaterials] = useState(true);
   const [showShotInfo, setShowShotInfo] = useState(true);
@@ -2726,7 +2761,7 @@ function VideoCard({
             <ModelPicker
               options={videoOptions}
               provider={config.provider}
-              model={config.model}
+              model={displayModel}
               onSelect={(p, m) => changeModel(p, m)}
             />
           </label>

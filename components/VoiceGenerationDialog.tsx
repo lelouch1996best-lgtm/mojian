@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Modal from "./ui/Modal";
 import Button from "./ui/Button";
 import AssetPicker, { type PickedAssetItem } from "./AssetPicker";
-import { type VoiceGenParams, MAX_VOICE_SAMPLE_LENGTH } from "@/lib/audio-client";
+import { type VoiceGenParams, MAX_VOICE_SAMPLE_LENGTH, getAudioSettings, AUDIO_PROVIDER_PRESETS } from "@/lib/audio-client";
 import {
   getAudioModelCapability,
   getDefaultModelValue,
@@ -97,6 +97,8 @@ export function VoiceGenerationDialog({
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 当前音频供应商（仅展示，不可选择，沿用设置页配置）
+  const [audioProviderLabel, setAudioProviderLabel] = useState("");
 
   const cap = getAudioModelCapability(model, audioModels);
 
@@ -109,6 +111,9 @@ export function VoiceGenerationDialog({
       setSampleAudioDataUri("");
       setSampleAudioName("");
       setError(null);
+      getAudioSettings().then((s) => {
+        setAudioProviderLabel(s ? (AUDIO_PROVIDER_PRESETS[s.provider]?.label ?? s.provider) : "");
+      });
     }
   }, [open, defaultModel, character]);
 
@@ -192,7 +197,17 @@ export function VoiceGenerationDialog({
       <div className="space-y-4">
         {/* 模型选择 */}
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">音色模型</label>
+          <div className="mb-1 flex items-center justify-between">
+            <label className="block text-xs font-medium text-slate-600">音色模型</label>
+            {audioProviderLabel && (
+              <span
+                className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500"
+                title={`当前音频 API 供应商：${audioProviderLabel}`}
+              >
+                {audioProviderLabel}
+              </span>
+            )}
+          </div>
           <select
             value={model}
             onChange={(e) => setModel(e.target.value)}

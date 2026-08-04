@@ -26,7 +26,7 @@ export function getDb(): Database.Database {
       title             TEXT NOT NULL DEFAULT '',
       description       TEXT NOT NULL DEFAULT '',
       order_num         INTEGER NOT NULL DEFAULT 0,
-      world_setting     TEXT NOT NULL DEFAULT '{}',
+      world_settings    TEXT NOT NULL DEFAULT '{}',
       character_settings TEXT NOT NULL DEFAULT '[]',
       object_settings   TEXT NOT NULL DEFAULT '[]',
       scene_settings    TEXT NOT NULL DEFAULT '[]',

@@ -8,7 +8,7 @@ import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
 import { callLLM, streamLLM } from "@/lib/llm-client";
-import { generateImage, getImageSettings, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
+import { generateImage, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
 import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { type ModelOption } from "@/lib/model-presets";
 import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenerationDialog";
@@ -198,9 +198,10 @@ export default function AssetPreparation({
   const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   useEffect(() => {
     (async () => {
-      const s = await getImageSettings();
-      setImageConfigured(!!s?.apiKey);
-      setImageOptions(await getAllConfiguredImageModels());
+      // 任意供应商有 apiKey 即视为已配置（聚合所有已配置供应商的模型）
+      const options = await getAllConfiguredImageModels();
+      setImageOptions(options);
+      setImageConfigured(options.length > 0);
     })();
     // 用户自定义的图片默认生成参数（每次打开弹框时作为基础）
     getDefaultAssetImageConfig().then(setDefaultImageConfig);
@@ -596,10 +597,12 @@ export default function AssetPreparation({
     const refImage = await getAssetReferenceImage(asset.type, seriesStyleSettings);
     setGenTemplateReferenceImage(refImage ?? null);
     setGenInitialPrompt(prompt);
-    setGenImageConfig({
-      ...defaultImageConfig,
-      ...(asset.imageConfig ?? {}),
-    });
+    // 合并默认配置 + 卡片级覆盖；若合并后模型所属供应商未配置 apiKey（不在 imageOptions 中），清空 model 让用户自选
+    const merged: AssetImageConfig = { ...defaultImageConfig, ...(asset.imageConfig ?? {}) };
+    const modelAvailable = !!merged.model && imageOptions.some(
+      (o) => o.provider === merged.provider && o.entry.value === merged.model
+    );
+    setGenImageConfig(modelAvailable ? merged : { ...merged, model: "" });
     setGenInitialRefImages(asset.imageConfig?.referenceImages ?? []);
     setGenTargetAssetId(asset.id);
     setGenConfigOpen(true);
@@ -802,8 +805,8 @@ export default function AssetPreparation({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {!imageConfigured ? (
-            <span className="inline-flex cursor-pointer items-center rounded-md border border-amber-300 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-200" onClick={() => window.history.back()}>
-              ⚠️ 图片 API 未配置，请返回首页打开「设置」
+            <span className="inline-flex cursor-pointer items-center rounded-md border border-amber-300 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-200" onClick={() => { window.location.href = "/settings"; }}>
+              ⚠️ 图片 API 未配置，请前往「设置」页面
             </span>
           ) : (
             <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 图片 API 已配置</span>
@@ -1076,6 +1079,11 @@ export default function AssetPreparation({
         imageOptions={imageOptions}
         loading={genTargetAssetId ? generatingImageIds.has(genTargetAssetId) : false}
         onConfirm={async (params) => {
+          // 模型为空时直接提示，不关闭弹框，让用户在弹框中选择模型
+          if (!params.config.model) {
+            showError("未选择图片生成模型，请先在弹框中选择一个模型后再生成");
+            return;
+          }
           setGenConfigOpen(false);
           setGenImageConfig(params.config);
 

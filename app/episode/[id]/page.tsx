@@ -13,7 +13,7 @@ import CharacterConflictModal, {
   type ConflictAction,
 } from "@/components/CharacterConflictModal";
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
-import { getSettings } from "@/lib/llm-client";
+import { getSettings, PROVIDER_PRESETS } from "@/lib/llm-client";
 import { getStyleTemplates } from "@/lib/style-settings";
 import { emptyShot, debounce, removeTagPrefix, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import { useUnloadPersist } from "@/lib/use-unload-persist";
@@ -74,6 +74,9 @@ export default function EpisodePage() {
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictItems, setConflictItems] = useState<CharacterConflictItem[]>([]);
   const conflictResolverRef = useRef<((items: CharacterConflictItem[]) => void) | null>(null);
+  // 当前 LLM 供应商/模型（右下角展示，沿用设置页配置）
+  const [llmProviderLabel, setLlmProviderLabel] = useState("");
+  const [llmModelLabel, setLlmModelLabel] = useState("");
 
   const episodeRef = useRef<Episode | null>(null);
   episodeRef.current = episode;
@@ -134,6 +137,16 @@ export default function EpisodePage() {
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  // 加载当前 LLM 供应商/模型用于右下角展示
+  useEffect(() => {
+    getSettings().then((s) => {
+      if (s) {
+        setLlmProviderLabel(PROVIDER_PRESETS[s.provider]?.label ?? s.provider);
+        setLlmModelLabel(s.model || "");
+      }
+    });
   }, []);
 
   useEffect(() => {
@@ -725,6 +738,18 @@ export default function EpisodePage() {
         onConfirm={handleConflictConfirm}
         onCancel={handleConflictCancel}
       />
+
+      {/* 右下角：当前对话 API 供应商/模型（沿用设置页配置，不可选择） */}
+      {llmProviderLabel && (
+        <div className="pointer-events-none fixed bottom-3 right-4 z-40">
+          <span
+            className="rounded bg-white/80 px-2 py-1 text-[11px] text-slate-500 shadow-sm backdrop-blur"
+            title={`当前对话 API 供应商：${llmProviderLabel}${llmModelLabel ? ` · ${llmModelLabel}` : ""}`}
+          >
+            {llmProviderLabel}{llmModelLabel ? ` · ${llmModelLabel}` : ""}
+          </span>
+        </div>
+      )}
 
     </main>
   );
