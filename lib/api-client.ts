@@ -77,8 +77,9 @@ export const apiClient = {
       body: JSON.stringify({ ids }),
     }),
 
-  // Voice Personas（Suno 歌手音色，全局共享）
-  listVoicePersonas: () => request<VoicePersona[]>("/data/voice-personas"),
+  // Voice Personas（Suno 歌手音色，按企划分类）
+  listVoicePersonas: (seriesId?: string) =>
+    request<VoicePersona[]>(seriesId ? `/data/voice-personas?seriesId=${encodeURIComponent(seriesId)}` : "/data/voice-personas"),
   saveVoicePersona: (vp: VoicePersona) =>
     request<{ ok: boolean }>("/data/voice-personas", {
       method: "POST",

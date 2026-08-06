@@ -379,9 +379,13 @@ export const ASSET_TYPE_LABELS: Record<string, string> = {
   character: "人物",
   scene: "场景",
   object: "物品",
+  shot: "镜头",
   screenshot: "截屏",
   storyboard: "故事板",
   generated: "生成",
+  music: "音乐",
+  voicePersona: "歌手音色",
+  other: "其他",
 };
 
 /** 从 LLM 返回文本中提取资产数组 */

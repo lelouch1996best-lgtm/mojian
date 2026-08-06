@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Modal from "./ui/Modal";
 import Button from "./ui/Button";
+import Select from "./ui/Select";
 import { isAudioConfigured, MAX_VOICE_SAMPLE_LENGTH } from "@/lib/audio-client";
 import { isMusicConfigured } from "@/lib/music-client";
 import { isCosConfigured } from "@/lib/cos-client";
@@ -33,15 +34,18 @@ export interface VoicePersonaCreateDialogProps {
   open: boolean;
   onClose: () => void;
   onCreated?: (vp: VoicePersona) => void;
+  seriesOptions: { id: string; title: string }[];
 }
 
 export default function VoicePersonaCreateDialog({
   open,
   onClose,
   onCreated,
+  seriesOptions,
 }: VoicePersonaCreateDialogProps) {
   const [mode, setMode] = useState<CreateMode>("upload");
   const [name, setName] = useState("");
+  const [seriesId, setSeriesId] = useState(seriesOptions[0]?.id ?? "");
   const [file, setFile] = useState<File | null>(null);
   const [voicePrompt, setVoicePrompt] = useState("");
   const [sampleText, setSampleText] = useState("你好，这是我的声音。");
@@ -54,6 +58,7 @@ export default function VoicePersonaCreateDialog({
   function reset() {
     setMode("upload");
     setName("");
+    setSeriesId(seriesOptions[0]?.id ?? "");
     setFile(null);
     setVoicePrompt("");
     setSampleText("你好，这是我的声音。");
@@ -83,6 +88,10 @@ export default function VoicePersonaCreateDialog({
 
     if (!name.trim()) {
       setError("请填写音色名称");
+      return;
+    }
+    if (!seriesId) {
+      setError("请选择所属企划");
       return;
     }
     if (!(await isMusicConfigured())) {
@@ -133,7 +142,15 @@ export default function VoicePersonaCreateDialog({
     setProgress(5);
     setStatusMsg("正在准备…");
 
-    const vp = createPendingVoicePersona(name.trim(), sourceType, sourceAudioUrl, description);
+    const series = seriesOptions.find((s) => s.id === seriesId);
+    const vp = createPendingVoicePersona(
+      name.trim(),
+      sourceType,
+      sourceAudioUrl,
+      description,
+      seriesId,
+      series?.title
+    );
     await persistVoicePersona(vp);
 
     try {
@@ -233,6 +250,19 @@ export default function VoicePersonaCreateDialog({
             onChange={(e) => setName(e.target.value)}
             placeholder="给这个音色起个名字"
             className={INPUT_CLASS}
+          />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-medium text-slate-700">
+            所属企划 <span className="text-red-500">*</span>
+          </label>
+          <Select
+            value={seriesId}
+            onChange={setSeriesId}
+            options={seriesOptions.map((s) => ({ value: s.id, label: s.title }))}
+            placeholder="选择企划"
+            buttonClassName="px-3 py-2 text-sm w-full"
           />
         </div>
 

@@ -811,7 +811,7 @@ export type VoicePersonaSourceType = "upload" | "tts" | "url";
 /** Suno 歌手音色状态 */
 export type VoicePersonaStatus = "idle" | "pending" | "completed" | "failed";
 
-/** Suno 歌手音色（全局共享，不绑定企划） */
+/** Suno 歌手音色（按企划分类管理） */
 export interface VoicePersona {
   id: string;
   /** 用户自定义名称 */
@@ -830,6 +830,10 @@ export interface VoicePersona {
   error?: string;
   /** Suno 任务 ID（用于断点轮询恢复） */
   sunoTaskId?: string;
+  /** 所属企划 ID（纯文本标注，历史数据可能为空） */
+  seriesId?: string;
+  /** 所属企划名称 */
+  seriesTitle?: string;
   createdAt: number;
   updatedAt: number;
 }

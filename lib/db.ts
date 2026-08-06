@@ -148,6 +148,16 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_image_tasks_created_at ON image_tasks(created_at);
   `);
 
+  // 迁移：voice_personas 增加 series_id / series_title 列（历史数据为 NULL）
+  const vpCols = db.prepare("PRAGMA table_info(voice_personas)").all() as { name: string }[];
+  const vpColNames = new Set(vpCols.map((c) => c.name));
+  if (!vpColNames.has("series_id")) {
+    db.exec("ALTER TABLE voice_personas ADD COLUMN series_id TEXT");
+  }
+  if (!vpColNames.has("series_title")) {
+    db.exec("ALTER TABLE voice_personas ADD COLUMN series_title TEXT");
+  }
+
   return db;
 }
 

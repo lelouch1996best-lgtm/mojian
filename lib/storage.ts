@@ -102,9 +102,9 @@ export function emptyVoicePersona(
   };
 }
 
-/** 获取全部音色，按创建时间降序 */
-export async function getVoicePersonas(): Promise<VoicePersona[]> {
-  return apiClient.listVoicePersonas();
+/** 获取全部音色（可按企划过滤），按创建时间降序 */
+export async function getVoicePersonas(seriesId?: string): Promise<VoicePersona[]> {
+  return apiClient.listVoicePersonas(seriesId);
 }
 
 /** 获取单个音色，不存在时返回 null */

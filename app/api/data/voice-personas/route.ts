@@ -13,18 +13,26 @@ function rowToVoicePersona(row: any): VoicePersona {
     status: row.status ?? "idle",
     error: row.error ?? undefined,
     sunoTaskId: row.suno_task_id ?? undefined,
+    seriesId: row.series_id ?? undefined,
+    seriesTitle: row.series_title ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-/** GET /api/data/voice-personas - 获取全部音色（按 created_at 降序） */
+/** GET /api/data/voice-personas - 获取音色（支持按 seriesId 过滤，按 created_at 降序） */
 export async function GET(request: Request) {
   if (!validateAuth(request)) return authError();
+  const url = new URL(request.url);
+  const seriesId = url.searchParams.get("seriesId");
   const db = getDb();
-  const rows = db
-    .prepare("SELECT * FROM voice_personas ORDER BY created_at DESC")
-    .all() as any[];
+  const rows = seriesId
+    ? db
+        .prepare("SELECT * FROM voice_personas WHERE series_id = ? ORDER BY created_at DESC")
+        .all(seriesId) as any[]
+    : db
+        .prepare("SELECT * FROM voice_personas ORDER BY created_at DESC")
+        .all() as any[];
   return Response.json(rows.map(rowToVoicePersona));
 }
 
@@ -48,13 +56,14 @@ export async function POST(request: Request) {
 
   db.prepare(`
     INSERT INTO voice_personas
-      (id, name, persona_id, source_type, source_audio_url, description, status, error, suno_task_id, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, name, persona_id, source_type, source_audio_url, description, status, error, suno_task_id, series_id, series_title, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name, persona_id = excluded.persona_id,
       source_type = excluded.source_type, source_audio_url = excluded.source_audio_url,
       description = excluded.description, status = excluded.status,
       error = excluded.error, suno_task_id = excluded.suno_task_id,
+      series_id = excluded.series_id, series_title = excluded.series_title,
       updated_at = excluded.updated_at
   `).run(
     vp.id,
@@ -66,6 +75,8 @@ export async function POST(request: Request) {
     vp.status ?? "idle",
     vp.error ?? null,
     vp.sunoTaskId ?? null,
+    vp.seriesId || null,
+    vp.seriesTitle || null,
     vp.createdAt ?? now,
     now
   );

@@ -549,8 +549,8 @@ export default function CharacterSettingsPage() {
         void recordMediaAsset({
           mediaType: "audio",
           url,
-          entityType: "other",
-          entityName: `${char.name || "未命名人物"} - 音色`,
+          entityType: "character",
+          entityName: char.name || "未命名人物",
           source: "manual",
           seriesId: series.id,
           seriesTitle: series.title,

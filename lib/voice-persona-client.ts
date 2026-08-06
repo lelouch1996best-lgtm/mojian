@@ -117,10 +117,14 @@ export function createPendingVoicePersona(
   name: string,
   sourceType: VoicePersona["sourceType"],
   sourceAudioUrl: string,
-  description?: string
+  description?: string,
+  seriesId?: string,
+  seriesTitle?: string
 ): VoicePersona {
   const vp = emptyVoicePersona(name, sourceType, sourceAudioUrl);
   vp.status = "pending";
   vp.description = description;
+  vp.seriesId = seriesId;
+  vp.seriesTitle = seriesTitle;
   return vp;
 }

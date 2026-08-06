@@ -18,12 +18,15 @@ interface VoicePersonaPickerProps {
   value: string;
   disabled?: boolean;
   onChange: (personaId: string) => void;
+  /** 当前企划 ID，用于按企划过滤可选音色 */
+  seriesId?: string;
 }
 
 export default function VoicePersonaPicker({
   value,
   disabled,
   onChange,
+  seriesId,
 }: VoicePersonaPickerProps) {
   const [personas, setPersonas] = useState<VoicePersona[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,7 +35,7 @@ export default function VoicePersonaPicker({
     let cancelled = false;
     (async () => {
       try {
-        const list = await getVoicePersonas();
+        const list = await getVoicePersonas(seriesId);
         if (!cancelled) {
           setPersonas(list.filter((p) => p.status === "completed" && p.personaId));
         }
@@ -45,7 +48,7 @@ export default function VoicePersonaPicker({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [seriesId]);
 
   const selected = personas.find((p) => p.personaId === value);
 

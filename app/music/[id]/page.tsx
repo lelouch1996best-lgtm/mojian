@@ -996,6 +996,7 @@ export default function MusicPage() {
               value={modeParams.personaId ?? ""}
               disabled={generating}
               onChange={(personaId) => updateParams({ personaId })}
+              seriesId={music.seriesId || undefined}
             />
             {weightsControl}
           </div>

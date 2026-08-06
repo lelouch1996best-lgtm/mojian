@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import ImageLightbox from "@/components/ImageLightbox";
+import Select from "@/components/ui/Select";
 import Spinner from "@/components/ui/Spinner";
 import { ImageGenerationDialog } from "./ImageGenerationDialog";
 import VoicePersonaCreateDialog from "./VoicePersonaCreateDialog";
@@ -15,13 +16,13 @@ import { getVoicePersonas, deleteVoicePersona } from "@/lib/storage";
 import type { AssetImageConfig, MediaAsset, MediaAssetInput, VoicePersona } from "@/lib/types";
 
 type MediaTypeFilter = "all" | "image" | "video" | "audio" | "music" | "voice";
-type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard" | "generated";
+type EntityTypeFilter = "all" | "character" | "scene" | "object" | "shot" | "screenshot" | "storyboard" | "generated" | "music" | "voicePersona" | "other";
 
 const MEDIA_TYPE_OPTIONS: { value: MediaTypeFilter; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "image", label: "图片" },
   { value: "video", label: "视频" },
-  { value: "audio", label: "音色" },
+  { value: "audio", label: "音频" },
   { value: "music", label: "音乐" },
   { value: "voice", label: "歌手音色" },
 ];
@@ -31,30 +32,66 @@ const ENTITY_TYPE_OPTIONS: { value: EntityTypeFilter; label: string }[] = [
   { value: "character", label: "人物" },
   { value: "object", label: "物品" },
   { value: "scene", label: "场景" },
+  { value: "shot", label: "镜头" },
   { value: "screenshot", label: "截屏" },
   { value: "storyboard", label: "故事板" },
   { value: "generated", label: "生成" },
+  { value: "music", label: "音乐" },
+  { value: "voicePersona", label: "歌手音色" },
+  { value: "other", label: "其他" },
 ];
 
-/** 添加资产弹窗用的实体类型选项 */
-const ADD_ENTITY_TYPE_OPTIONS: { value: MediaAsset["entityType"]; label: string }[] = [
-  { value: "character", label: "人物" },
-  { value: "object", label: "物品" },
-  { value: "scene", label: "场景" },
-  { value: "screenshot", label: "截屏" },
-  { value: "storyboard", label: "故事板" },
-  { value: "generated", label: "生成" },
-];
+/** 媒体类型 → 可用的实体类型（联动筛选） */
+const MEDIA_ENTITY_TYPES: Record<MediaTypeFilter, EntityTypeFilter[]> = {
+  all: ["character", "scene", "object", "shot", "screenshot", "storyboard", "generated", "music", "voicePersona", "other"],
+  image: ["character", "scene", "object", "shot", "screenshot", "storyboard", "generated", "other"],
+  video: ["shot", "generated", "other"],
+  audio: ["character", "other"],
+  music: ["music", "other"],
+  voice: [],
+};
 
-const ADD_MEDIA_TYPE_OPTIONS: { value: MediaAsset["mediaType"]; label: string }[] = [
-  { value: "image", label: "图片" },
-  { value: "video", label: "视频" },
-  { value: "audio", label: "音频" },
-];
+/** 添加资产弹窗：媒体类型 → 可选实体类型（联动） */
+const ADD_ENTITY_TYPE_MAP: Record<MediaAsset["mediaType"], { value: MediaAsset["entityType"]; label: string }[]> = {
+  image: [
+    { value: "character", label: "人物" },
+    { value: "object", label: "物品" },
+    { value: "scene", label: "场景" },
+    { value: "shot", label: "镜头" },
+    { value: "screenshot", label: "截屏" },
+    { value: "storyboard", label: "故事板" },
+    { value: "generated", label: "生成" },
+    { value: "other", label: "其他" },
+  ],
+  video: [
+    { value: "shot", label: "镜头" },
+    { value: "generated", label: "生成" },
+    { value: "other", label: "其他" },
+  ],
+  audio: [{ value: "other", label: "其他" }],
+  music: [{ value: "music", label: "音乐" }],
+  voice: [],
+};
+
+/** 添加资产弹窗：媒体类型 → 默认实体类型 */
+const ADD_ENTITY_TYPE_DEFAULT: Record<MediaAsset["mediaType"], MediaAsset["entityType"]> = {
+  image: "character",
+  video: "other",
+  audio: "other",
+  music: "music",
+  voice: "other",
+};
+
+/** 媒体类型中文标签（添加弹窗标题用） */
+const MEDIA_TYPE_LABEL: Record<MediaAsset["mediaType"], string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+  music: "音乐",
+  voice: "歌手音色",
+};
 
 function entityTypeLabel(t: MediaAsset["entityType"]): string {
-  if (t === "shot") return "镜头";
-  if (t === "other") return "其他";
   return ASSET_TYPE_LABELS[t] ?? t;
 }
 
@@ -69,7 +106,7 @@ function sourceLabel(item: MediaAsset): string {
 function mediaEmptyText(mediaType: MediaTypeFilter): string {
   if (mediaType === "image") return "暂无图片资产";
   if (mediaType === "video") return "暂无视频资产";
-  if (mediaType === "audio") return "暂无音色资产";
+  if (mediaType === "audio") return "暂无音频资产";
   if (mediaType === "music") return "暂无音乐资产";
   if (mediaType === "voice") return "暂无歌手音色，点击右上角「创建歌手音色」开始";
   return "暂无生成的资产";
@@ -118,6 +155,8 @@ export default function AssetLibrary() {
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<null | { ids: string[]; names: string[] }>(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [addMediaType, setAddMediaType] = useState<MediaAsset["mediaType"]>("image");
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [voiceCreateOpen, setVoiceCreateOpen] = useState(false);
   const [voicePersonas, setVoicePersonas] = useState<VoicePersona[]>([]);
   const [allSeries, setAllSeries] = useState<{ id: string; title: string }[]>([]);
@@ -167,6 +206,16 @@ export default function AssetLibrary() {
     };
   }, [videoPreview]);
 
+  // 下拉菜单：ESC 关闭
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAddMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [addMenuOpen]);
+
   const seriesOptions = useMemo(() => {
     const map = new Map<string, string>();
     for (const s of allSeries) map.set(s.id, s.title);
@@ -190,8 +239,27 @@ export default function AssetLibrary() {
     });
   }, [items, seriesId, mediaType, entityType]);
 
-  // 媒体类型为"视频"或"歌手音色"时，实体类型筛选无意义，禁用
-  const entityTypeDisabled = mediaType === "video" || mediaType === "voice";
+  // 歌手音色按企划过滤（全部企划时显示所有，含历史无企划的）
+  const filteredVoicePersonas = useMemo(() => {
+    if (!seriesId) return voicePersonas;
+    return voicePersonas.filter((vp) => vp.seriesId === seriesId);
+  }, [voicePersonas, seriesId]);
+
+  // 歌手音色为独立数据源（VoicePersona 列表），实体类型筛选无意义，禁用
+  const entityTypeDisabled = mediaType === "voice";
+
+  const availableEntityTypeOptions = useMemo(() => {
+    const validTypes = MEDIA_ENTITY_TYPES[mediaType];
+    return ENTITY_TYPE_OPTIONS.filter((opt) => opt.value === "all" || validTypes.includes(opt.value));
+  }, [mediaType]);
+
+  function handleMediaTypeChange(next: MediaTypeFilter) {
+    setMediaType(next);
+    const validTypes = MEDIA_ENTITY_TYPES[next];
+    if (entityType !== "all" && !validTypes.includes(entityType)) {
+      setEntityType("all");
+    }
+  }
 
   async function handleCopy(item: MediaAsset) {
     await copyUrl(item.url);
@@ -279,18 +347,47 @@ export default function AssetLibrary() {
         <h1 className="text-xl font-bold text-slate-800">资产库</h1>
 
         <div className="ml-auto flex flex-wrap items-center gap-2 text-sm text-slate-500">
-          <button
-            onClick={() => setVoiceCreateOpen(true)}
-            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-          >
-            + 创建歌手音色
-          </button>
-          <button
-            onClick={() => setAddOpen(true)}
-            className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm transition-colors hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
-          >
-            + 添加资产
-          </button>
+          {/* 添加下拉折叠按钮 */}
+          <div className="relative">
+            <button
+              onClick={() => setAddMenuOpen((v) => !v)}
+              className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500/40"
+            >
+              + 添加
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                className={`transition-transform ${addMenuOpen ? "rotate-180" : ""}`}
+              >
+                <path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            {addMenuOpen && (
+              <>
+                {/* 点击外部关闭 */}
+                <div className="fixed inset-0 z-40" onClick={() => setAddMenuOpen(false)} />
+                <div className="absolute right-0 z-50 mt-1 w-40 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+                  {([
+                    { label: "添加图片", action: () => { setAddMediaType("image"); setAddOpen(true); } },
+                    { label: "添加视频", action: () => { setAddMediaType("video"); setAddOpen(true); } },
+                    { label: "添加音频", action: () => { setAddMediaType("audio"); setAddOpen(true); } },
+                    { label: "添加音乐", action: () => { setAddMediaType("music"); setAddOpen(true); } },
+                    { label: "创建歌手音色", action: () => { setVoiceCreateOpen(true); } },
+                  ] as const).map((item) => (
+                    <button
+                      key={item.label}
+                      onClick={() => { item.action(); setAddMenuOpen(false); }}
+                      className="block w-full px-4 py-2 text-left text-sm text-slate-700 transition-colors hover:bg-brand-50 hover:text-brand-700"
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={() => { setSelectMode(!selectMode); clearSelection(); }}
             className={`rounded-lg px-4 py-2 text-sm font-semibold shadow-sm transition-colors focus:outline-none focus:ring-2 focus:ring-brand-500/40 ${
@@ -320,50 +417,39 @@ export default function AssetLibrary() {
       </div>
 
       {/* 过滤栏 */}
-      <div className="mb-6 flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-slate-500">企划</span>
-            <select
-              value={seriesId}
-              onChange={(e) => setSeriesId(e.target.value)}
-              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            >
-              <option value="">全部企划</option>
-              {seriesOptions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.title}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            <span className="mr-1 text-sm font-medium text-slate-500">媒体</span>
-            {MEDIA_TYPE_OPTIONS.map((opt) => (
-              <FilterPill
-                key={opt.value}
-                active={mediaType === opt.value}
-                onClick={() => setMediaType(opt.value)}
-              >
-                {opt.label}
-              </FilterPill>
-            ))}
-          </div>
+      <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-slate-500">企划</span>
+          <Select
+            value={seriesId}
+            onChange={(v) => setSeriesId(v)}
+            options={[{ value: "", label: "全部企划" }, ...seriesOptions.map((s) => ({ value: s.id, label: s.title }))]}
+            className="w-40"
+            buttonClassName="px-3 py-1.5 text-sm"
+          />
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-sm font-medium text-slate-500">类型</span>
-          {ENTITY_TYPE_OPTIONS.map((opt) => (
-            <FilterPill
-              key={opt.value}
-              active={entityType === opt.value}
-              disabled={entityTypeDisabled}
-              onClick={() => setEntityType(opt.value)}
-            >
-              {opt.label}
-            </FilterPill>
-          ))}
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-slate-500">媒体</span>
+          <Select
+            value={mediaType}
+            onChange={(v) => handleMediaTypeChange(v as MediaTypeFilter)}
+            options={MEDIA_TYPE_OPTIONS}
+            className="w-28"
+            buttonClassName="px-3 py-1.5 text-sm"
+          />
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-slate-500">类型</span>
+          <Select
+            value={entityType}
+            onChange={(v) => setEntityType(v as EntityTypeFilter)}
+            options={availableEntityTypeOptions}
+            disabled={entityTypeDisabled}
+            className="w-28"
+            buttonClassName="px-3 py-1.5 text-sm"
+          />
         </div>
       </div>
 
@@ -374,13 +460,13 @@ export default function AssetLibrary() {
           <span>加载中…</span>
         </div>
       ) : mediaType === "voice" ? (
-        voicePersonas.length === 0 ? (
+        filteredVoicePersonas.length === 0 ? (
           <div className="py-20 text-center text-slate-400">
             暂无歌手音色，点击右上角「创建歌手音色」开始
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-            {voicePersonas.map((vp) => (
+            {filteredVoicePersonas.map((vp) => (
               <VoicePersonaCard
                 key={vp.id}
                 vp={vp}
@@ -516,6 +602,7 @@ export default function AssetLibrary() {
       {/* 添加资产弹窗 */}
       {addOpen && (
         <AddAssetDialog
+          presetMediaType={addMediaType}
           seriesOptions={seriesOptions}
           onClose={() => setAddOpen(false)}
           onCreated={() => {
@@ -528,6 +615,7 @@ export default function AssetLibrary() {
       {/* 创建歌手音色弹窗 */}
       <VoicePersonaCreateDialog
         open={voiceCreateOpen}
+        seriesOptions={seriesOptions}
         onClose={() => setVoiceCreateOpen(false)}
         onCreated={() => {
           setVoiceCreateOpen(false);
@@ -615,7 +703,9 @@ function VoicePersonaCard({
       </div>
 
       <div className="flex items-center justify-between border-t border-slate-100 px-3 py-1.5">
-        <span className="text-xs text-slate-400">{formatTime(vp.createdAt)}</span>
+        <span className="text-xs text-slate-400">
+          {vp.seriesTitle ? `${vp.seriesTitle} · ` : ""}{formatTime(vp.createdAt)}
+        </span>
         <button
           onClick={onDelete}
           className="rounded px-2 py-1 text-xs text-red-500 hover:bg-red-50"
@@ -729,7 +819,7 @@ function AssetCard({
         </div>
       ) : (
         <span className="absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">
-          {isVideo ? "视频" : isAudio ? "音色" : isMusic ? "音乐" : "图片"}
+          {isVideo ? "视频" : isAudio ? "音频" : isMusic ? "音乐" : "图片"}
         </span>
       )}
 
@@ -857,16 +947,18 @@ function AssetCard({
 
 /** 添加资产弹窗：支持上传本地文件或粘贴 URL，写入 media_assets 账本 */
 function AddAssetDialog({
+  presetMediaType,
   seriesOptions,
   onClose,
   onCreated,
 }: {
+  presetMediaType: MediaAsset["mediaType"];
   seriesOptions: { id: string; title: string }[];
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const [mediaType, setMediaType] = useState<MediaAsset["mediaType"]>("image");
-  const [entityType, setEntityType] = useState<MediaAsset["entityType"]>("character");
+  const mediaType = presetMediaType;
+  const [entityType, setEntityType] = useState<MediaAsset["entityType"]>(ADD_ENTITY_TYPE_DEFAULT[mediaType]);
   const [mode, setMode] = useState<"upload" | "url" | "generate">("upload");
   const [name, setName] = useState("");
   const [urlInput, setUrlInput] = useState("");
@@ -912,7 +1004,6 @@ function AddAssetDialog({
 
   function changeMode(next: "upload" | "url" | "generate") {
     setMode(next);
-    if (next === "generate") setMediaType("image");
     setGeneratedUrl("");
     setGeneratedPrompt("");
   }
@@ -1034,6 +1125,10 @@ function AddAssetDialog({
   const accept =
     mediaType === "image" ? "image/*" : mediaType === "video" ? "video/*" : "audio/*";
 
+  const entityTypeOptions = ADD_ENTITY_TYPE_MAP[mediaType];
+  const showEntityTypeSelector = entityTypeOptions.length > 1;
+  const canGenerate = mediaType === "image";
+
   return (
     <>
       <div
@@ -1046,26 +1141,9 @@ function AddAssetDialog({
           className="w-full max-w-lg rounded-xl bg-white p-5 shadow-xl"
           onClick={(e) => e.stopPropagation()}
         >
-        <h3 className="mb-4 text-base font-semibold text-slate-800">添加资产</h3>
+        <h3 className="mb-4 text-base font-semibold text-slate-800">添加{MEDIA_TYPE_LABEL[mediaType]}</h3>
 
         <div className="space-y-4">
-          {/* 媒体类型 */}
-          <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-sm text-slate-500">媒体类型</span>
-            <div className="flex gap-1.5">
-              {ADD_MEDIA_TYPE_OPTIONS.map((opt) => (
-                <FilterPill
-                  key={opt.value}
-                  active={mediaType === opt.value}
-                  onClick={() => setMediaType(opt.value)}
-                  disabled={mode === "generate"}
-                >
-                  {opt.label}
-                </FilterPill>
-              ))}
-            </div>
-          </div>
-
           {/* 来源方式 */}
           <div className="flex items-center gap-2">
             <span className="w-16 shrink-0 text-sm text-slate-500">来源方式</span>
@@ -1076,9 +1154,11 @@ function AddAssetDialog({
               <FilterPill active={mode === "url"} onClick={() => changeMode("url")}>
                 粘贴 URL
               </FilterPill>
-              <FilterPill active={mode === "generate"} onClick={() => changeMode("generate")}>
-                AI 生成
-              </FilterPill>
+              {canGenerate && (
+                <FilterPill active={mode === "generate"} onClick={() => changeMode("generate")}>
+                  AI 生成
+                </FilterPill>
+              )}
             </div>
           </div>
 
@@ -1171,36 +1251,30 @@ function AddAssetDialog({
             />
           </div>
 
-          {/* 实体类型 */}
-          <div className="flex items-center gap-2">
-            <span className="w-16 shrink-0 text-sm text-slate-500">类型</span>
-            <select
-              value={entityType}
-              onChange={(e) => setEntityType(e.target.value as MediaAsset["entityType"])}
-              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            >
-              {ADD_ENTITY_TYPE_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* 实体类型（仅多选项时显示） */}
+          {showEntityTypeSelector && (
+            <div className="flex items-center gap-2">
+              <span className="w-16 shrink-0 text-sm text-slate-500">类型</span>
+              <Select
+                value={entityType}
+                onChange={(v) => setEntityType(v as MediaAsset["entityType"])}
+                options={entityTypeOptions}
+                className="flex-1"
+                buttonClassName="px-3 py-1.5 text-sm"
+              />
+            </div>
+          )}
 
           {/* 所属企划 */}
           <div className="flex items-center gap-2">
             <span className="w-16 shrink-0 text-sm text-slate-500">所属企划</span>
-            <select
+            <Select
               value={seriesId}
-              onChange={(e) => setSeriesId(e.target.value)}
-              className="flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-            >
-              {seriesOptions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.title}
-                </option>
-              ))}
-            </select>
+              onChange={(v) => setSeriesId(v)}
+              options={seriesOptions.map((s) => ({ value: s.id, label: s.title }))}
+              className="flex-1"
+              buttonClassName="px-3 py-1.5 text-sm"
+            />
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
