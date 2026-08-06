@@ -1,6 +1,6 @@
 {
   "name": "ai-script-tool",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "墨间 - AI 驱动的短剧/视频脚本创作桌面客户端",
   "author": "mojian",
@@ -16,7 +16,8 @@
     "electron:build:next": "cross-env NEXT_PUBLIC_STORAGE_TOKEN=mojian-electron-local-token next build",
     "electron:compile": "tsc -p electron/tsconfig.json",
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
-    "electron:build": "concurrently --kill-others-on-fail -n next,electron \"npm run electron:build:next\" \"npm run electron:compile\" && electron-builder && npm run electron:restore:native",
+    "electron:rebuild:standalone": "tsx tools/rebuild-standalone-native.ts",
+    "electron:build": "concurrently --kill-others-on-fail -n next,electron \"npm run electron:build:next\" \"npm run electron:compile\" && npm run electron:rebuild:standalone && electron-builder && npm run electron:restore:native",
     "electron:restore:native": "node -e \"['runtime','target','disturl','node_gyp','arch','target_arch','platform','target_platform','devdir','build_from_source','fallback_to_build','update_binary','libc','target_libc'].forEach(k=>delete process.env['npm_config_'+k]); require('child_process').execSync('npm rebuild better-sqlite3',{stdio:'inherit'})\"",
     "gen:keypair": "tsx tools/gen-keypair.ts",
     "gen:license": "tsx tools/gen-license.ts",

@@ -832,27 +832,13 @@ export default function AssetPreparation({
         </div>
       </div>
 
-      {/* 图片 API 未配置提示 */}
-      {!imageConfigured && (
-        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          图片生成 API 尚未配置。请返回首页，打开右上角「设置」弹窗，点击底部「图片生成 API（火山引擎 Seedream）」折叠区域填写。
-        </div>
-      )}
-
-      {/* COS 未配置提示 */}
-      {!cosConfigured && (
-        <div className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          COS 存储尚未配置。上传本地图片需要配置腾讯云 COS。请打开右上角「设置」弹窗，点击「腾讯云 COS 存储」折叠区域填写。
-        </div>
-      )}
-
       {/* 说明区 */}
       <div className="rounded-lg border border-amber-200 bg-amber-50/50 px-4 py-3 text-xs leading-relaxed text-slate-600">
         <p className="mb-1 font-medium text-slate-700">第三步 · 资产准备</p>
         <p>
           系统已从第二步的分镜画面描述中识别出以下{" "}
           <span className="font-medium text-amber-700">@标签</span>。点击「一键生成资产信息」后，AI
-          会为每个标签分类（人物/场景/物品）并生成用于图片生成的中文提示词。随后可对每个资产生成参考图片（图片 API 待接入）。
+          会为每个标签分类（人物/场景/物品）并生成用于图片生成的中文提示词。随后可对每个资产生成参考图片。
         </p>
       </div>
 
@@ -903,7 +889,7 @@ export default function AssetPreparation({
             isGenerating: generatingImageIds.has(asset.id),
             onGenerateImage: () => openGenerateImageDialog(asset),
             isUploading: uploadingIds.has(asset.id),
-            onUploadImage: cosConfigured ? (file: File) => handleUploadImage(asset, file) : undefined,
+            onUploadImage: (file: File) => handleUploadImage(asset, file),
             isRegenerating: regeneratingIds.has(asset.id),
             onRegenerate: () => handleRegenerateAsset(asset),
           };

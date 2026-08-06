@@ -243,112 +243,112 @@ export default function SettingsPage() {
   useEffect(() => {
     (async () => {
 
-    // LLM
-    const s = await getSettings();
-    if (s) {
-      setProvider(s.provider);
-      setBaseURL(s.baseURL);
-      setApiKey(s.apiKey);
-      setModel(s.model);
-    } else {
-      setProvider("deepseek");
-      setBaseURL(PROVIDER_PRESETS.deepseek.baseURL);
-      setModel(PROVIDER_PRESETS.deepseek.model);
-      setApiKey("");
-    }
-    setTestResult(null);
+      // LLM
+      const s = await getSettings();
+      if (s) {
+        setProvider(s.provider);
+        setBaseURL(s.baseURL);
+        setApiKey(s.apiKey);
+        setModel(s.model);
+      } else {
+        setProvider("deepseek");
+        setBaseURL(PROVIDER_PRESETS.deepseek.baseURL);
+        setModel(PROVIDER_PRESETS.deepseek.model);
+        setApiKey("");
+      }
+      setTestResult(null);
 
-    // 加载各 provider 缓存的 API Key
-    setProviderKeys(await getProviderKeys());
+      // 加载各 provider 缓存的 API Key
+      setProviderKeys(await getProviderKeys());
 
-    // LLM 模型列表
-    const currentProvider = s?.provider ?? "deepseek";
-    setLLMModels(await getLLMModels(currentProvider));
-    setShowLLMManager(false);
-    setNewLLMValue("");
-    setNewLLMLabel("");
+      // LLM 模型列表
+      const currentProvider = s?.provider ?? "deepseek";
+      setLLMModels(await getLLMModels(currentProvider));
+      setShowLLMManager(false);
+      setNewLLMValue("");
+      setNewLLMLabel("");
 
-    // 图片
-    const is = await getImageSettings();
-    const imgProvider = is?.provider ?? "ark";
-    setImgSettings(is ?? { ...DEFAULT_IMAGE_SETTINGS });
-    setImgTestResult(null);
+      // 图片
+      const is = await getImageSettings();
+      const imgProvider = is?.provider ?? "ark";
+      setImgSettings(is ?? { ...DEFAULT_IMAGE_SETTINGS });
+      setImgTestResult(null);
 
-    // 加载各图片 provider 缓存的 API Key
-    const imgKeys = await getImageProviderKeys();
-    setImageProviderKeys(imgKeys);
-    // 任意供应商有 apiKey 即视为已配置，自动展开面板
-    setImagePanelOpen(!!is?.apiKey || Object.values(imgKeys).some((e) => !!e?.apiKey));
+      // 加载各图片 provider 缓存的 API Key
+      const imgKeys = await getImageProviderKeys();
+      setImageProviderKeys(imgKeys);
+      // 任意供应商有 apiKey 即视为已配置，自动展开面板
+      setImagePanelOpen(!!is?.apiKey || Object.values(imgKeys).some((e) => !!e?.apiKey));
 
-    // 图片模型列表（标记 isDefault：优先用已加载的 imgSettings.model，否则取 getDefaultModelValue）
-    const imgModels = await getImageModels(imgProvider);
-    const imgDefaultModel = is?.model || getDefaultModelValue(imgModels) || "";
-    setImageModels(imgModels.map((m) => ({ ...m, isDefault: m.value === imgDefaultModel })));
-    setShowImageManager(false);
-    setNewImageValue("");
-    setNewImageLabel("");
+      // 图片模型列表（标记 isDefault：优先用已加载的 imgSettings.model，否则取 getDefaultModelValue）
+      const imgModels = await getImageModels(imgProvider);
+      const imgDefaultModel = is?.model || getDefaultModelValue(imgModels) || "";
+      setImageModels(imgModels.map((m) => ({ ...m, isDefault: m.value === imgDefaultModel })));
+      setShowImageManager(false);
+      setNewImageValue("");
+      setNewImageLabel("");
 
-    // 图片默认生成参数
-    setDefaultImageConfig(await getDefaultAssetImageConfig());
+      // 图片默认生成参数
+      setDefaultImageConfig(await getDefaultAssetImageConfig());
 
-    // 视频
-    const vs = await getVideoSettings();
-    const vidProvider = vs?.provider ?? "ark";
-    setVidSettings(vs ?? { ...DEFAULT_VIDEO_SETTINGS });
+      // 视频
+      const vs = await getVideoSettings();
+      const vidProvider = vs?.provider ?? "ark";
+      setVidSettings(vs ?? { ...DEFAULT_VIDEO_SETTINGS });
 
-    // 加载各视频 provider 缓存的 API Key
-    const vidKeys = await getVideoProviderKeys();
-    setVideoProviderKeys(vidKeys);
-    // 任意供应商有 apiKey 即视为已配置，自动展开面板
-    setVideoPanelOpen(!!vs?.apiKey || Object.values(vidKeys).some((e) => !!e?.apiKey));
+      // 加载各视频 provider 缓存的 API Key
+      const vidKeys = await getVideoProviderKeys();
+      setVideoProviderKeys(vidKeys);
+      // 任意供应商有 apiKey 即视为已配置，自动展开面板
+      setVideoPanelOpen(!!vs?.apiKey || Object.values(vidKeys).some((e) => !!e?.apiKey));
 
-    // 视频模型列表 + 默认生成参数（标记 isDefault：优先用 defaultVideoConfig.model，否则取 getDefaultModelValue）
-    const vidModels = await getVideoModels(vidProvider);
-    const vidCfg = await getDefaultShotVideoConfig();
-    setDefaultVideoConfig(vidCfg);
-    const vidDefaultModel = (vidCfg.provider === vidProvider ? vidCfg.model : undefined) || getDefaultModelValue(vidModels) || "";
-    setVideoModels(vidModels.map((m) => ({ ...m, isDefault: m.value === vidDefaultModel })));
-    setShowVideoManager(false);
-    setNewVideoValue("");
-    setNewVideoLabel("");
+      // 视频模型列表 + 默认生成参数（标记 isDefault：优先用 defaultVideoConfig.model，否则取 getDefaultModelValue）
+      const vidModels = await getVideoModels(vidProvider);
+      const vidCfg = await getDefaultShotVideoConfig();
+      setDefaultVideoConfig(vidCfg);
+      const vidDefaultModel = (vidCfg.provider === vidProvider ? vidCfg.model : undefined) || getDefaultModelValue(vidModels) || "";
+      setVideoModels(vidModels.map((m) => ({ ...m, isDefault: m.value === vidDefaultModel })));
+      setShowVideoManager(false);
+      setNewVideoValue("");
+      setNewVideoLabel("");
 
-    // 音频
-    const aus = await getAudioSettings();
-    const audProvider = aus?.provider ?? "mimo";
-    setAudSettings(aus ?? { ...DEFAULT_AUDIO_SETTINGS });
-    setAudioPanelOpen(!!aus?.apiKey);
+      // 音频
+      const aus = await getAudioSettings();
+      const audProvider = aus?.provider ?? "mimo";
+      setAudSettings(aus ?? { ...DEFAULT_AUDIO_SETTINGS });
+      setAudioPanelOpen(!!aus?.apiKey);
 
-    // 加载各音频 provider 缓存的 API Key
-    setAudioProviderKeys(await getAudioProviderKeys());
+      // 加载各音频 provider 缓存的 API Key
+      setAudioProviderKeys(await getAudioProviderKeys());
 
-    // 音频模型列表
-    setAudioModels(await getAudioModels(audProvider));
-    setShowAudioManager(false);
-    setNewAudioValue("");
-    setNewAudioLabel("");
+      // 音频模型列表
+      setAudioModels(await getAudioModels(audProvider));
+      setShowAudioManager(false);
+      setNewAudioValue("");
+      setNewAudioLabel("");
 
-    // 音乐
-    const mus = await getMusicSettings();
-    const musProvider = mus?.provider ?? "apimart";
-    setMusSettings(mus ?? { ...DEFAULT_MUSIC_SETTINGS });
-    setMusicPanelOpen(!!mus?.apiKey);
+      // 音乐
+      const mus = await getMusicSettings();
+      const musProvider = mus?.provider ?? "apimart";
+      setMusSettings(mus ?? { ...DEFAULT_MUSIC_SETTINGS });
+      setMusicPanelOpen(!!mus?.apiKey);
 
-    // 加载各音乐 provider 缓存的 API Key
-    setMusicProviderKeys(await getMusicProviderKey());
+      // 加载各音乐 provider 缓存的 API Key
+      setMusicProviderKeys(await getMusicProviderKey());
 
-    // 音乐模型列表
-    setMusicModels(await getMusicModels(musProvider));
-    setShowMusicManager(false);
-    setNewMusicValue("");
-    setNewMusicLabel("");
+      // 音乐模型列表
+      setMusicModels(await getMusicModels(musProvider));
+      setShowMusicManager(false);
+      setNewMusicValue("");
+      setNewMusicLabel("");
 
-    // COS
-    const cos = await getCosSettings();
-    const cosCfg = !!(cos?.secretId && cos?.secretKey && cos?.bucket && cos?.region);
-    setCosSettings(cos ?? { secretId: "", secretKey: "", bucket: "", region: "ap-guangzhou", customDomain: "" });
-    setCosPanelOpen(cosCfg);
-    setCosConfigured(cosCfg);
-    setCosTestResult(null);
+      // COS
+      const cos = await getCosSettings();
+      const cosCfg = !!(cos?.secretId && cos?.secretKey && cos?.bucket && cos?.region);
+      setCosSettings(cos ?? { secretId: "", secretKey: "", bucket: "", region: "ap-guangzhou", customDomain: "" });
+      setCosPanelOpen(cosCfg);
+      setCosConfigured(cosCfg);
+      setCosTestResult(null);
     })();
     // 初始化完成后启用自动保存
     setTimeout(() => { skipAutoSave.current = false; }, 0);
@@ -1224,24 +1224,26 @@ export default function SettingsPage() {
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-8 sm:px-6">
       {/* 页头 */}
-      <header className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.back()}
-            className="text-slate-400 hover:text-slate-600"
-            title="返回"
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <path
-                d="M15 18l-6-6 6-6"
-                stroke="currentColor"
-                strokeWidth="2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-          <h1 className="text-xl font-bold text-slate-800">API 设置</h1>
+      <header className="mb-6 flex items-start justify-between">
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => router.back()}
+              className="text-slate-400 hover:text-slate-600"
+              title="返回"
+            >
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M15 18l-6-6 6-6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            <h1 className="text-xl font-bold text-slate-800">API 设置</h1>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {savedHint && <span className="text-xs text-emerald-600">已保存 ✓</span>}
@@ -1263,7 +1265,9 @@ export default function SettingsPage() {
           </button>
         </div>
       </header>
-
+      <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50/50 px-3 py-2 text-sm leading-relaxed text-amber-800">
+        选择默认服务商与默认模型后，星号（★）会标记在对应选项上，表示该值为当前分类后续生成任务使用的默认值。
+      </div>
       <div className="space-y-4">
         {/* ========= LLM 区域 ========= */}
         <fieldset className={`rounded-xl border transition-colors ${llmPanelOpen ? "border-brand-200" : "border-slate-200"}`}>
@@ -1289,100 +1293,99 @@ export default function SettingsPage() {
           </legend>
 
           {llmPanelOpen && (
-          <div className="space-y-3 p-4">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-slate-700">
-                服务商
-              </label>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-                {(Object.keys(PROVIDER_PRESETS) as LLMSettings["provider"][]).map((p) => {
-                  const isDefault = p === provider;
-                  return (
-                  <button
-                    key={p}
-                    onClick={() => handleProviderChange(p)}
-                    className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                      provider === p
-                        ? "border-brand-500 bg-brand-50 text-brand-700"
-                        : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                    }`}
-                  >
-                    {PROVIDER_PRESETS[p].label}
-                    {isDefault && <DefaultProviderStar />}
-                  </button>
-                  );
-                })}
+            <div className="space-y-3 p-4">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium text-slate-700">
+                  服务商
+                </label>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                  {(Object.keys(PROVIDER_PRESETS) as LLMSettings["provider"][]).map((p) => {
+                    const isDefault = p === provider;
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => handleProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${provider === p
+                            ? "border-brand-500 bg-brand-50 text-brand-700"
+                            : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                      >
+                        {PROVIDER_PRESETS[p].label}
+                        {isDefault && <DefaultProviderStar />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-            <Field label="Base URL">
-              <input
-                type="text"
-                value={baseURL}
-                onChange={(e) => setBaseURL(e.target.value)}
-                placeholder="https://api.example.com/v1"
-                className="input"
-              />
-            </Field>
-            <Field label="API Key">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={PROVIDER_PRESETS[provider]?.keyPrefix ? `${PROVIDER_PRESETS[provider].keyPrefix}...` : "API Key..."}
-                className="input"
-                autoComplete="off"
-              />
-            </Field>
-
-            {/* --- LLM 模型列表管理 --- */}
-            <div>
-              <div className="mb-1.5 flex items-baseline justify-between">
-                <label className="text-sm font-medium text-slate-700">模型列表</label>
-                <button
-                  type="button"
-                  onClick={() => setShowLLMManager(!showLLMManager)}
-                  className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
-                >
-                  {showLLMManager ? "收起管理" : "管理模型"}
-                </button>
-              </div>
-              <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在对话页的「模型」下拉中。</p>
-
-              {showLLMManager && (
-                <ModelManagerPanel
-                  models={llmModels}
-                  modelType="llm"
-                  provider={provider}
-                  builtInValues={new Set((DEFAULT_LLM_MODELS[provider] ?? []).map((m) => m.value))}
-                  newValue={newLLMValue}
-                  newLabel={newLLMLabel}
-                  onNewValueChange={setNewLLMValue}
-                  onNewLabelChange={setNewLLMLabel}
-                  onAdd={handleAddLLMModel}
-                  onDelete={handleDeleteLLMModel}
-                  onRefresh={handleRefreshLLMModels}
-                  onSetDefault={handleSetDefaultLLMModel}
+              <Field label="Base URL">
+                <input
+                  type="text"
+                  value={baseURL}
+                  onChange={(e) => setBaseURL(e.target.value)}
+                  placeholder="https://api.example.com/v1"
+                  className="input"
                 />
-              )}
-            </div>
+              </Field>
+              <Field label="API Key">
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder={PROVIDER_PRESETS[provider]?.keyPrefix ? `${PROVIDER_PRESETS[provider].keyPrefix}...` : "API Key..."}
+                  className="input"
+                  autoComplete="off"
+                />
+              </Field>
 
-            {PROVIDER_PRESETS[provider]?.hint && (
-              <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
-                <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
-                <span>{PROVIDER_PRESETS[provider].hint}</span>
+              {/* --- LLM 模型列表管理 --- */}
+              <div>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <label className="text-sm font-medium text-slate-700">模型列表</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowLLMManager(!showLLMManager)}
+                    className="text-xs text-brand-600 hover:text-brand-800 transition-colors"
+                  >
+                    {showLLMManager ? "收起管理" : "管理模型"}
+                  </button>
+                </div>
+                <p className="mb-1.5 text-xs text-slate-400">此处维护的模型将出现在对话页的「模型」下拉中。</p>
+
+                {showLLMManager && (
+                  <ModelManagerPanel
+                    models={llmModels}
+                    modelType="llm"
+                    provider={provider}
+                    builtInValues={new Set((DEFAULT_LLM_MODELS[provider] ?? []).map((m) => m.value))}
+                    newValue={newLLMValue}
+                    newLabel={newLLMLabel}
+                    onNewValueChange={setNewLLMValue}
+                    onNewLabelChange={setNewLLMLabel}
+                    onAdd={handleAddLLMModel}
+                    onDelete={handleDeleteLLMModel}
+                    onRefresh={handleRefreshLLMModels}
+                    onSetDefault={handleSetDefaultLLMModel}
+                  />
+                )}
               </div>
-            )}
-            {testResult && (
-              <div className={`flex items-start gap-2 rounded-md px-3 py-2 text-sm ${testResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-                {testing && <Spinner size={14} />}
-                <span>{testResult.message}</span>
+
+              {PROVIDER_PRESETS[provider]?.hint && (
+                <div className="flex items-start gap-2 rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2.5 text-sm leading-relaxed text-amber-900 shadow-sm">
+                  <span className="mt-0.5 flex-shrink-0" aria-hidden>💡</span>
+                  <span>{PROVIDER_PRESETS[provider].hint}</span>
+                </div>
+              )}
+              {testResult && (
+                <div className={`flex items-start gap-2 rounded-md px-3 py-2 text-sm ${testResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                  {testing && <Spinner size={14} />}
+                  <span>{testResult.message}</span>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button variant="secondary" size="sm" onClick={handleInitLLMProvider}>初始化默认配置</Button>
+                <Button variant="secondary" size="sm" onClick={handleTest} loading={testing}>测试连接</Button>
               </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="secondary" size="sm" onClick={handleInitLLMProvider}>初始化默认配置</Button>
-              <Button variant="secondary" size="sm" onClick={handleTest} loading={testing}>测试连接</Button>
             </div>
-          </div>
           )}
         </fieldset>
 
@@ -1422,18 +1425,17 @@ export default function SettingsPage() {
                   {(Object.keys(IMAGE_PROVIDER_PRESETS) as ImageGenSettings["provider"][]).map((p) => {
                     const isDefault = p === imgSettings.provider;
                     return (
-                    <button
-                      key={p}
-                      onClick={() => handleImageProviderChange(p)}
-                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                        imgSettings.provider === p
-                          ? "border-brand-500 bg-brand-50 text-brand-700"
-                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {IMAGE_PROVIDER_PRESETS[p].label}
-                      {isDefault && <DefaultProviderStar />}
-                    </button>
+                      <button
+                        key={p}
+                        onClick={() => handleImageProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${imgSettings.provider === p
+                            ? "border-brand-500 bg-brand-50 text-brand-700"
+                            : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                      >
+                        {IMAGE_PROVIDER_PRESETS[p].label}
+                        {isDefault && <DefaultProviderStar />}
+                      </button>
                     );
                   })}
                 </div>
@@ -1567,18 +1569,17 @@ export default function SettingsPage() {
                   {(Object.keys(VIDEO_PROVIDER_PRESETS) as VideoGenSettings["provider"][]).map((p) => {
                     const isDefault = p === vidSettings.provider;
                     return (
-                    <button
-                      key={p}
-                      onClick={() => handleVideoProviderChange(p)}
-                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                        vidSettings.provider === p
-                          ? "border-brand-500 bg-brand-50 text-brand-700"
-                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {VIDEO_PROVIDER_PRESETS[p].label}
-                      {isDefault && <DefaultProviderStar />}
-                    </button>
+                      <button
+                        key={p}
+                        onClick={() => handleVideoProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${vidSettings.provider === p
+                            ? "border-brand-500 bg-brand-50 text-brand-700"
+                            : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                      >
+                        {VIDEO_PROVIDER_PRESETS[p].label}
+                        {isDefault && <DefaultProviderStar />}
+                      </button>
                     );
                   })}
                 </div>
@@ -1697,18 +1698,17 @@ export default function SettingsPage() {
                   {(Object.keys(AUDIO_PROVIDER_PRESETS) as AudioGenSettings["provider"][]).map((p) => {
                     const isDefault = p === audSettings.provider;
                     return (
-                    <button
-                      key={p}
-                      onClick={() => handleAudioProviderChange(p)}
-                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                        audSettings.provider === p
-                          ? "border-brand-500 bg-brand-50 text-brand-700"
-                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {AUDIO_PROVIDER_PRESETS[p].label}
-                      {isDefault && <DefaultProviderStar />}
-                    </button>
+                      <button
+                        key={p}
+                        onClick={() => handleAudioProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${audSettings.provider === p
+                            ? "border-brand-500 bg-brand-50 text-brand-700"
+                            : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                      >
+                        {AUDIO_PROVIDER_PRESETS[p].label}
+                        {isDefault && <DefaultProviderStar />}
+                      </button>
                     );
                   })}
                 </div>
@@ -1804,18 +1804,17 @@ export default function SettingsPage() {
                   {(Object.keys(MUSIC_PROVIDER_PRESETS) as MusicGenSettings["provider"][]).map((p) => {
                     const isDefault = p === musSettings.provider;
                     return (
-                    <button
-                      key={p}
-                      onClick={() => handleMusicProviderChange(p)}
-                      className={`rounded-md border px-3 py-2 text-sm transition-colors ${
-                        musSettings.provider === p
-                          ? "border-brand-500 bg-brand-50 text-brand-700"
-                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {MUSIC_PROVIDER_PRESETS[p].label}
-                      {isDefault && <DefaultProviderStar />}
-                    </button>
+                      <button
+                        key={p}
+                        onClick={() => handleMusicProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${musSettings.provider === p
+                            ? "border-brand-500 bg-brand-50 text-brand-700"
+                            : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                          }`}
+                      >
+                        {MUSIC_PROVIDER_PRESETS[p].label}
+                        {isDefault && <DefaultProviderStar />}
+                      </button>
                     );
                   })}
                 </div>
@@ -1901,55 +1900,55 @@ export default function SettingsPage() {
           {cosPanelOpen && (
             <div className="space-y-3 p-4 pt-0">
               <div className="space-y-3 pt-2">
-                  <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
-                    用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
-                  </div>
+                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                  用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
+                </div>
 
-                  <Field label="SecretId">
-                    <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
-                  </Field>
+                <Field label="SecretId">
+                  <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
+                </Field>
 
-                  <Field label="SecretKey">
-                    <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
-                  </Field>
+                <Field label="SecretKey">
+                  <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
+                </Field>
 
-                  <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
-                    <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
-                  </Field>
+                <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
+                  <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
+                </Field>
 
-                  <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
-                    <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
-                      <option value="ap-guangzhou">广州（ap-guangzhou）</option>
-                      <option value="ap-beijing">北京（ap-beijing）</option>
-                      <option value="ap-shanghai">上海（ap-shanghai）</option>
-                      <option value="ap-nanjing">南京（ap-nanjing）</option>
-                      <option value="ap-chengdu">成都（ap-chengdu）</option>
-                      <option value="ap-chongqing">重庆（ap-chongqing）</option>
-                      <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
-                      <option value="ap-hongkong">中国香港（ap-hongkong）</option>
-                      <option value="ap-singapore">新加坡（ap-singapore）</option>
-                      <option value="ap-tokyo">东京（ap-tokyo）</option>
-                      <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
-                      <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
-                    </select>
-                  </Field>
+                <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
+                  <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
+                    <option value="ap-guangzhou">广州（ap-guangzhou）</option>
+                    <option value="ap-beijing">北京（ap-beijing）</option>
+                    <option value="ap-shanghai">上海（ap-shanghai）</option>
+                    <option value="ap-nanjing">南京（ap-nanjing）</option>
+                    <option value="ap-chengdu">成都（ap-chengdu）</option>
+                    <option value="ap-chongqing">重庆（ap-chongqing）</option>
+                    <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
+                    <option value="ap-hongkong">中国香港（ap-hongkong）</option>
+                    <option value="ap-singapore">新加坡（ap-singapore）</option>
+                    <option value="ap-tokyo">东京（ap-tokyo）</option>
+                    <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
+                    <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
+                  </select>
+                </Field>
 
-                  <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
-                    <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
-                  </Field>
+                <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
+                  <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
+                </Field>
 
-                  {cosTestResult && (
-                    <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-                      <div className="flex items-center gap-2">
-                        {cosTesting && <Spinner size={14} />}
-                        <span className="break-all">{cosTestResult.message}</span>
-                      </div>
+                {cosTestResult && (
+                  <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                    <div className="flex items-center gap-2">
+                      {cosTesting && <Spinner size={14} />}
+                      <span className="break-all">{cosTestResult.message}</span>
                     </div>
-                  )}
-
-                  <div className="flex justify-end gap-2">
-                    <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
                   </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
+                </div>
               </div>
             </div>
           )}
@@ -2125,9 +2124,8 @@ function ModelManagerPanel({
             return (
               <div key={m.value} className="rounded-md bg-white">
                 <div
-                  className={`flex items-center justify-between px-2.5 py-1.5 text-sm rounded-md ${
-                    m.value === currentModel ? "bg-brand-50 text-brand-800" : "text-slate-700"
-                  }`}
+                  className={`flex items-center justify-between px-2.5 py-1.5 text-sm rounded-md ${m.value === currentModel ? "bg-brand-50 text-brand-800" : "text-slate-700"
+                    }`}
                 >
                   <div className="min-w-0 flex-1 flex items-center gap-1.5">
                     {hasCapability && (
@@ -2152,12 +2150,12 @@ function ModelManagerPanel({
                     {m.hint && (
                       <span className="ml-1.5 text-xs text-slate-400">- {m.hint}</span>
                     )}
-                    {m.value === currentModel && (
+                    {m.value === currentModel && modelType !== "video" && (
                       <span className="ml-1.5 rounded bg-brand-200 px-1 py-0.5 text-[10px] text-brand-700">
                         当前
                       </span>
                     )}
-                    {m.isDefault && (modelType === "audio" || modelType === "music" || modelType === "image" || modelType === "video") && (
+                    {m.isDefault && (modelType === "audio" || modelType === "music" || modelType === "image") && (
                       <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700">
                         默认
                       </span>
@@ -2181,11 +2179,10 @@ function ModelManagerPanel({
                       <button
                         type="button"
                         onClick={() => onSetDefault!(m.value)}
-                        className={`rounded p-0.5 transition-colors ${
-                          m.isDefault
+                        className={`rounded p-0.5 transition-colors ${m.isDefault
                             ? "text-amber-500 hover:bg-amber-50"
                             : "text-slate-300 hover:text-amber-400 hover:bg-amber-50"
-                        }`}
+                          }`}
                         title={m.isDefault ? "已设为默认模型" : "设为默认模型"}
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill={m.isDefault ? "currentColor" : "none"}>
@@ -2200,11 +2197,10 @@ function ModelManagerPanel({
                       type="button"
                       onClick={() => !isBuiltIn && onDelete(m.value)}
                       disabled={isBuiltIn}
-                      className={`rounded p-0.5 transition-colors ${
-                        isBuiltIn
+                      className={`rounded p-0.5 transition-colors ${isBuiltIn
                           ? "text-slate-200 cursor-not-allowed"
                           : "text-slate-400 hover:text-red-500 hover:bg-red-50"
-                      }`}
+                        }`}
                       title={isBuiltIn ? "内置模型不可删除" : "删除此模型"}
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -2232,20 +2228,20 @@ function ModelManagerPanel({
                   (isImage
                     ? getCodeDefaultImageCapability(provider, m.value) !== undefined
                     : isVideo && getCodeDefaultVideoCapability(provider, m.value) !== undefined) && (
-                  <div className="mx-2.5 mb-2 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (await confirm({ message: "确定要将该模型的参数恢复为代码默认值吗？", confirmText: "初始化" })) {
-                          onInitCapability(m.value);
-                        }
-                      }}
-                      className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
-                    >
-                      初始化模型参数
-                    </button>
-                  </div>
-                )}
+                    <div className="mx-2.5 mb-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (await confirm({ message: "确定要将该模型的参数恢复为代码默认值吗？", confirmText: "初始化" })) {
+                            onInitCapability(m.value);
+                          }
+                        }}
+                        className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                      >
+                        初始化模型参数
+                      </button>
+                    </div>
+                  )}
               </div>
             );
           })}
@@ -2354,11 +2350,10 @@ function ImageCapabilityEditor({
               type="button"
               onClick={() => toggleResolution(r)}
               disabled={readOnly}
-              className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                resolutions.includes(r)
+              className={`rounded px-2 py-0.5 text-xs transition-colors ${resolutions.includes(r)
                   ? "bg-brand-600 text-white"
                   : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-              } ${readOnly ? "cursor-default" : ""}`}
+                } ${readOnly ? "cursor-default" : ""}`}
             >
               {r}
             </button>
@@ -2397,13 +2392,12 @@ function ImageCapabilityEditor({
                 type="button"
                 onClick={() => onChange({ [key]: !val } as Partial<ImageModelCapability>)}
                 disabled={readOnly}
-                className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                  val === true
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${val === true
                     ? "bg-emerald-100 text-emerald-700 border border-emerald-300"
                     : val === false
-                    ? "bg-slate-100 text-slate-400 border border-slate-200 line-through"
-                    : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-                } ${readOnly ? "cursor-default" : ""}`}
+                      ? "bg-slate-100 text-slate-400 border border-slate-200 line-through"
+                      : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
+                  } ${readOnly ? "cursor-default" : ""}`}
                 title={val === undefined ? "未设置（默认开启）" : val ? "已开启" : "已关闭"}
               >
                 {label}
@@ -2463,9 +2457,8 @@ function VideoCapabilityEditor({
               <button key={r} type="button"
                 onClick={() => onChange({ resolutions: toggleArrayItem(cap.resolutions, r) as never })}
                 disabled={readOnly}
-                className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                  active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-                } ${readOnly ? "cursor-default" : ""}`}
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
+                  } ${readOnly ? "cursor-default" : ""}`}
               >{r}</button>
             );
           })}
@@ -2482,9 +2475,8 @@ function VideoCapabilityEditor({
               <button key={r} type="button"
                 onClick={() => onChange({ ratios: toggleArrayItem(cap.ratios, r) as never })}
                 disabled={readOnly}
-                className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                  active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-                } ${readOnly ? "cursor-default" : ""}`}
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
+                  } ${readOnly ? "cursor-default" : ""}`}
               >{r}</button>
             );
           })}
@@ -2502,9 +2494,8 @@ function VideoCapabilityEditor({
               <button key={m} type="button"
                 onClick={() => onChange({ modes: toggleArrayItem(cap.modes, m) as never })}
                 disabled={readOnly}
-                className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                  active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-                } ${readOnly ? "cursor-default" : ""}`}
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${active ? "bg-brand-600 text-white" : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
+                  } ${readOnly ? "cursor-default" : ""}`}
               >{label}</button>
             );
           })}
@@ -2550,13 +2541,12 @@ function VideoCapabilityEditor({
               <button key={key} type="button"
                 onClick={() => onChange({ [key]: !val } as Partial<VideoModelCapability>)}
                 disabled={readOnly}
-                className={`rounded px-2 py-0.5 text-xs transition-colors ${
-                  val === true
+                className={`rounded px-2 py-0.5 text-xs transition-colors ${val === true
                     ? "bg-emerald-100 text-emerald-700 border border-emerald-300"
                     : val === false
-                    ? "bg-slate-100 text-slate-400 border border-slate-200 line-through"
-                    : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
-                } ${readOnly ? "cursor-default" : ""}`}
+                      ? "bg-slate-100 text-slate-400 border border-slate-200 line-through"
+                      : "bg-white text-slate-500 border border-slate-200 hover:border-brand-400"
+                  } ${readOnly ? "cursor-default" : ""}`}
                 title={val === undefined ? "未设置（使用默认值）" : val ? "已开启" : "已关闭"}
               >{label}</button>
             );
@@ -2605,11 +2595,10 @@ function DefaultProviderStar() {
 
 /** 默认参数编辑器共用的胶囊按钮样式 */
 function defaultCfgPill(active: boolean) {
-  return `rounded-full px-2 py-0.5 text-xs transition-colors ${
-    active
+  return `rounded-full px-2 py-0.5 text-xs transition-colors ${active
       ? "bg-violet-100 text-violet-700"
       : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-  }`;
+    }`;
 }
 
 /** 图片默认生成参数编辑器（设置页；无能力门控的静态全集选项，应用时按所选模型能力收敛） */

@@ -1272,14 +1272,16 @@ export default function VideoGeneration({
           </Button>
           <span className="text-sm text-slate-500">
             共 {episode.shots.length} 个镜头
-            {allReady && (
-              <span className="ml-2 inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">
-                ✅ 全部提示词已就绪
-              </span>
-            )}
           </span>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {!videoConfigured ? (
+            <span className="inline-flex cursor-pointer items-center rounded-md border border-amber-300 bg-amber-100 px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-200" onClick={() => { window.location.href = "/settings"; }}>
+              ⚠️ 视频 API 未配置，请前往「设置」页面
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 视频 API 已配置</span>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -1299,15 +1301,9 @@ export default function VideoGeneration({
         <p className="mb-1 font-medium text-slate-700">第四步 · 视频生成</p>
         <p>
           每张卡片对应分镜表中的一个镜头。系统根据画面描述中的 @标签 自动关联第三步的资产，
-          调用 LLM 生成视频提示词（基于关联资产的外观描述，保证画面主体一致性）。
-          关联的资产图片（COS 公网 URL）作为参考图（首帧/参考帧）一起传给火山引擎 Seedance 视频模型。
+          可以调用 LLM 生成视频提示词，也可以使用故事板或者生成分镜头制作视频提示词。
           视频生成为异步任务，提交后需轮询状态（约 1-5 分钟）。
         </p>
-        {!videoConfigured && (
-          <p className="mt-2 text-amber-600">
-            ⚠ 视频生成 API 未配置，请点击右上角「设置」展开「视频生成 API」区域配置。
-          </p>
-        )}
       </div>
 
       {episode.shots.length === 0 ? (
@@ -2138,7 +2134,11 @@ function VideoCard({
   }
 
   /** 上传参考素材（视频/音频/首帧图/尾帧图/参考图）到 COS，回填 URL 到配置 */
-  function handleUploadRef(kind: "video" | "audio" | "firstFrame" | "lastFrame" | "refImage") {
+  async function handleUploadRef(kind: "video" | "audio" | "firstFrame" | "lastFrame" | "refImage") {
+    if (!(await isCosConfigured())) {
+      showError("未配置 COS 存储，无法上传文件，请先在「设置」中配置腾讯云 COS");
+      return;
+    }
     const input = document.createElement("input");
     input.type = "file";
     input.accept = kind === "video" ? "video/*" : kind === "audio" ? "audio/*" : "image/*";
@@ -2511,9 +2511,6 @@ function VideoCard({
             {index + 1}
           </span>
           <span className="text-sm font-medium text-slate-700">镜头 {index + 1}</span>
-          {hasPrompt && (
-            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs font-medium text-emerald-700">✅ 提示词已就绪</span>
-          )}
           {videoStatus !== "idle" && (
             <span
               className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ${STATUS_BADGE_CLASS[videoStatus]}`}
@@ -3128,6 +3125,8 @@ function VideoCard({
             placeholder="输入视频提示词，或点击上方按钮生成…"
             multiline
             minWidth="100%"
+            minHeight="80px"
+            maxHeight="500px"
             renderTags
             atMentionOptions={cardMentionOptions}
             onAtMentionSelect={handleMentionSelect}

@@ -1,17 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Button from "@/components/ui/Button";
-import { useConfirm } from "@/components/ui/ConfirmDialog";
 import { getSeries, saveSeries } from "@/lib/storage";
+import { debounce, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
+import { useUnloadPersist } from "@/lib/use-unload-persist";
 import type { Series, WorldSettings } from "@/lib/types";
 
 export default function WorldSettingsPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
   const seriesId = params.id;
-  const confirm = useConfirm();
 
   const [series, setSeries] = useState<Series | null>(null);
   const [settings, setSettings] = useState<WorldSettings>({
@@ -19,8 +19,6 @@ export default function WorldSettingsPage() {
     theme: "",
     style: "",
   });
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [savedHint, setSavedHint] = useState(false);
   const [notFound, setNotFound] = useState(false);
 
@@ -39,31 +37,47 @@ export default function WorldSettingsPage() {
     refresh();
   }, [refresh]);
 
+  // 自动保存：防抖持久化 settings 变化
+  const seriesRef = useRef<Series | null>(null);
+  seriesRef.current = series;
+  const settingsRef = useRef<WorldSettings>(settings);
+  settingsRef.current = settings;
+  const skipPersistRef = useRef(true);
+
+  const persist = useCallback(
+    debounce(async (ws: WorldSettings) => {
+      const s = seriesRef.current;
+      if (!s) return;
+      const updated: Series = { ...s, worldSettings: ws };
+      await saveSeries(updated);
+      seriesRef.current = updated;
+      setSavedHint(true);
+      setTimeout(() => setSavedHint(false), 1500);
+    }, AUTOSAVE_DEBOUNCE_MS),
+    []
+  );
+
+  useEffect(() => {
+    if (skipPersistRef.current) {
+      if (seriesRef.current) skipPersistRef.current = false;
+      return;
+    }
+    persist(settings);
+  }, [settings, persist]);
+
+  // 卸载兜底落盘：刷新/关闭走 beforeunload，SPA 路由离开走组件卸载 cleanup，
+  // 防止 1500ms 防抖未触发导致最新输入丢失。
+  useUnloadPersist(() => {
+    const s = seriesRef.current;
+    if (!s) return null;
+    return { ...s, worldSettings: settingsRef.current };
+  }, "/api/data/series");
+
   function update<K extends keyof WorldSettings>(key: K, value: WorldSettings[K]) {
     setSettings((prev) => ({ ...prev, [key]: value }));
-    setDirty(true);
   }
 
-  async function handleSave() {
-    if (!series) return;
-    setSaving(true);
-    const updated: Series = { ...series, worldSettings: settings };
-    await saveSeries(updated);
-    setSeries(updated);
-    setDirty(false);
-    setSaving(false);
-    setSavedHint(true);
-    setTimeout(() => setSavedHint(false), 1500);
-  }
-
-  async function handleBack() {
-    if (dirty) {
-      if (!await confirm({
-        message: "有未保存的修改，确定离开？",
-        variant: "primary",
-        confirmText: "离开",
-      })) return;
-    }
+  function handleBack() {
     router.back();
   }
 
@@ -113,14 +127,6 @@ export default function WorldSettingsPage() {
           {savedHint && (
             <span className="text-xs text-emerald-600">已保存 ✓</span>
           )}
-          <Button
-            size="sm"
-            onClick={handleSave}
-            loading={saving}
-            disabled={!dirty}
-          >
-            保存
-          </Button>
         </div>
       </header>
 
@@ -128,10 +134,6 @@ export default function WorldSettingsPage() {
       <div className="mb-5 rounded-md bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800">
         世界设定是整个故事宇宙的基础。填写后，故事扩写和分镜生成会自动参考这些设定，保持风格和世界观的一致性。
       </div>
-
-      {dirty && (
-        <div className="mb-4 text-xs text-amber-600">● 有未保存的修改</div>
-      )}
 
       {/* 表单 */}
       <div className="space-y-5">
