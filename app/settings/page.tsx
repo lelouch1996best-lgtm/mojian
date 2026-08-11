@@ -92,8 +92,14 @@ import {
 import {
   getCosSettings,
   saveCosSettings,
+  getQiniuSettings,
+  saveQiniuSettings,
+  getStorageProvider,
+  saveStorageProvider,
+  isCosConfigured,
+  isQiniuConfigured,
 } from "@/lib/cos-client";
-import type { CosSettings, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, MusicGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
+import type { CosSettings, QiniuSettings, StorageProvider, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, MusicGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
 
 /** 设置页自动保存防抖间隔（ms）—— 比全局 1500ms 更短，配置类操作更跟手 */
@@ -223,6 +229,22 @@ export default function SettingsPage() {
     message: string;
   } | null>(null);
 
+  // ---- 存储供应商 ----
+  const [storageProvider, setStorageProvider] = useState<StorageProvider>("cos");
+  // ---- 七牛云存储状态 ----
+  const [qiniuSettings, setQiniuSettings] = useState<QiniuSettings>({
+    accessKey: "",
+    secretKey: "",
+    bucket: "",
+    region: "z0",
+    domain: "",
+  });
+  const [qiniuTesting, setQiniuTesting] = useState(false);
+  const [qiniuTestResult, setQiniuTestResult] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
+
   // ---- 默认生成参数（用户自定义） ----
   const [defaultImageConfig, setDefaultImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
   const [defaultVideoConfig, setDefaultVideoConfig] = useState<ShotVideoConfig>(DEFAULT_SHOT_VIDEO_CONFIG);
@@ -346,9 +368,18 @@ export default function SettingsPage() {
       const cos = await getCosSettings();
       const cosCfg = !!(cos?.secretId && cos?.secretKey && cos?.bucket && cos?.region);
       setCosSettings(cos ?? { secretId: "", secretKey: "", bucket: "", region: "ap-guangzhou", customDomain: "" });
-      setCosPanelOpen(cosCfg);
-      setCosConfigured(cosCfg);
       setCosTestResult(null);
+
+      // 存储供应商 + 七牛云
+      const provider = await getStorageProvider();
+      setStorageProvider(provider);
+      const qn = await getQiniuSettings();
+      const qnCfg = !!(qn?.accessKey && qn?.secretKey && qn?.bucket && qn?.domain);
+      setQiniuSettings(qn ?? { accessKey: "", secretKey: "", bucket: "", region: "z0", domain: "" });
+      setQiniuTestResult(null);
+
+      setCosConfigured(provider === "qiniu" ? qnCfg : cosCfg);
+      setCosPanelOpen(cosCfg || qnCfg);
     })();
     // 初始化完成后启用自动保存
     setTimeout(() => { skipAutoSave.current = false; }, 0);
@@ -1118,6 +1149,53 @@ export default function SettingsPage() {
     }
   }
 
+  // ---- 存储供应商切换 ----
+  async function handleStorageProviderChange(p: StorageProvider) {
+    if (p === storageProvider) return;
+    setStorageProvider(p);
+    await saveStorageProvider(p);
+    setCosTestResult(null);
+    setQiniuTestResult(null);
+    setCosConfigured(p === "qiniu" ? await isQiniuConfigured() : await isCosConfigured());
+    showSavedHint();
+  }
+
+  // ---- 七牛云 handlers ----
+  function updateQiniu<K extends keyof QiniuSettings>(key: K, value: QiniuSettings[K]) {
+    setQiniuSettings((prev) => ({ ...prev, [key]: value }));
+    setQiniuTestResult(null);
+  }
+
+  async function handleQiniuTest() {
+    if (!qiniuSettings.accessKey || !qiniuSettings.secretKey || !qiniuSettings.bucket || !qiniuSettings.domain) {
+      setQiniuTestResult({ ok: false, message: "请先填写所有必填字段" });
+      return;
+    }
+    setQiniuTesting(true);
+    setQiniuTestResult(null);
+    try {
+      const res = await fetch("/api/qiniu/upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base64: createTestImageBase64(),
+          fileName: "test-upload.png",
+          settings: qiniuSettings,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.url) {
+        setQiniuTestResult({ ok: true, message: `上传成功！URL: ${data.url}` });
+      } else {
+        setQiniuTestResult({ ok: false, message: data.error ?? "上传失败" });
+      }
+    } catch (e) {
+      setQiniuTestResult({ ok: false, message: `请求失败：${(e as Error).message}` });
+    } finally {
+      setQiniuTesting(false);
+    }
+  }
+
   // ---- 自动保存（防抖） ----
   const skipAutoSave = useRef(true);
 
@@ -1220,6 +1298,20 @@ export default function SettingsPage() {
     if (skipAutoSave.current) return;
     persistCos(cosSettings);
   }, [cosSettings, persistCos]);
+
+  const persistQiniu = useCallback(
+    debounce(async (s: QiniuSettings) => {
+      await saveQiniuSettings(s);
+      showSavedHint();
+    }, SETTINGS_AUTOSAVE_DEBOUNCE_MS),
+    []
+  );
+
+  // 七牛云配置变化时自动保存
+  useEffect(() => {
+    if (skipAutoSave.current) return;
+    persistQiniu(qiniuSettings);
+  }, [qiniuSettings, persistQiniu]);
 
   return (
     <main className="mx-auto min-h-screen max-w-3xl px-4 py-8 sm:px-6">
@@ -1900,55 +1992,129 @@ export default function SettingsPage() {
           {cosPanelOpen && (
             <div className="space-y-3 p-4 pt-0">
               <div className="space-y-3 pt-2">
-                <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
-                  用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
+                {/* 存储供应商切换 */}
+                <div className="mb-2">
+                  <label className="mb-1.5 block text-sm font-medium text-slate-700">存储供应商</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(["cos", "qiniu"] as StorageProvider[]).map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => handleStorageProviderChange(p)}
+                        className={`rounded-md border px-3 py-2 text-sm transition-colors ${storageProvider === p
+                          ? "border-brand-500 bg-brand-50 text-brand-700"
+                          : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {p === "cos" ? "腾讯云 COS" : "七牛云 Kodo"}
+                        {storageProvider === p && <DefaultProviderStar />}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
-                <Field label="SecretId">
-                  <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
-                </Field>
-
-                <Field label="SecretKey">
-                  <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
-                </Field>
-
-                <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
-                  <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
-                </Field>
-
-                <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
-                  <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
-                    <option value="ap-guangzhou">广州（ap-guangzhou）</option>
-                    <option value="ap-beijing">北京（ap-beijing）</option>
-                    <option value="ap-shanghai">上海（ap-shanghai）</option>
-                    <option value="ap-nanjing">南京（ap-nanjing）</option>
-                    <option value="ap-chengdu">成都（ap-chengdu）</option>
-                    <option value="ap-chongqing">重庆（ap-chongqing）</option>
-                    <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
-                    <option value="ap-hongkong">中国香港（ap-hongkong）</option>
-                    <option value="ap-singapore">新加坡（ap-singapore）</option>
-                    <option value="ap-tokyo">东京（ap-tokyo）</option>
-                    <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
-                    <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
-                  </select>
-                </Field>
-
-                <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
-                  <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
-                </Field>
-
-                {cosTestResult && (
-                  <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
-                    <div className="flex items-center gap-2">
-                      {cosTesting && <Spinner size={14} />}
-                      <span className="break-all">{cosTestResult.message}</span>
+                {/* COS 配置表单 */}
+                {storageProvider === "cos" && (
+                  <>
+                    <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                      用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为 COS 公网 URL，视频生成 API 可直接引用图片作为参考帧。请在腾讯云控制台获取密钥并创建存储桶。
                     </div>
-                  </div>
+
+                    <Field label="SecretId">
+                      <input type="text" value={cosSettings.secretId} onChange={(e) => updateCos("secretId", e.target.value)} placeholder="AKID..." className="input" autoComplete="off" />
+                    </Field>
+
+                    <Field label="SecretKey">
+                      <input type="password" value={cosSettings.secretKey} onChange={(e) => updateCos("secretKey", e.target.value)} placeholder="密钥..." className="input" autoComplete="off" />
+                    </Field>
+
+                    <Field label="Bucket" hint="格式：BucketName-APPID，如 my-bucket-1250000000">
+                      <input type="text" value={cosSettings.bucket} onChange={(e) => updateCos("bucket", e.target.value)} placeholder="BucketName-APPID" className="input" />
+                    </Field>
+
+                    <Field label="Region" hint="如 ap-guangzhou、ap-beijing、ap-shanghai">
+                      <select value={cosSettings.region} onChange={(e) => updateCos("region", e.target.value)} className="input">
+                        <option value="ap-guangzhou">广州（ap-guangzhou）</option>
+                        <option value="ap-beijing">北京（ap-beijing）</option>
+                        <option value="ap-shanghai">上海（ap-shanghai）</option>
+                        <option value="ap-nanjing">南京（ap-nanjing）</option>
+                        <option value="ap-chengdu">成都（ap-chengdu）</option>
+                        <option value="ap-chongqing">重庆（ap-chongqing）</option>
+                        <option value="ap-shenzhen-fsi">深圳金融（ap-shenzhen-fsi）</option>
+                        <option value="ap-hongkong">中国香港（ap-hongkong）</option>
+                        <option value="ap-singapore">新加坡（ap-singapore）</option>
+                        <option value="ap-tokyo">东京（ap-tokyo）</option>
+                        <option value="na-siliconvalley">硅谷（na-siliconvalley）</option>
+                        <option value="eu-frankfurt">法兰克福（eu-frankfurt）</option>
+                      </select>
+                    </Field>
+
+                    <Field label="自定义域名（可选）" hint="CDN 加速域名，如 https://cdn.example.com">
+                      <input type="text" value={cosSettings.customDomain ?? ""} onChange={(e) => updateCos("customDomain", e.target.value || undefined)} placeholder="https://cdn.example.com（留空使用默认域名）" className="input" />
+                    </Field>
+
+                    {cosTestResult && (
+                      <div className={`rounded-md px-3 py-2 text-sm ${cosTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                        <div className="flex items-center gap-2">
+                          {cosTesting && <Spinner size={14} />}
+                          <span className="break-all">{cosTestResult.message}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
+                    </div>
+                  </>
                 )}
 
-                <div className="flex justify-end gap-2">
-                  <Button variant="secondary" size="sm" onClick={handleCosTest} loading={cosTesting}>测试上传</Button>
-                </div>
+                {/* 七牛云 Kodo 配置表单 */}
+                {storageProvider === "qiniu" && (
+                  <>
+                    <div className="rounded-md bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800">
+                      用于第三步「资产准备」中上传本地图片到云端存储。配置后，资产图片将存为七牛公网 URL，视频生成 API 可直接引用图片作为参考帧。请在七牛控制台获取密钥并创建存储桶。
+                    </div>
+
+                    <Field label="AccessKey">
+                      <input type="text" value={qiniuSettings.accessKey} onChange={(e) => updateQiniu("accessKey", e.target.value)} placeholder="AK..." className="input" autoComplete="off" />
+                    </Field>
+
+                    <Field label="SecretKey">
+                      <input type="password" value={qiniuSettings.secretKey} onChange={(e) => updateQiniu("secretKey", e.target.value)} placeholder="SK..." className="input" autoComplete="off" />
+                    </Field>
+
+                    <Field label="Bucket" hint="存储空间名称">
+                      <input type="text" value={qiniuSettings.bucket} onChange={(e) => updateQiniu("bucket", e.target.value)} placeholder="Bucket Name" className="input" />
+                    </Field>
+
+                    <Field label="Region" hint="存储区域 ID：z0(华东)/z1(华北)/z2(华南)/na0(北美)/as0(新加坡)">
+                      <select value={qiniuSettings.region} onChange={(e) => updateQiniu("region", e.target.value)} className="input">
+                        <option value="z0">华东-浙江 (z0)</option>
+                        <option value="cn-east-2">华东-浙江2 (cn-east-2)</option>
+                        <option value="z1">华北-河北 (z1)</option>
+                        <option value="z2">华南-广东 (z2)</option>
+                        <option value="na0">北美-洛杉矶 (na0)</option>
+                        <option value="as0">亚太-新加坡 (as0)</option>
+                      </select>
+                    </Field>
+
+                    <Field label="Domain" hint="空间绑定的访问域名（如 https://cdn.example.com 或 http://xxx.qnssl.com）">
+                      <input type="text" value={qiniuSettings.domain} onChange={(e) => updateQiniu("domain", e.target.value)} placeholder="https://your-domain.com" className="input" />
+                    </Field>
+
+                    {qiniuTestResult && (
+                      <div className={`rounded-md px-3 py-2 text-sm ${qiniuTestResult.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+                        <div className="flex items-center gap-2">
+                          {qiniuTesting && <Spinner size={14} />}
+                          <span className="break-all">{qiniuTestResult.message}</span>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" size="sm" onClick={handleQiniuTest} loading={qiniuTesting}>测试上传</Button>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           )}

@@ -60,7 +60,8 @@ export function isObjectProfileValid(o: ObjectProfile | null | undefined): boole
   );
 }
 
-/** 从物品列表中，按 objectId 分组，取每组 version 最大的 */
+/** 从物品列表中，按 objectId 分组，取每组"最新"版本：
+ *  优先取 isDefault===true 的版本；未设置时回退到 version 最大者（向后兼容）。 */
 export function getLatestObjectVersions(o: ObjectProfile[]): ObjectProfile[] {
   if (!o || o.length === 0) return [];
   const groupMap = new Map<string, ObjectProfile[]>();
@@ -72,8 +73,13 @@ export function getLatestObjectVersions(o: ObjectProfile[]): ObjectProfile[] {
   }
   const result: ObjectProfile[] = [];
   groupMap.forEach((arr: ObjectProfile[]) => {
-    arr.sort((a: ObjectProfile, b: ObjectProfile) => b.version - a.version);
-    result.push(arr[0]);
+    const defaultVersion = arr.find((v) => v.isDefault);
+    if (defaultVersion) {
+      result.push(defaultVersion);
+    } else {
+      arr.sort((a: ObjectProfile, b: ObjectProfile) => b.version - a.version);
+      result.push(arr[0]);
+    }
   });
   return result;
 }

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import StoryboardRow from "./StoryboardRow";
+import TagList from "./TagList";
 import Button from "./ui/Button";
 import Spinner from "./ui/Spinner";
 import { SmartAddShotDialog } from "./SmartAddShotDialog";
@@ -9,6 +10,7 @@ import { useConfirm, useErrorDialog } from "./ui/ConfirmDialog";
 import { callLLM } from "@/lib/llm-client";
 import { taggingMessages, singleRowTaggingMessages, storyboardMessages } from "@/lib/prompts";
 import { downloadJSON, extractTagItems, extractAllTags, extractTags, extractSingleTagText, ensureExistingTagsPrefixed, extractShots, toShot } from "@/lib/utils";
+import { useSettingsMentionOptions } from "@/lib/use-settings-mention-options";
 import type { Episode, Shot, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
 
 interface StoryboardTableProps {
@@ -26,6 +28,8 @@ interface StoryboardTableProps {
   onRemoveTag?: (tagName: string) => void;
   /** 重新生成分镜：用全新 shots 替换现有分镜 */
   onReplaceShots?: (shots: Shot[]) => void;
+  /** @ 选中某个设定时回调（用于自动加入资产准备） */
+  onAtMentionSelect?: (value: string) => void;
   worldSettings?: WorldSettings | null;
   characterSettings?: CharacterProfile[] | null;
   objectSettings?: ObjectProfile[] | null;
@@ -54,6 +58,7 @@ export default function StoryboardTable({
   onEnterStep3,
   onRemoveTag,
   onReplaceShots,
+  onAtMentionSelect,
   worldSettings,
   characterSettings,
   objectSettings,
@@ -70,11 +75,26 @@ export default function StoryboardTable({
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
   // 当前已有标签数（用于判断是否已标注过）
   const tagCount = tags.length;
-  // 画面描述 @ 补全选项：复用已添加的标签，并允许新建
-  const atMentionOptions = useMemo(
-    () => tags.map((t) => ({ label: t, value: t })),
-    [tags]
-  );
+  // 系列设定（人物/物品/场景/世界）@ 补全选项，与第一步一致
+  const settingsOptions = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
+  // 画面描述 @ 补全选项：系列设定优先，再补齐已添加的标签，并允许新建
+  const atMentionOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: { label: string; value: string }[] = [];
+    for (const o of settingsOptions) {
+      if (!seen.has(o.value)) {
+        seen.add(o.value);
+        merged.push(o);
+      }
+    }
+    for (const t of tags) {
+      if (!seen.has(t)) {
+        seen.add(t);
+        merged.push({ label: t, value: t });
+      }
+    }
+    return merged;
+  }, [settingsOptions, tags]);
 
   /** 智能标注：调用 LLM 给所有画面描述加 @标签 */
   async function handleTagging() {
@@ -252,31 +272,7 @@ export default function StoryboardTable({
       )}
 
       {/* 标签列表 */}
-      {tags.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs text-slate-400">已标注标签：</span>
-          {tags.map((t) => (
-            <span
-              key={t}
-              className="inline-flex items-center gap-1 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800"
-            >
-              @{t}
-              {onRemoveTag && (
-                <button
-                  type="button"
-                  onClick={() => onRemoveTag(t)}
-                  className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-amber-400 hover:bg-amber-300 hover:text-red-600"
-                  title={`移除「${t}」标注`}
-                >
-                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
-                    <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                  </svg>
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
+      <TagList tags={tags} onRemoveTag={onRemoveTag} title="已标注标签：" />
 
       <div className="overflow-auto rounded-lg border border-slate-200 bg-white" style={{ maxHeight: "calc(100vh - 240px)" }}>
         <table className="border-collapse text-left">
@@ -311,6 +307,7 @@ export default function StoryboardTable({
                 onDelete={() => handleDeleteShot(shot.id, i)}
                 onMove={(dir) => onMoveRow(shot.id, dir)}
                 atMentionOptions={atMentionOptions}
+                onAtMentionSelect={onAtMentionSelect}
                 onTagRow={() => handleRowTagging(shot)}
                 rowTagging={rowTaggingId === shot.id}
                 tagDisabled={tagging || rowTaggingId !== null || !shot.visualDescription?.trim()}

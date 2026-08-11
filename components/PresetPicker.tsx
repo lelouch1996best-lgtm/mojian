@@ -23,6 +23,7 @@ const TYPE_LABEL: Record<PresetType, string> = {
   video: "视频",
   audio: "音频",
   text: "文本",
+  camera: "运镜",
 };
 
 export default function PresetPicker({
@@ -205,7 +206,7 @@ export default function PresetPicker({
       setPickedIds(pickedIds.filter((id) => id !== item.id));
       return;
     }
-    if (type !== "text" && allSelectedUrls.has(item.url)) return;
+    if (type !== "text" && type !== "camera" && allSelectedUrls.has(item.url)) return;
     if (!multiple) {
       setPickedIds([item.id]);
       return;
@@ -223,7 +224,7 @@ export default function PresetPicker({
     for (const id of pickedIds) {
       const it = itemMap.get(id);
       if (!it) continue;
-      if (type === "text") {
+      if (type === "text" || type === "camera") {
         pickedItems.push({ id: it.id, name: it.name, content: it.content });
       } else {
         pickedItems.push({ id: it.id, name: it.name, url: it.url });
@@ -410,6 +411,8 @@ function PresetPickCard({
   const isVideo = item.type === "video";
   const isAudio = item.type === "audio";
   const isText = item.type === "text";
+  const isCamera = item.type === "camera";
+  const isTextLike = isText || isCamera;
 
   const previewIcon = (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
@@ -429,14 +432,21 @@ function PresetPickCard({
       onClick={disabled ? undefined : onToggle}
     >
       <div className="relative aspect-square w-full overflow-hidden rounded-md bg-slate-100">
-        {isText ? (
-          <div className="flex h-full w-full flex-col gap-1 bg-amber-50 p-2">
-            <div className="flex items-center gap-1 text-amber-500">
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-                <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-              </svg>
-              <span className="text-[10px] font-medium">文本</span>
+        {isTextLike ? (
+          <div className={`flex h-full w-full flex-col gap-1 p-2 ${isCamera ? "bg-sky-50" : "bg-amber-50"}`}>
+            <div className={`flex items-center gap-1 ${isCamera ? "text-sky-500" : "text-amber-500"}`}>
+              {isCamera ? (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M23 7l-7 5 7 5V7z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                  <rect x="1" y="5" width="15" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
+                </svg>
+              ) : (
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                  <path d="M14 2v6h6" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                </svg>
+              )}
+              <span className="text-[10px] font-medium">{isCamera ? "运镜" : "文本"}</span>
             </div>
             <p className="line-clamp-5 flex-1 overflow-hidden text-[10px] leading-snug text-slate-600">
               {item.content}
@@ -473,7 +483,7 @@ function PresetPickCard({
           <span className="absolute bottom-1 left-1 rounded bg-slate-700/80 px-1.5 py-0.5 text-[10px] text-white">已选</span>
         )}
 
-        {!isText && (
+        {!isTextLike && (
           <div
             className="absolute left-1 top-1 z-20 opacity-0 transition-opacity group-hover:opacity-100"
             onClick={(e) => e.stopPropagation()}

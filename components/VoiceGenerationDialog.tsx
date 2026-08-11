@@ -38,6 +38,8 @@ export interface VoiceGenerationDialogProps {
   audioModels?: ModelEntry[];
   /** 存储是否已配置 */
   storageConfigured?: boolean;
+  /** 从资产库选择参考音频时默认筛选的企划 ID（当前企划） */
+  defaultSeriesId?: string;
 }
 
 /** 根据人物性别/年龄/性格预填一段音色描述 */
@@ -85,6 +87,7 @@ export function VoiceGenerationDialog({
   character,
   audioModels = [],
   storageConfigured,
+  defaultSeriesId,
 }: VoiceGenerationDialogProps) {
   const defaultModel = getDefaultModelValue(audioModels);
   const [model, setModel] = useState(defaultModel ?? "");
@@ -335,6 +338,7 @@ export function VoiceGenerationDialog({
         mediaType="audio"
         multiple={false}
         selectedUrls={[]}
+        defaultSeriesId={defaultSeriesId}
         onConfirm={handlePickAsset}
       />
     </Modal>

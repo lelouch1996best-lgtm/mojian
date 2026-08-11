@@ -7,6 +7,7 @@ import { useErrorDialog } from "./ui/ConfirmDialog";
 import CharacterAssetCard from "./CharacterAssetCard";
 import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
+import TagList from "./TagList";
 import { callLLM, streamLLM } from "@/lib/llm-client";
 import { generateImage, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
 import { recoverImageTasks } from "@/lib/image-task-recovery";
@@ -340,19 +341,18 @@ export default function AssetPreparation({
     }
   }, [characterSettings]);
 
-  // 自动预填：进入 Step3 时，若尚无资产，按分镜 @标签从设定中预填人物/物品/场景资产卡片
+  // 自动预填：进入 Step3 时，按分镜 @标签从设定中补齐尚未创建的资产卡片。
+  // 已在第一步/第四步通过 @ 创建的资产会保留，仅追加缺失项，避免覆盖用户已编辑内容。
   const didPrefill = useRef(false);
   useEffect(() => {
     if (didPrefill.current) return;
     const chars = getLatestVersions(characterSettings ?? []);
     if (chars.length === 0) return;
-    if (preparationAssets.length > 0) return;
     didPrefill.current = true;
-    const prefilled = buildAssetsFromSettings(tags, new Set(), characterSettings, objectSettings, sceneSettings);
-    if (prefilled.length > 0) {
-      // 保留已有的截屏/故事板等非资产准备类型资产
-      const preserved = episode.assets.filter((a) => a.type === "screenshot" || a.type === "storyboard");
-      onReplaceAssets([...prefilled, ...preserved]);
+    const existing = new Set(preparationAssets.map((a) => a.name));
+    const missing = buildAssetsFromSettings(tags, existing, characterSettings, objectSettings, sceneSettings);
+    if (missing.length > 0) {
+      onReplaceAssets([...episode.assets, ...missing]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [characterSettings, preparationAssets.length]);
@@ -843,40 +843,13 @@ export default function AssetPreparation({
       </div>
 
       {/* 标签预览 */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-xs text-slate-400">标签：</span>
-        {tags.length === 0 ? (
-          <span className="text-xs text-slate-400">无（请返回第二步做智能标注）</span>
-        ) : (
-          tags.map((t) => {
-            const has = existingNames.has(t);
-            return (
-              <span
-                key={t}
-                className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs ${
-                  has
-                    ? "bg-amber-100 text-amber-800"
-                    : "bg-slate-100 text-slate-500"
-                }`}
-              >
-                @{t}
-                {onRemoveTag && (
-                  <button
-                    type="button"
-                    onClick={() => onRemoveTag(t)}
-                    className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-slate-400 hover:bg-slate-300 hover:text-red-600"
-                    title={`移除「${t}」标注`}
-                  >
-                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
-                      <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                    </svg>
-                  </button>
-                )}
-              </span>
-            );
-          })
-        )}
-      </div>
+      <TagList
+        tags={tags}
+        onRemoveTag={onRemoveTag}
+        title="标签："
+        emptyText="无（请返回第二步做智能标注）"
+        activeTags={existingNames}
+      />
 
       {/* 资产卡片网格 */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -1063,6 +1036,7 @@ export default function AssetPreparation({
         images={genInitialRefImages}
         onImagesChange={setGenInitialRefImages}
         imageOptions={imageOptions}
+        defaultSeriesId={episode.seriesId}
         loading={genTargetAssetId ? generatingImageIds.has(genTargetAssetId) : false}
         onConfirm={async (params) => {
           // 模型为空时直接提示，不关闭弹框，让用户在弹框中选择模型

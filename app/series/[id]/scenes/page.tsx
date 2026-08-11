@@ -234,6 +234,17 @@ export default function SceneSettingsPage() {
     setDetailTargetId(newVersion.id);
   }
 
+  /** 将指定版本设为该场景的默认（最新）版本：清除同组其他版本的 isDefault，置目标为 true */
+  function handleSetDefault(id: string) {
+    const target = scenes.find((o) => o.id === id);
+    if (!target) return;
+    const gid = target.sceneId || target.id;
+    setScenes((prev) => prev.map((o) => {
+      if ((o.sceneId || o.id) !== gid) return o;
+      return { ...o, isDefault: o.id === id };
+    }));
+  }
+
   async function handleDelete(id: string) {
     if (!await confirm({
       message: "确定删除该场景版本？",
@@ -515,7 +526,7 @@ export default function SceneSettingsPage() {
       ) : (
         <div className="space-y-6">
           {grouped.map((group) => {
-            const latest = group[0];
+            const latest = group.find((v) => v.isDefault) ?? group[0];
             const gid = latest.sceneId || latest.id;
             return (
               <div key={gid} className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
@@ -534,6 +545,7 @@ export default function SceneSettingsPage() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {group.map((sc) => (
                     <SceneCard key={sc.id} scene={sc} isLatest={sc.id === latest.id}
+                      onSetDefault={group.length > 1 ? () => handleSetDefault(sc.id) : undefined}
                       onOpenDetail={() => setDetailTargetId(sc.id)}
                       onUpdate={(field, value) => updateField(sc.id, field, value)}
                       onDelete={() => handleDelete(sc.id)}

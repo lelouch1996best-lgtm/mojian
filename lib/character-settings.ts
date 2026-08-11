@@ -81,7 +81,8 @@ export function isCharacterProfileValid(c: CharacterProfile | null | undefined):
   );
 }
 
-/** 从人物列表中，按 characterId 分组，取每组 version 最大的 */
+/** 从人物列表中，按 characterId 分组，取每组"最新"版本：
+ *  优先取 isDefault===true 的版本；未设置时回退到 version 最大者（向后兼容）。 */
 export function getLatestVersions(c: CharacterProfile[]): CharacterProfile[] {
   if (!c || c.length === 0) return [];
   const groupMap = new Map<string, CharacterProfile[]>();
@@ -93,8 +94,13 @@ export function getLatestVersions(c: CharacterProfile[]): CharacterProfile[] {
   }
   const result: CharacterProfile[] = [];
   groupMap.forEach((arr: CharacterProfile[]) => {
-    arr.sort((a: CharacterProfile, b: CharacterProfile) => b.version - a.version);
-    result.push(arr[0]);
+    const defaultVersion = arr.find((v) => v.isDefault);
+    if (defaultVersion) {
+      result.push(defaultVersion);
+    } else {
+      arr.sort((a: CharacterProfile, b: CharacterProfile) => b.version - a.version);
+      result.push(arr[0]);
+    }
   });
   return result;
 }

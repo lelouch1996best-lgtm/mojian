@@ -5,6 +5,7 @@ import AssetImageZone from "@/components/AssetImageZone";
 export function ObjectCard({
   object,
   isLatest,
+  onSetDefault,
   onUpdate,
   onDelete,
   onOpenDetail,
@@ -15,6 +16,8 @@ export function ObjectCard({
 }: {
   object: ObjectProfile;
   isLatest: boolean;
+  /** 设为默认（最新）版本；仅在多版本组中向非最新版本传入 */
+  onSetDefault?: () => void;
   onUpdate: (field: keyof ObjectProfile, value: string) => void;
   onDelete: () => void;
   onOpenDetail: () => void;
@@ -54,6 +57,16 @@ export function ObjectCard({
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
               <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
             </svg>
+          </button>
+        )}
+        {!isLatest && onSetDefault && (
+          <button
+            type="button"
+            onClick={onSetDefault}
+            className="absolute bottom-2 left-2 rounded-md bg-brand-500/90 px-2 py-1 text-xs font-medium text-white shadow-sm backdrop-blur transition-colors hover:bg-brand-600"
+            title="将此版本设为默认（最新）版本"
+          >
+            ⭐ 设为最新
           </button>
         )}
       </AssetImageZone>

@@ -1385,6 +1385,7 @@ export default function MusicPage() {
         open={pickerOpen}
         onClose={() => setPickerOpen(false)}
         mediaType="music"
+        defaultSeriesId={music.seriesId || undefined}
         selectedUrls={music.source?.type === "asset" && music.source.url ? [music.source.url] : []}
         onConfirm={handlePickSource}
       />

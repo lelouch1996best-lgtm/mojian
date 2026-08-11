@@ -60,7 +60,8 @@ export function isSceneProfileValid(s: SceneProfile | null | undefined): boolean
   );
 }
 
-/** 从场景列表中，按 sceneId 分组，取每组 version 最大的 */
+/** 从场景列表中，按 sceneId 分组，取每组"最新"版本：
+ *  优先取 isDefault===true 的版本；未设置时回退到 version 最大者（向后兼容）。 */
 export function getLatestSceneVersions(s: SceneProfile[]): SceneProfile[] {
   if (!s || s.length === 0) return [];
   const groupMap = new Map<string, SceneProfile[]>();
@@ -72,8 +73,13 @@ export function getLatestSceneVersions(s: SceneProfile[]): SceneProfile[] {
   }
   const result: SceneProfile[] = [];
   groupMap.forEach((arr: SceneProfile[]) => {
-    arr.sort((a: SceneProfile, b: SceneProfile) => b.version - a.version);
-    result.push(arr[0]);
+    const defaultVersion = arr.find((v) => v.isDefault);
+    if (defaultVersion) {
+      result.push(defaultVersion);
+    } else {
+      arr.sort((a: SceneProfile, b: SceneProfile) => b.version - a.version);
+      result.push(arr[0]);
+    }
   });
   return result;
 }

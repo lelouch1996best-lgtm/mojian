@@ -16,6 +16,8 @@ interface StoryboardRowProps {
   onDelete: () => void;
   onMove: (direction: "up" | "down") => void;
   atMentionOptions?: AtMentionOption[];
+  /** @ 选中某个设定时回调（用于自动加入资产准备） */
+  onAtMentionSelect?: (value: string) => void;
   /** 智能标注当前行 */
   onTagRow?: () => void;
   /** 当前行是否正在标注 */
@@ -27,7 +29,7 @@ interface StoryboardRowProps {
 const COMBO_INPUT_CLASS =
   "w-full rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-700 hover:border-brand-300 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30";
 
-export default function StoryboardRow({ shot, index, isFirst, isLast, onUpdate, onDelete, onMove, atMentionOptions, onTagRow, rowTagging, tagDisabled }: StoryboardRowProps) {
+export default function StoryboardRow({ shot, index, isFirst, isLast, onUpdate, onDelete, onMove, atMentionOptions, onAtMentionSelect, onTagRow, rowTagging, tagDisabled }: StoryboardRowProps) {
   return (
     <tr className="border-b border-slate-100 align-top hover:bg-slate-50/50">
       <td className="sticky left-0 z-10 w-12 bg-white px-2 py-2 text-center text-sm font-semibold text-slate-500">{index + 1}</td>
@@ -35,7 +37,7 @@ export default function StoryboardRow({ shot, index, isFirst, isLast, onUpdate, 
         <EditableCell value={shot.duration} onChange={(v) => onUpdate("duration", v)} placeholder="如 8秒" minWidth="70px" />
       </td>
       <td className="px-1 py-2" style={{ minWidth: "200px" }}>
-        <EditableCell value={shot.visualDescription} onChange={(v) => onUpdate("visualDescription", v)} onRemoveTag={(tagName) => onUpdate("visualDescription", removeTagPrefix(shot.visualDescription, tagName))} placeholder="描述画面内容…" multiline minWidth="200px" renderTags atMentionOptions={atMentionOptions} allowCreateTag />
+        <EditableCell value={shot.visualDescription} onChange={(v) => onUpdate("visualDescription", v)} onRemoveTag={(tagName) => onUpdate("visualDescription", removeTagPrefix(shot.visualDescription, tagName))} placeholder="描述画面内容…" multiline minWidth="200px" renderTags atMentionOptions={atMentionOptions} onAtMentionSelect={onAtMentionSelect} allowCreateTag />
       </td>
       <td className="px-1 py-2" style={{ minWidth: "100px" }}>
         <OptionCombobox className={COMBO_INPUT_CLASS} value={shot.shotType} onChange={(v) => onUpdate("shotType", v)} options={SHOT_TYPES} placeholder="选择或输入…" />

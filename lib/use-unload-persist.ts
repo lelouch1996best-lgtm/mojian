@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { safeStringify, findNonSerializablePath } from "./utils";
 
 export const STORAGE_TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 
@@ -19,18 +20,26 @@ type Endpoint = "/api/data/episodes" | "/api/data/series";
 export function useUnloadPersist<T>(getPayload: () => T | null | undefined, endpoint: Endpoint) {
   const payloadRef = useRef<T | null | undefined>(undefined);
   payloadRef.current = getPayload();
+  const getPayloadRef = useRef(getPayload);
+  getPayloadRef.current = getPayload;
 
   useEffect(() => {
     const flush = () => {
-      const data = payloadRef.current;
+      const data = getPayloadRef.current() ?? payloadRef.current;
       if (data == null) return;
+      const badPath = findNonSerializablePath(data);
+      if (badPath) {
+        // eslint-disable-next-line no-console
+        console.error("Unload persist payload contains non-serializable value at:", badPath, data);
+        return;
+      }
       fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${STORAGE_TOKEN}`,
         },
-        body: JSON.stringify(data),
+        body: safeStringify(data),
         keepalive: true,
       }).catch(() => {});
     };

@@ -22,6 +22,8 @@ interface SmartAddShotDialogProps {
   characterSettings?: CharacterProfile[] | null;
   objectSettings?: ObjectProfile[] | null;
   sceneSettings?: SceneProfile[] | null;
+  /** @ 选中某个设定时回调（用于自动加入资产准备） */
+  onAtMentionSelect?: (value: string) => void;
 }
 
 export function SmartAddShotDialog({
@@ -33,6 +35,7 @@ export function SmartAddShotDialog({
   characterSettings,
   objectSettings,
   sceneSettings,
+  onAtMentionSelect,
 }: SmartAddShotDialogProps) {
   const [content, setContent] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -141,6 +144,8 @@ export function SmartAddShotDialog({
             value={content}
             onChange={setContent}
             options={atMentionOptions}
+            allowCreateTag
+            onAtMentionSelect={onAtMentionSelect}
             disabled={generating}
             rows={6}
             placeholder="例如：主角推开木门走进昏暗的房间，发现桌上放着一封旧信"

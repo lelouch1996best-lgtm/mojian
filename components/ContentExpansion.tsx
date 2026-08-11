@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
 import AtMentionTextarea, { type AtMentionOption } from "./AtMentionTextarea";
+import TagList from "./TagList";
 import { streamLLM, callLLM } from "@/lib/llm-client";
 import {
   expansionMessages,
@@ -14,7 +15,7 @@ import { worldSettingsToText, getWorldSettings } from "@/lib/world-settings";
 import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
 import { objectSettingsToText, getLatestObjectVersions } from "@/lib/object-settings";
 import { sceneSettingsToText, getLatestSceneVersions } from "@/lib/scene-settings";
-import { extractShots, toShot, extractCharacters, toCharacterProfile } from "@/lib/utils";
+import { extractShots, toShot, extractCharacters, toCharacterProfile, extractTags, removeTagPrefix } from "@/lib/utils";
 import ExpansionContextModal, {
   type ExpansionContextSelection,
 } from "./ExpansionContextModal";
@@ -46,6 +47,8 @@ interface ContentExpansionProps {
   onEnterStep2: () => void;
   /** 提取人物设定后的回调，返回合并结果用于 UI 提示 */
   onCharactersExtracted?: (characters: CharacterProfile[]) => Promise<{ added: number; overwritten: number; total: number; skipped: number }>;
+  /** @ 选中某个设定时回调（用于自动加入资产准备） */
+  onAtMentionSelect?: (value: string) => void;
 }
 
 export default function ContentExpansion({
@@ -61,8 +64,11 @@ export default function ContentExpansion({
   onShotsGenerated,
   onEnterStep2,
   onCharactersExtracted,
+  onAtMentionSelect,
 }: ContentExpansionProps) {
   const [expanding, setExpanding] = useState(false);
+  const [optimizingOriginal, setOptimizingOriginal] = useState(false);
+  const [optimizingExpanded, setOptimizingExpanded] = useState(false);
   const [generatingBoard, setGeneratingBoard] = useState(false);
   const [extractingCharacters, setExtractingCharacters] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,6 +115,24 @@ export default function ContentExpansion({
     latestScenes.forEach((s) => options.push({ label: `[场景] ${s.name}`, value: s.name }));
     return options;
   }, [worldText, latestCharacters, latestObjects, latestScenes]);
+
+  // 故事内容（原文 + 扩写）中的 @ 标签（去重，按首次出现顺序）
+  const contentTags = useMemo(() => {
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const tag of [...extractTags(originalContent), ...extractTags(expandedContent)]) {
+      if (!seen.has(tag)) {
+        seen.add(tag);
+        result.push(tag);
+      }
+    }
+    return result;
+  }, [originalContent, expandedContent]);
+
+  function handleRemoveContentTag(tagName: string) {
+    onOriginalChange(removeTagPrefix(originalContent, tagName));
+    onExpandedChange(removeTagPrefix(expandedContent, tagName));
+  }
 
   /** 将勾选的剧集按集序排列后拼接，并按约 3000 字上限截断（优先保留最近的剧集） */
   function buildPreviousContext(eps: PreviousEpisodeContext[]): string {
@@ -283,16 +307,19 @@ export default function ContentExpansion({
             text={originalContent}
             onOptimized={(v) => onOriginalChange(v)}
             disabled={expanding}
+            onRunningChange={setOptimizingOriginal}
           />
         </div>
         <AtMentionTextarea
           value={originalContent}
           onChange={onOriginalChange}
           options={atMentionOptions}
+          allowCreateTag
+          onAtMentionSelect={onAtMentionSelect}
           placeholder="输入你的故事大概、剧情梗概、想要表达的内容…&#10;例如：一个雨天，女孩在咖啡馆等一个不会来的人，窗外雨声渐大，她慢慢喝完最后一口咖啡。"
           rows={5}
           className="min-h-[120px] leading-relaxed"
-          disabled={expanding}
+          disabled={expanding || optimizingOriginal}
         />
         <div className="mt-2 flex items-center gap-2">
           <Button onClick={handleExpand} loading={expanding} disabled={!originalContent.trim()}>
@@ -315,16 +342,19 @@ export default function ContentExpansion({
             text={expandedContent}
             onOptimized={(v) => onExpandedChange(v)}
             disabled={expanding}
+            onRunningChange={setOptimizingExpanded}
           />
         </div>
         <AtMentionTextarea
           value={expandedContent}
           onChange={onExpandedChange}
           options={atMentionOptions}
+          allowCreateTag
+          onAtMentionSelect={onAtMentionSelect}
           placeholder={expanding ? "正在生成…" : "扩写后的内容将显示在这里，你可以手动修改"}
           rows={10}
           className="min-h-[200px] leading-relaxed"
-          disabled={expanding}
+          disabled={expanding || optimizingExpanded}
         />
         <div className="mt-2 flex items-center gap-2">
           <Button
@@ -348,6 +378,8 @@ export default function ContentExpansion({
           </span>
         </div>
       </section>
+
+      <TagList tags={contentTags} onRemoveTag={handleRemoveContentTag} title="已标注标签：" />
 
       {error && (
         <div className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">

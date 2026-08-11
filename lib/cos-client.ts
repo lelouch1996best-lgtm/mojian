@@ -1,5 +1,24 @@
-import type { CosSettings } from "@/lib/types";
+import type { CosSettings, QiniuSettings, StorageProvider } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
+
+// ============ 存储供应商 ============
+
+/** 读取当前存储供应商，默认 "cos" */
+export async function getStorageProvider(): Promise<StorageProvider> {
+  try {
+    const v = await apiClient.getSetting<StorageProvider>("storageProvider");
+    return v === "qiniu" ? "qiniu" : "cos";
+  } catch {
+    return "cos";
+  }
+}
+
+/** 保存当前存储供应商 */
+export async function saveStorageProvider(provider: StorageProvider): Promise<void> {
+  await apiClient.saveSetting("storageProvider", provider);
+}
+
+// ============ COS 配置 ============
 
 /** 读取 COS 配置 */
 export async function getCosSettings(): Promise<CosSettings | null> {
@@ -29,11 +48,50 @@ export function buildCosPublicUrl(
   return `https://${settings.bucket}.cos.${settings.region}.myqcloud.com/${key}`;
 }
 
+// ============ 七牛云 Kodo 配置 ============
+
+/** 读取七牛云配置 */
+export async function getQiniuSettings(): Promise<QiniuSettings | null> {
+  try { return await apiClient.getSetting<QiniuSettings>("qiniu"); } catch { return null; }
+}
+
+/** 保存七牛云配置 */
+export async function saveQiniuSettings(settings: QiniuSettings): Promise<void> {
+  await apiClient.saveSetting("qiniu", settings);
+}
+
+/** 检查七牛云配置是否完整 */
+export async function isQiniuConfigured(): Promise<boolean> {
+  const s = await getQiniuSettings();
+  return !!(s?.accessKey && s?.secretKey && s?.bucket && s?.domain);
+}
+
+/** 生成七牛对象的公开访问 URL */
+export function buildQiniuPublicUrl(key: string, settings: QiniuSettings): string {
+  const base = (settings.domain || "").replace(/\/+$/, "");
+  return `${base}/${key}`;
+}
+
+// ============ 存储统一接口（按供应商分发） ============
+
+/** 检查当前存储供应商是否已配置 */
+export async function isStorageConfigured(): Promise<boolean> {
+  const provider = await getStorageProvider();
+  return provider === "qiniu" ? isQiniuConfigured() : isCosConfigured();
+}
+
 /** COS 上传请求体 */
 export interface CosUploadRequest {
   base64: string; // data:image/...;base64,... 或纯 base64
   fileName: string; // 文件名（含扩展名），如 "character-xiaoming.png"
   settings: CosSettings;
+}
+
+/** 七牛上传请求体 */
+export interface QiniuUploadRequest {
+  base64: string;
+  fileName: string;
+  settings: QiniuSettings;
 }
 
 /** COS 上传响应 */
@@ -51,7 +109,7 @@ export interface TransferResult {
 }
 
 /** 将远程图片转存到 COS，返回公网 URL 与 key */
-export async function transferAsset(
+async function transferAssetToCos(
   sourceUrl: string,
   prefix?: string
 ): Promise<TransferResult> {
@@ -71,8 +129,40 @@ export async function transferAsset(
   return { url: data.url, key: data.key };
 }
 
+/** 将远程图片转存到七牛，返回公网 URL 与 key */
+async function transferAssetToQiniu(
+  sourceUrl: string,
+  prefix?: string
+): Promise<TransferResult> {
+  const settings = await getQiniuSettings();
+  if (!settings) throw new Error("未配置七牛云存储");
+  const res = await fetch("/api/qiniu/transfer", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sourceUrl,
+      settings,
+      prefix: prefix ?? "ai-script/assets",
+    }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error ?? "转存失败");
+  return { url: data.url, key: data.key };
+}
+
+/** 将远程图片转存到当前存储供应商，返回公网 URL 与 key */
+export async function transferAsset(
+  sourceUrl: string,
+  prefix?: string
+): Promise<TransferResult> {
+  const provider = await getStorageProvider();
+  return provider === "qiniu"
+    ? transferAssetToQiniu(sourceUrl, prefix)
+    : transferAssetToCos(sourceUrl, prefix);
+}
+
 /** 将 base64 data URI 上传到 COS，返回公网 URL 与 key */
-export async function uploadBase64(
+async function uploadBase64ToCos(
   base64: string,
   fileName: string
 ): Promise<TransferResult> {
@@ -88,8 +178,36 @@ export async function uploadBase64(
   return { url: data.url, key: data.key };
 }
 
+/** 将 base64 data URI 上传到七牛，返回公网 URL 与 key */
+async function uploadBase64ToQiniu(
+  base64: string,
+  fileName: string
+): Promise<TransferResult> {
+  const settings = await getQiniuSettings();
+  if (!settings) throw new Error("未配置七牛云存储");
+  const res = await fetch("/api/qiniu/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base64, fileName, settings }),
+  });
+  const data = await res.json();
+  if (!res.ok || !data.url) throw new Error(data.error ?? "上传失败");
+  return { url: data.url, key: data.key };
+}
+
+/** 将 base64 data URI 上传到当前存储供应商，返回公网 URL 与 key */
+export async function uploadBase64(
+  base64: string,
+  fileName: string
+): Promise<TransferResult> {
+  const provider = await getStorageProvider();
+  return provider === "qiniu"
+    ? uploadBase64ToQiniu(base64, fileName)
+    : uploadBase64ToCos(base64, fileName);
+}
+
 /**
- * 将本地文件上传到 COS，返回公网 URL。
+ * 将本地文件上传到存储，返回公网 URL。
  * 用于视频卡片上传参考视频/音频/尾帧图等参考素材。
  * @param file 用户选择的文件
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key
@@ -107,7 +225,7 @@ export async function uploadRefFile(file: File, nameHint: string): Promise<strin
 }
 
 /**
- * 将 base64 data URI 上传到 COS，返回公网 URL。
+ * 将 base64 data URI 上传到存储，返回公网 URL。
  * 用于图片弹框参考图持久化。
  * @param base64 data:image/...;base64,... 格式的 base64 字符串
  * @param nameHint 文件名提示（不含扩展名），用于生成可读的 key

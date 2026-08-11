@@ -2,7 +2,7 @@ import { getDb } from "@/lib/db";
 import { validateAuth, authError } from "@/lib/auth";
 import type { PresetItem, PresetType } from "@/lib/types";
 
-const ALLOWED_TYPES = new Set<PresetType>(["image", "video", "audio", "text"]);
+const ALLOWED_TYPES = new Set<PresetType>(["image", "video", "audio", "text", "camera"]);
 
 function parseTags(raw: any): string[] {
   if (Array.isArray(raw)) {
@@ -69,9 +69,9 @@ export async function POST(request: Request) {
   const content = typeof body?.content === "string" ? body.content : "";
   const tags = parseTags(body?.tags);
 
-  if (type === "text") {
+  if (type === "text" || type === "camera") {
     if (!content.trim()) {
-      return Response.json({ error: "文本内容不能为空" }, { status: 400 });
+      return Response.json({ error: "内容不能为空" }, { status: 400 });
     }
   } else {
     if (!url) {

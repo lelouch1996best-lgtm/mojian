@@ -430,8 +430,15 @@ export async function pollVideoTask(
   provider?: VideoGenSettings["provider"]
 ): Promise<VideoQueryProxyResponse> {
   const start = Date.now();
+  const finalizeAndReturn = (r: VideoQueryProxyResponse): VideoQueryProxyResponse => {
+    const finalStatus: "done" | "failed" | "expired" =
+      r.status === "succeeded" ? "done" : r.status === "expired" ? "expired" : "failed";
+    const finalResult = r.videoUrl ?? r.error ?? r.status;
+    void apiClient.finalizeApiCallLog(taskId, finalStatus, finalResult).catch(() => {});
+    return r;
+  };
   while (Date.now() - start < timeoutMs) {
-    if (signal?.aborted) return { status: "expired", error: "已取消" };
+    if (signal?.aborted) return finalizeAndReturn({ status: "expired", error: "已取消" });
     const result = await queryVideoTask(taskId, provider, signal);
     onUpdate(result);
     if (
@@ -440,9 +447,9 @@ export async function pollVideoTask(
       result.status === "expired" ||
       result.status === "cancelled"
     ) {
-      return result;
+      return finalizeAndReturn(result);
     }
-    if (signal?.aborted) return { status: "expired", error: "已取消" };
+    if (signal?.aborted) return finalizeAndReturn({ status: "expired", error: "已取消" });
     await new Promise((r) => {
       const t = setTimeout(r, intervalMs);
       if (signal) {
@@ -455,7 +462,7 @@ export async function pollVideoTask(
       }
     });
   }
-  return { status: "expired", error: "轮询超时" };
+  return finalizeAndReturn({ status: "expired", error: "轮询超时" });
 }
 
 /**

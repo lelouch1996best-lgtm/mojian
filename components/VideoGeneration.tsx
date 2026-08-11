@@ -12,6 +12,7 @@ import { SHOT_TYPES, CAMERA_MOVES } from "@/lib/shot-options";
 import ImageLightbox from "./ImageLightbox";
 import AssetPicker from "./AssetPicker";
 import PresetPicker from "./PresetPicker";
+import CameraPlaceholderDialog from "./CameraPlaceholderDialog";
 import { callLLM } from "@/lib/llm-client";
 import {
   createVideoTask,
@@ -30,7 +31,8 @@ import { isCosConfigured, transferAsset, uploadRefFile, uploadRefBase64 } from "
 import { recordMediaAsset } from "@/lib/storage";
 import { generateImage, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, getAllConfiguredImageModels } from "@/lib/image-client";
 import { recoverImageTasks } from "@/lib/image-task-recovery";
-import { ASSET_TYPE_LABELS, emptyAsset, extractTags, replaceAssetTagsWithImageNos } from "@/lib/utils";
+import { ASSET_TYPE_LABELS, emptyAsset, extractTags, extractAllTags, replaceAssetTagsWithImageNos, isMentionedInText, MENTION_BOUNDARY } from "@/lib/utils";
+import { useSettingsMentionOptions } from "@/lib/use-settings-mention-options";
 import {
   DEFAULT_SHOT_VIDEO_CONFIG,
   getDefaultShotVideoConfig,
@@ -43,6 +45,7 @@ import { ImageGenerationDialog, type ImageGenerationParams } from "./ImageGenera
 import { ModelPicker } from "./ModelPicker";
 import Select from "./ui/Select";
 import { SmartAddShotDialog } from "./SmartAddShotDialog";
+import TagList from "./TagList";
 import type {
   Asset,
   AssetImageConfig,
@@ -81,12 +84,16 @@ interface VideoGenerationProps {
   onDeleteRow?: (shotId: string) => void;
   /** 上移/下移镜头（交换相邻顺序） */
   onMoveRow?: (shotId: string, direction: "up" | "down") => void;
+  /** 从所有分镜画面描述中移除某个标签的 @ 前缀（删除标注） */
+  onRemoveTag?: (tagName: string) => void;
   /** 将资产关联到某个镜头（@ 补全选中时触发） */
   onLinkAsset: (shotId: string, assetId: string) => void;
   /** 解除镜头与资产的关联（× 按钮触发） */
   onUnlinkAsset: (shotId: string, assetId: string) => void;
   /** 将截屏资产保存到当前剧集 */
   onAddScreenshot: (asset: Asset) => void;
+  /** @ 选中设定时确保对应资产已存在（不存在则按设定创建），返回资产 id 供关联 */
+  onEnsureAssetForSetting?: (name: string) => string | undefined;
   /** 立即落盘当前 episode（绕过 1500ms 防抖）。用于 imageTaskId 等关键恢复字段，
    *  确保故事板任务创建后即使立刻切路由/刷新，回来仍能恢复轮询。
    *  可传 mutate 基于快照构造补丁直写（组件卸载后仍有效）。 */
@@ -241,9 +248,11 @@ export default function VideoGeneration({
   onAddSmartShot,
   onDeleteRow,
   onMoveRow,
+  onRemoveTag,
   onLinkAsset,
   onUnlinkAsset,
   onAddScreenshot,
+  onEnsureAssetForSetting,
   onPersistNow,
   seriesStyleSettings,
   characterSettings,
@@ -330,14 +339,27 @@ export default function VideoGeneration({
     return m;
   }, [episode.assets]);
 
-  // 已关联音色的人物名称集合（小写），用于卡片角标与 LLM 提示词
+  // 最新版本人物的音色映射（按名字小写），作为资产未携带 voiceUrl 时的回退来源
+  const latestCharacterVoiceByName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of getLatestVersions(characterSettings ?? [])) {
+      if (c.voiceUrl && c.name) m.set(c.name.toLowerCase(), c.voiceUrl);
+    }
+    return m;
+  }, [characterSettings]);
+
+  // 已关联音色的人物名称集合（小写），用于卡片角标与 LLM 提示词。
+  // 优先取资产所选版本的 voiceUrl（资产准备页切换版本时写入），
+  // 未携带时回退该人物最新版本的音色（兼容未经过资产准备页的资产）。
   const characterVoiceNames = useMemo(() => {
     const s = new Set<string>();
-    for (const c of getLatestVersions(characterSettings ?? [])) {
-      if (c.voiceUrl && c.name) s.add(c.name.toLowerCase());
+    for (const a of episode.assets) {
+      if (a.type !== "character" || !a.name) continue;
+      const voiceUrl = a.voiceUrl || latestCharacterVoiceByName.get(a.name.toLowerCase());
+      if (voiceUrl) s.add(a.name.toLowerCase());
     }
     return s;
-  }, [characterSettings]);
+  }, [episode.assets, latestCharacterVoiceByName]);
 
   // 当前选中风格的故事板提示词模板（来自风格设定，可在企划风格设定页编辑）
   const storyboardTemplate = useMemo(
@@ -346,17 +368,20 @@ export default function VideoGeneration({
   );
 
   // 根据画面描述中的 @标签自动关联资产（进入 Step4 时自动执行，也可通过一键关联手动触发）
+  // 对尚不存在的资产，若 @标签匹配系列设定（人物/物品/场景），自动创建并关联
   const linkMentionedAssets = useCallback(
     (shot: Shot) => {
       const tagNames = extractTags(shot.visualDescription);
       for (const tagName of tagNames) {
-        const assetId = assetIdByName.get(tagName.toLowerCase());
+        if (tagName.startsWith("视频") || tagName.startsWith("音频")) continue;
+        const existingId = assetIdByName.get(tagName.toLowerCase());
+        const assetId = existingId ?? onEnsureAssetForSetting?.(tagName);
         if (assetId && !shot.relatedAssetIds?.includes(assetId)) {
           onLinkAsset(shot.id, assetId);
         }
       }
     },
-    [assetIdByName, onLinkAsset],
+    [assetIdByName, onLinkAsset, onEnsureAssetForSetting],
   );
 
   // 进入 Step4 时，根据画面描述中的 @标签自动关联资产（仅执行一次）
@@ -436,60 +461,124 @@ export default function VideoGeneration({
           const latest = episodeRef.current;
           const latestShot = latest.shots.find((s) => s.id === shotId);
           if (!latestShot) return;
-          if (entry && latestShot.imageTaskId !== entry.jobId) {
+          if (entry && latestShot.imageTaskId && latestShot.imageTaskId !== entry.jobId) {
             // taskId 已变化（被新的生成覆盖），不处理这次结果
             return;
           }
 
-          // 生成图片任务：加入参考图列表并存入资产库（类型：生成）
+          // 生成图片任务：按 imageTaskTarget 写入对应字段并存入资产库（类型：生成）
           if (kind === "genImage") {
             onUpdateShot(shotId, "imageTaskId", "");
             onUpdateShot(shotId, "imageTaskProvider", "");
             onUpdateShot(shotId, "imageTaskKind", "");
-            const refImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
+            onUpdateShot(shotId, "imageTaskTarget", "");
+            const target = latestShot.imageTaskTarget ?? "refImage";
+            const isFrame = target === "firstFrame" || target === "lastFrame";
             const refNames = latestShot.videoConfig?.referenceImageAssetNames ?? [];
-            if (!refImgs.includes(imageUrl)) {
-              const genName = `生成图${nextGenImgNumber(refNames)}`;
-              onUpdateVideoConfig(shotId, {
-                referenceImageAssetUrls: [...refImgs, imageUrl],
-                referenceImageAssetNames: [...refNames, genName],
-              });
+            const genName = isFrame
+              ? (target === "firstFrame" ? "首帧图" : "尾帧图")
+              : `生成图${nextGenImgNumber(refNames)}`;
 
-              // 存入资产库（类型：生成，避免重复入库）
-              const refImgExists = latest.assets.some(
-                (a) => a.type === "generated" && a.imageUrl === imageUrl
-              );
-              if (!refImgExists) {
-                const shotIdx = latest.shots.findIndex((s) => s.id === shotId) + 1;
-                const assetName = `${latest.title || "未命名剧集"}-镜头${shotIdx}-${genName}`;
-                const asset: Asset = {
-                  ...emptyAsset(assetName, "generated"),
-                  imageUrl,
-                  status: "ready",
-                  shotId,
-                };
-                onAddScreenshot(asset);
-                void recordMediaAsset({
-                  mediaType: "image",
-                  url: imageUrl,
-                  entityType: "generated",
-                  entityName: assetName,
-                  prompt: latestShot.finalPrompt ?? "",
-                  source: "generated",
-                  seriesId: latest.seriesId,
-                  seriesTitle: seriesTitle ?? "",
-                  episodeId: latest.id,
-                  episodeTitle: latest.title,
+            // 写入对应字段：首帧/尾帧模式直接设置帧图；参考图模式追加到参考图列表
+            if (target === "firstFrame") {
+              onUpdateVideoConfig(shotId, { firstFrameImageUrl: imageUrl });
+            } else if (target === "lastFrame") {
+              onUpdateVideoConfig(shotId, { lastFrameImageUrl: imageUrl });
+            } else {
+              const refImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
+              if (!refImgs.includes(imageUrl)) {
+                onUpdateVideoConfig(shotId, {
+                  referenceImageAssetUrls: [...refImgs, imageUrl],
+                  referenceImageAssetNames: [...refNames, genName],
                 });
               }
             }
+
+            // 存入资产库（类型：生成，避免重复入库）
+            const refImgExists = latest.assets.some(
+              (a) => a.type === "generated" && a.imageUrl === imageUrl
+            );
+            if (!refImgExists) {
+              const shotIdx = latest.shots.findIndex((s) => s.id === shotId) + 1;
+              const assetName = `${latest.title || "未命名剧集"}-镜头${shotIdx}-${genName}`;
+              const asset: Asset = {
+                ...emptyAsset(assetName, "generated"),
+                imageUrl,
+                status: "ready",
+                shotId,
+              };
+              onAddScreenshot(asset);
+              void recordMediaAsset({
+                mediaType: "image",
+                url: imageUrl,
+                entityType: "generated",
+                entityName: assetName,
+                prompt: latestShot.finalPrompt ?? "",
+                source: "generated",
+                seriesId: latest.seriesId,
+                seriesTitle: seriesTitle ?? "",
+                episodeId: latest.id,
+                episodeTitle: latest.title,
+              });
+            }
+            // DB 直写补丁：onUpdateVideoConfig 走 setState，恢复完成后若立即切页，
+            // 防抖未触发且 useUnloadPersist 可能读到未渲染的旧 episode，参考图丢失。
+            // 此处基于快照直写，保证图片 URL/参考图/资产/清 taskId 落库。
+            onPersistNow?.((ep) => {
+              const sIdx = ep.shots.findIndex((x) => x.id === shotId);
+              if (sIdx < 0) return ep;
+              const cur = ep.shots[sIdx];
+              const vc = cur.videoConfig;
+              let nextVc = vc;
+              if (vc) {
+                if (target === "firstFrame") {
+                  nextVc = { ...vc, firstFrameImageUrl: imageUrl };
+                } else if (target === "lastFrame") {
+                  nextVc = { ...vc, lastFrameImageUrl: imageUrl };
+                } else {
+                  const urls = vc.referenceImageAssetUrls ?? [];
+                  const vcNames = vc.referenceImageAssetNames ?? [];
+                  nextVc = {
+                    ...vc,
+                    referenceImageAssetUrls: urls.includes(imageUrl) ? urls : [...urls, imageUrl],
+                    referenceImageAssetNames: urls.includes(imageUrl) ? vcNames : [...vcNames, genName],
+                  };
+                }
+              }
+              const assetExists = ep.assets.some((a) => a.type === "generated" && a.imageUrl === imageUrl);
+              const assetName = `${ep.title || "未命名剧集"}-镜头${sIdx + 1}-${genName}`;
+              const newAsset: Asset = {
+                ...emptyAsset(assetName, "generated"),
+                imageUrl,
+                status: "ready",
+                shotId,
+              };
+              return {
+                ...ep,
+                shots: ep.shots.map((x) =>
+                  x.id === shotId
+                    ? {
+                        ...x,
+                        imageTaskId: "",
+                        imageTaskProvider: undefined,
+                        imageTaskKind: undefined,
+                        imageTaskTarget: undefined,
+                        ...(nextVc ? { videoConfig: nextVc } : {}),
+                      }
+                    : x
+                ),
+                assets: assetExists ? ep.assets : [...ep.assets, newAsset],
+              };
+            });
             return;
           }
 
+          // 故事板任务：设置 storyboardUrl，按 imageTaskTarget 写入帧图或参考图
           onUpdateShot(shotId, "storyboardUrl", imageUrl);
           onUpdateShot(shotId, "imageTaskId", "");
           onUpdateShot(shotId, "imageTaskProvider", "");
           onUpdateShot(shotId, "imageTaskKind", "");
+          onUpdateShot(shotId, "imageTaskTarget", "");
 
           // 计算故事板名称（用于参考图显示名 + 资产名，与 handleGenerateStoryboard 保持一致）
           const shotIdx = latest.shots.findIndex((s) => s.id === shotId) + 1;
@@ -499,14 +588,21 @@ export default function VideoGeneration({
           const nextIdx = existingStoryboards.length + 1;
           const storyboardName = `${latest.title || "未命名剧集"}-镜头${shotIdx}-故事板${nextIdx}`;
 
-          // 生成成功后直接放入参考图（保留故事板名称，便于 @ 引用）
-          const existingRefImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
-          const existingRefNames = latestShot.videoConfig?.referenceImageAssetNames ?? [];
-          if (!existingRefImgs.includes(imageUrl)) {
-            onUpdateVideoConfig(shotId, {
-              referenceImageAssetUrls: [...existingRefImgs, imageUrl],
-              referenceImageAssetNames: [...existingRefNames, storyboardName],
-            });
+          // 写入对应字段：首帧/尾帧模式直接设置帧图；参考图模式追加到参考图列表（保留故事板名称，便于 @ 引用）
+          const sbTarget = latestShot.imageTaskTarget ?? "refImage";
+          if (sbTarget === "firstFrame") {
+            onUpdateVideoConfig(shotId, { firstFrameImageUrl: imageUrl });
+          } else if (sbTarget === "lastFrame") {
+            onUpdateVideoConfig(shotId, { lastFrameImageUrl: imageUrl });
+          } else {
+            const existingRefImgs = latestShot.videoConfig?.referenceImageAssetUrls ?? [];
+            const existingRefNames = latestShot.videoConfig?.referenceImageAssetNames ?? [];
+            if (!existingRefImgs.includes(imageUrl)) {
+              onUpdateVideoConfig(shotId, {
+                referenceImageAssetUrls: [...existingRefImgs, imageUrl],
+                referenceImageAssetNames: [...existingRefNames, storyboardName],
+              });
+            }
           }
 
           // 保存为故事板资产（避免重复入库）
@@ -522,6 +618,53 @@ export default function VideoGeneration({
             };
             onAddScreenshot(asset);
           }
+          // DB 直写补丁：同 genImage，确保切页前故事板图片/参考图/资产/清 taskId 落库
+          onPersistNow?.((ep) => {
+            const sIdx = ep.shots.findIndex((x) => x.id === shotId);
+            if (sIdx < 0) return ep;
+            const cur = ep.shots[sIdx];
+            const vc = cur.videoConfig;
+            let nextVc = vc;
+            if (vc) {
+              if (sbTarget === "firstFrame") {
+                nextVc = { ...vc, firstFrameImageUrl: imageUrl };
+              } else if (sbTarget === "lastFrame") {
+                nextVc = { ...vc, lastFrameImageUrl: imageUrl };
+              } else {
+                const urls = vc.referenceImageAssetUrls ?? [];
+                const vcNames = vc.referenceImageAssetNames ?? [];
+                nextVc = {
+                  ...vc,
+                  referenceImageAssetUrls: urls.includes(imageUrl) ? urls : [...urls, imageUrl],
+                  referenceImageAssetNames: urls.includes(imageUrl) ? vcNames : [...vcNames, storyboardName],
+                };
+              }
+            }
+            const assetExists = ep.assets.some((a) => a.type === "storyboard" && a.imageUrl === imageUrl);
+            const newAsset: Asset = {
+              ...emptyAsset(storyboardName, "storyboard"),
+              imageUrl,
+              status: "ready",
+              shotId,
+            };
+            return {
+              ...ep,
+              shots: ep.shots.map((x) =>
+                x.id === shotId
+                  ? {
+                      ...x,
+                      storyboardUrl: imageUrl,
+                      imageTaskId: "",
+                      imageTaskProvider: undefined,
+                      imageTaskKind: undefined,
+                      imageTaskTarget: undefined,
+                      ...(nextVc ? { videoConfig: nextVc } : {}),
+                    }
+                  : x
+              ),
+              assets: assetExists ? ep.assets : [...ep.assets, newAsset],
+            };
+          });
         } finally {
           setGeneratingStoryboardIds((prev) => {
             const next = new Set(prev);
@@ -537,6 +680,7 @@ export default function VideoGeneration({
         onUpdateShot(shotId, "imageTaskId", "");
         onUpdateShot(shotId, "imageTaskProvider", "");
         onUpdateShot(shotId, "imageTaskKind", "");
+        onUpdateShot(shotId, "imageTaskTarget", "");
         showError(`镜头 ${shotIdx} 图片生成失败：${error}`);
         setGeneratingStoryboardIds((prev) => {
           const next = new Set(prev);
@@ -550,13 +694,31 @@ export default function VideoGeneration({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageConfigured, imageOptions]);
 
-  // @ 补全选项（供所有 VideoCard 共享）：仅包含第三步资产准备中的人物/场景/物品
-  const atMentionOptions = useMemo(
-    () => episode.assets
-      .filter((a) => a.type === "character" || a.type === "scene" || a.type === "object")
-      .map((a) => ({ label: a.name, value: a.name })),
-    [episode.assets]
-  );
+  // 当前所有镜头里的 @ 标签（去重，按首次出现顺序）
+  const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
+
+  // 系列设定（人物/物品/场景/世界）@ 补全选项，与第一步一致
+  const settingsOptions = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
+  // @ 补全选项（供所有 VideoCard 共享）：系列设定优先，再补齐第三步资产准备中的人物/场景/物品
+  const atMentionOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const merged: { label: string; value: string }[] = [];
+    for (const o of settingsOptions) {
+      if (!seen.has(o.value)) {
+        seen.add(o.value);
+        merged.push(o);
+      }
+    }
+    for (const a of episode.assets) {
+      if (a.type === "character" || a.type === "scene" || a.type === "object") {
+        if (!seen.has(a.name)) {
+          seen.add(a.name);
+          merged.push({ label: a.name, value: a.name });
+        }
+      }
+    }
+    return merged;
+  }, [settingsOptions, episode.assets]);
 
   /** 根据镜头的 relatedAssetIds 获取关联资产列表 */
   function getRelatedAssets(shot: Shot): Asset[] {
@@ -706,19 +868,15 @@ export default function VideoGeneration({
 
     // 判断某个 @资源名 是否在 finalPrompt 中被 @ 引用（用词边界避免子串误匹配，如 @林 vs @林坤）
     const prompt = shot.finalPrompt || "";
-    const boundaryCharClass = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@的]";
+    // 「的」作为额外尾部边界，使「@林坤的音色参考」中的 @林坤 被识别为已提及
     function mentionedInPrompt(name: string): boolean {
-      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      // 匹配 @name 后接边界字符或字符串结尾
-      const re = new RegExp(`@${escaped}(?=${boundaryCharClass}|$)`);
-      return re.test(prompt);
+      return isMentionedInText(prompt, name, "的");
     }
 
     // 校验：multimodal-ref 模式下若存在未 @ 引用的素材（参考图 / 参考视频 / 参考音频 / 人物音色），弹框确认
     // 点否：关闭弹框，用户继续编辑；点是：继续生成（后续过滤逻辑会自动丢弃未使用的素材）
     if (!opts?.skipUnusedRefCheck && config.mode === "multimodal-ref") {
       const relatedForCheck = getRelatedAssets(shot);
-      const latestCharactersForCheck = getLatestVersions(characterSettings ?? []);
 
       const unusedImages: string[] = [];
       const unusedVideos: string[] = [];
@@ -747,10 +905,8 @@ export default function VideoGeneration({
       relatedForCheck
         .filter((a) => a.type === "character")
         .forEach((a) => {
-          const matched = latestCharactersForCheck.find(
-            (c) => c.name && c.name.toLowerCase() === a.name.toLowerCase()
-          );
-          if (matched?.voiceUrl && !mentionedInPrompt(`${a.name}音频`)) {
+          const voiceUrl = a.voiceUrl || latestCharacterVoiceByName.get(a.name.toLowerCase());
+          if (voiceUrl && !mentionedInPrompt(`${a.name}音频`)) {
             unusedAudios.push(`${a.name}音频`);
           }
         });
@@ -885,18 +1041,16 @@ export default function VideoGeneration({
         }
       });
 
-      // 人物音色：只保留被 @人物名音频 引用的关联人物
-      const latestCharacters = getLatestVersions(characterSettings ?? []);
+      // 人物音色：只保留被 @人物名音频 引用的关联人物。
+      // 优先取资产所选版本的 voiceUrl，回退该人物最新版本的音色。
       const characterVoiceUrls: string[] = [];
       related
         .filter((a) => a.type === "character")
         .forEach((a) => {
           if (!mentionedInPrompt(`${a.name}音频`)) return;
-          const matched = latestCharacters.find(
-            (c) => c.name && c.name.toLowerCase() === a.name.toLowerCase()
-          );
-          if (matched?.voiceUrl) {
-            characterVoiceUrls.push(matched.voiceUrl);
+          const voiceUrl = a.voiceUrl || latestCharacterVoiceByName.get(a.name.toLowerCase());
+          if (voiceUrl) {
+            characterVoiceUrls.push(voiceUrl);
             usedCharacterAudioNames.push(a.name);
           }
         });
@@ -966,10 +1120,9 @@ export default function VideoGeneration({
       const audioEntries = Array.from(audioNameToNo.entries()).sort(
         (a, b) => b[0].length - a[0].length
       );
-      const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
       for (const [name, no] of audioEntries) {
         const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const re = new RegExp(`@${escaped}(?=${boundary}|$)`, "g");
+        const re = new RegExp(`@${escaped}(?=${MENTION_BOUNDARY}|$)`, "g");
         finalVideoPrompt = finalVideoPrompt.replace(re, `音频${no}`);
       }
 
@@ -1306,6 +1459,8 @@ export default function VideoGeneration({
         </p>
       </div>
 
+      <TagList tags={tags} onRemoveTag={onRemoveTag} title="已标注标签：" />
+
       {episode.shots.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white/50 py-16 text-center">
           <div className="mb-2 text-4xl opacity-40">🎬</div>
@@ -1358,7 +1513,6 @@ export default function VideoGeneration({
                   })
                 }
                 videoConfigured={videoConfigured}
-                assetIdByName={assetIdByName}
                 onGeneratePrompt={() => generateOne(shot)}
                 onGenerateVideo={() => generateVideo(shot, { skipUnusedRefCheck: true })}
                 onPrecheckVideo={() => generateVideo(shot, { validateOnly: true })}
@@ -1369,6 +1523,7 @@ export default function VideoGeneration({
                 onUpdateShotField={(field, value) => onUpdateShot(shot.id, field, value)}
                 onUnlinkAsset={(assetId) => onUnlinkAsset(shot.id, assetId)}
                 onLinkAsset={(assetId) => onLinkAsset(shot.id, assetId)}
+                onEnsureAssetForSetting={onEnsureAssetForSetting}
                 onLinkMentionedAssets={() => linkMentionedAssets(shot)}
                 onCaptureScreenshot={() => captureLastFrame(shot, i + 1)}
                 isCapturing={capturingIds.has(shot.id)}
@@ -1419,6 +1574,7 @@ export default function VideoGeneration({
         characterSettings={characterSettings}
         objectSettings={objectSettings}
         sceneSettings={sceneSettings}
+        onAtMentionSelect={(name) => { onEnsureAssetForSetting?.(name); }}
       />
       <ShotToc shots={episode.shots} />
 
@@ -1527,26 +1683,47 @@ function ShotToc({ shots }: { shots: Shot[] }) {
   );
 }
 
-/** 首帧/尾帧图片上传组件（带缩略图预览，hover 更换时可选本地/资产库） */
+/** 首帧/尾帧图片上传组件（带缩略图预览，hover 更换时可选本地/资产库/URL/生成图片） */
 function FrameImageUpload({
   label,
   url,
   uploading,
+  generating,
   onUpload,
   onPickAsset,
+  onAddFromUrl,
+  onGenerateFromStoryboard,
+  onGenerateImage,
   onRemove,
 }: {
   label: string;
   url?: string;
   uploading: boolean;
+  /** 图片生成中（显示 loading 占位） */
+  generating?: boolean;
   onUpload: () => void;
   onPickAsset: () => void;
+  onAddFromUrl?: () => void;
+  /** 使用故事板生成图片 */
+  onGenerateFromStoryboard?: () => void;
+  /** 生成图片 */
+  onGenerateImage?: () => void;
   onRemove: () => void;
 }) {
   return (
     <div className="space-y-1.5">
       <span className="block text-[11px] text-slate-500">{label}</span>
-      {url ? (
+      {generating ? (
+        <div
+          className="flex h-24 w-full items-center justify-center rounded-md border border-dashed border-brand-300 bg-brand-50/50"
+          title="生成中…"
+        >
+          <div className="flex flex-col items-center gap-1.5">
+            <Spinner size={20} />
+            <span className="text-[11px] text-brand-600">生成中…</span>
+          </div>
+        </div>
+      ) : url ? (
         <div className="group relative">
           <ImageLightbox src={url} alt={label} className="block">
             <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-50">
@@ -1576,6 +1753,30 @@ function FrameImageUpload({
                 onRemove();
                 onPickAsset();
               }}
+              onAddFromUrl={
+                onAddFromUrl
+                  ? () => {
+                      onRemove();
+                      onAddFromUrl();
+                    }
+                  : undefined
+              }
+              onGenerateFromStoryboard={
+                onGenerateFromStoryboard
+                  ? () => {
+                      onRemove();
+                      onGenerateFromStoryboard();
+                    }
+                  : undefined
+              }
+              onGenerateImage={
+                onGenerateImage
+                  ? () => {
+                      onRemove();
+                      onGenerateImage();
+                    }
+                  : undefined
+              }
             />
           </div>
         </div>
@@ -1586,13 +1787,16 @@ function FrameImageUpload({
           className="h-24 w-full"
           onUpload={onUpload}
           onPickAsset={onPickAsset}
+          onAddFromUrl={onAddFromUrl}
+          onGenerateFromStoryboard={onGenerateFromStoryboard}
+          onGenerateImage={onGenerateImage}
         />
       )}
     </div>
   );
 }
 
-/** 带 hover 下拉菜单的添加/更换按钮：一个入口，hover 后显示本地上传 / 资产库 / 使用故事板生成 */
+/** 带 hover 下拉菜单的添加/更换按钮：一个入口，hover 后显示本地上传 / 资产库 / 从 URL 添加 / 使用故事板生成 */
 function AddMediaDropdown({
   label,
   buttonLabel,
@@ -1603,6 +1807,7 @@ function AddMediaDropdown({
   onUpload,
   onPickAsset,
   onPickPreset,
+  onAddFromUrl,
   onGenerateFromStoryboard,
   onGenerateImage,
 }: {
@@ -1616,6 +1821,8 @@ function AddMediaDropdown({
   onPickAsset: () => void;
   /** 从预设库获取 */
   onPickPreset?: () => void;
+  /** 从 URL 添加（仅图片，直接回填公网 URL，不经 COS） */
+  onAddFromUrl?: () => void;
   /** 参考图区域可选：使用故事板生成图片资产 */
   onGenerateFromStoryboard?: () => void;
   /** 参考图区域可选：带上卡片参考图直接生成图片（不附加提示词模板） */
@@ -1655,6 +1862,15 @@ function AddMediaDropdown({
               className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-slate-50"
             >
               从预设库获取
+            </button>
+          )}
+          {onAddFromUrl && (
+            <button
+              type="button"
+              onClick={onAddFromUrl}
+              className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-slate-50"
+            >
+              从 URL 添加
             </button>
           )}
           {onGenerateFromStoryboard && (
@@ -1845,7 +2061,6 @@ function VideoCard({
   isGeneratingVideo,
   isGeneratingStoryboard,
   videoConfigured,
-  assetIdByName,
   onGeneratePrompt,
   onGenerateVideo,
   onPrecheckVideo,
@@ -1856,6 +2071,7 @@ function VideoCard({
   onUpdateShotField,
   onUnlinkAsset,
   onLinkAsset,
+  onEnsureAssetForSetting,
   onLinkMentionedAssets,
   onSetGeneratingStoryboard,
   onCaptureScreenshot,
@@ -1899,8 +2115,6 @@ function VideoCard({
   initiallyExpanded?: boolean;
   /** 父级「一键折叠/展开」指令：每次触发 token 递增，卡片据 value 设置折叠状态 */
   bulkCollapse?: { value: boolean; token: number };
-  /** 资产名称（小写）到资产 ID 的映射，用于一键关联 @标签 */
-  assetIdByName: Map<string, string>;
   onGeneratePrompt: () => void;
   onGenerateVideo: () => void;
   onPrecheckVideo: () => Promise<boolean>;
@@ -1912,6 +2126,8 @@ function VideoCard({
   onUpdateShotField: (field: keyof Shot, value: string) => void;
   onUnlinkAsset: (assetId: string) => void;
   onLinkAsset: (assetId: string) => void;
+  /** @ 选中设定时确保对应资产已存在（不存在则按设定创建），返回资产 id 供关联 */
+  onEnsureAssetForSetting?: (name: string) => string | undefined;
   /** 一键关联画面描述中 @到的资产 */
   onLinkMentionedAssets: () => void;
   isGeneratingStoryboard: boolean;
@@ -1951,6 +2167,7 @@ function VideoCard({
   // 能力查询使用所选模型所属供应商的模型条目（同一模型名在不同供应商下能力可能不同）
   const selectedVidOption = findModelOption(videoOptions, config.provider, config.model);
   const cap = getVideoModelCapability(config.model, selectedVidOption ? [selectedVidOption.entry] : undefined);
+  const effectiveDuration = config.duration === -1 && !cap.durationAuto ? cap.durationRange[0] : config.duration;
   // 模型所属供应商未配置 apiKey（不在 videoOptions 中）时，ModelPicker 显示空让用户自选
   const displayModel = (config.model && selectedVidOption) ? config.model : "";
   const [videoConfigOpen, setVideoConfigOpen] = useState(false);
@@ -1974,17 +2191,16 @@ function VideoCard({
   const showError = useErrorDialog();
   const confirm = useConfirm();
   const [pickerTarget, setPickerTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | "refVideo" | "refAudio" | null>(null);
-  const [presetPickerTarget, setPresetPickerTarget] = useState<"refImage" | "refVideo" | "refAudio" | "promptText" | null>(null);
+  const [presetPickerTarget, setPresetPickerTarget] = useState<"refImage" | "refVideo" | "refAudio" | "promptText" | "camera" | null>(null);
+  const [cameraPresetContent, setCameraPresetContent] = useState<string | null>(null);
+  // 从 URL 添加图片（首帧/尾帧/参考图）：直接回填公网 URL，不经过 COS
+  const [urlInputTarget, setUrlInputTarget] = useState<"firstFrame" | "lastFrame" | "refImage" | null>(null);
+  const [urlInputValue, setUrlInputValue] = useState("");
+  const [urlPreviewError, setUrlPreviewError] = useState(false);
 
-  // 画面描述中 @到的资产是否还有未关联的（控制一键关联按钮可用状态）
-  const canLinkMentionedAssets = useMemo(() => {
-    const ids: string[] = [];
-    for (const tagName of extractTags(shot.visualDescription)) {
-      const assetId = assetIdByName.get(tagName.toLowerCase());
-      if (assetId && !ids.includes(assetId)) ids.push(assetId);
-    }
-    return ids.some((id) => !shot.relatedAssetIds?.includes(id));
-  }, [shot.visualDescription, shot.relatedAssetIds, assetIdByName]);
+  // 图片生成目标（refImage 加入参考图列表；firstFrame/lastFrame 写入对应帧图）
+  const [imageGenTarget, setImageGenTarget] = useState<"refImage" | "firstFrame" | "lastFrame">("refImage");
+  const [optimizingPrompt, setOptimizingPrompt] = useState(false);
 
   // 故事板生成状态
   const [storyboardOpen, setStoryboardOpen] = useState(false);
@@ -2092,6 +2308,19 @@ function VideoCard({
     return opts;
   }, [atMentionOptions, config.mode, config.referenceImageAssetUrls, config.referenceImageAssetNames, config.referenceVideoUrls, config.referenceAudioUrls, relatedAssets, characterVoiceNames]);
 
+  // 运镜占位符填充用的参考图名列表：关联资产图 + 手动参考图（仅 multimodal-ref 有意义）
+  const refImageNameOptions = useMemo(() => {
+    if (config.mode !== "multimodal-ref") return [];
+    const names: string[] = [];
+    relatedAssets.forEach((a) => {
+      if (a.imageUrl) names.push(a.name);
+    });
+    (config.referenceImageAssetUrls ?? []).forEach((_, i) => {
+      names.push(getRefImgName(config.referenceImageAssetNames, i));
+    });
+    return names;
+  }, [config.mode, relatedAssets, config.referenceImageAssetUrls, config.referenceImageAssetNames]);
+
   /** 切换模型时收敛配置到新模型能力范围内（同时记录所选模型所属供应商，生成时按此路由凭证）。
    *  旧模型不支持而被强制关闭的能力，在切回支持该能力的新模型时恢复为用户默认参数，
    *  避免模型间往返切换后自动时长/有声视频等选项卡在关闭状态。 */
@@ -2190,6 +2419,41 @@ function VideoCard({
     input.click();
   }
 
+  /** 从 URL 添加图片（首帧/尾帧/参考图）：校验后直接回填公网 URL，不经过 COS */
+  function handleConfirmAddFromUrl() {
+    const target = urlInputTarget;
+    const raw = urlInputValue.trim();
+    if (!target) return;
+    if (!raw) {
+      showError("请输入图片 URL");
+      return;
+    }
+    if (!/^https?:\/\//i.test(raw)) {
+      showError("请输入以 http:// 或 https:// 开头的有效图片 URL");
+      return;
+    }
+    if (target === "firstFrame") {
+      onUpdateVideoConfig({ firstFrameImageUrl: raw });
+    } else if (target === "lastFrame") {
+      onUpdateVideoConfig({ lastFrameImageUrl: raw });
+    } else {
+      const existingNames = config.referenceImageAssetNames ?? [];
+      const newName = `参考图${nextRefImgNumber(existingNames)}`;
+      onUpdateVideoConfig({
+        referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), raw],
+        referenceImageAssetNames: [...existingNames, newName],
+      });
+    }
+    closeUrlInputDialog();
+  }
+
+  /** 关闭从 URL 添加弹框并清空输入 */
+  function closeUrlInputDialog() {
+    setUrlInputTarget(null);
+    setUrlInputValue("");
+    setUrlPreviewError(false);
+  }
+
   /* 添加素材ID功能暂时隐藏
    * 添加 asset:// 素材（预置虚拟人像/已授权真人素材）到参考列表
   function handleAddAsset(kind: "image" | "video" | "audio") {
@@ -2215,14 +2479,16 @@ function VideoCard({
   }
   */
 
-  /** 当用户在提示词中通过 @ 补全选中资产时，自动关联到该镜头；视频/音频无需关联 */
+  /** 当用户在画面描述/提示词中通过 @ 补全选中设定或资产时，自动关联到该镜头。
+   *  若选中的是设定但尚未作为资产准备，则先按设定创建资产再关联；视频/音频无需关联。 */
   function handleMentionSelect(assetName: string) {
     if (assetName.startsWith("视频") || assetName.startsWith("音频")) return;
     const asset = allAssets.find(
       (a) => a.name === assetName || a.name.toLowerCase() === assetName.toLowerCase()
     );
-    if (asset && !shot.relatedAssetIds?.includes(asset.id)) {
-      onLinkAsset(asset.id);
+    const assetId = asset?.id ?? onEnsureAssetForSetting?.(assetName);
+    if (assetId && !shot.relatedAssetIds?.includes(assetId)) {
+      onLinkAsset(assetId);
     }
   }
 
@@ -2236,7 +2502,8 @@ function VideoCard({
   }
 
   /** 打开故事板生成弹框，直接将镜头信息 + 故事板模板填入输入框 */
-  function openStoryboardDialog() {
+  function openStoryboardDialog(target: "refImage" | "firstFrame" | "lastFrame" = "refImage") {
+    setImageGenTarget(target);
     // 每次打开都以用户自定义默认图片参数为基础（已含默认模型 + 所属供应商）
     setStoryboardConfig({
       ...defaultImageConfig,
@@ -2275,10 +2542,11 @@ function VideoCard({
         params.config,
         params.images.length > 0 ? params.images : undefined,
         (jobId) => {
-          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider，切页/刷新后可恢复轮询（按 provider 路由凭证）
+          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider + imageTaskTarget，切页/刷新后可恢复轮询（按 provider 路由凭证）
           onUpdateShotField("imageTaskId", jobId);
           if (params.config.provider) onUpdateShotField("imageTaskProvider", params.config.provider);
           onUpdateShotField("imageTaskKind", "storyboard");
+          onUpdateShotField("imageTaskTarget", imageGenTarget);
           // 立即落盘（mutation 直写）：提交在飞时切页，组件卸载后 setState 无效，
           // mutation 基于卸载前快照直写是 taskId 不丢的唯一保障
           onPersistNow?.((ep) => ({
@@ -2290,6 +2558,7 @@ function VideoCard({
                     imageTaskId: jobId,
                     ...(params.config.provider ? { imageTaskProvider: params.config.provider } : {}),
                     imageTaskKind: "storyboard" as const,
+                    imageTaskTarget: imageGenTarget,
                   }
                 : s
             ),
@@ -2302,6 +2571,7 @@ function VideoCard({
       const finalUrl = result.imageUrl;
       onUpdateShotField("storyboardUrl", finalUrl);
       onUpdateShotField("imageTaskId", "");
+      onUpdateShotField("imageTaskTarget", "");
 
       // 保存为故事板资产：自动命名为“剧集名-镜头名-故事版n”
       const existingStoryboards = episode.assets.filter(
@@ -2309,12 +2579,6 @@ function VideoCard({
       );
       const nextIndex = existingStoryboards.length + 1;
       const name = `${episode.title || "未命名剧集"}-镜头${index + 1}-故事板${nextIndex}`;
-
-      // 生成成功后直接放入参考图（保留故事板名称，便于 @ 引用）
-      onUpdateVideoConfig({
-        referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), finalUrl],
-        referenceImageAssetNames: [...(config.referenceImageAssetNames ?? []), name],
-      });
 
       const asset: Asset = {
         ...emptyAsset(name, "storyboard"),
@@ -2324,25 +2588,41 @@ function VideoCard({
         shotId: shot.id,
       };
       onAddAsset(asset);
+
+      // 写入对应字段：首帧/尾帧模式直接设置帧图；参考图模式追加到参考图列表（保留故事板名称，便于 @ 引用）
+      if (imageGenTarget === "firstFrame") {
+        onUpdateVideoConfig({ firstFrameImageUrl: finalUrl });
+      } else if (imageGenTarget === "lastFrame") {
+        onUpdateVideoConfig({ lastFrameImageUrl: finalUrl });
+      } else {
+        onUpdateVideoConfig({
+          referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), finalUrl],
+          referenceImageAssetNames: [...(config.referenceImageAssetNames ?? []), name],
+        });
+      }
+
       // DB 直写补丁：页面离开后组件已卸载，上面的 setState 链全部静默丢弃，
-      // 此处基于卸载前快照把故事板/参考图/资产/清 taskId 直写落库，保证图片不丢
+      // 此处基于卸载前快照把故事板/帧图/参考图/资产/清 taskId 直写落库，保证图片不丢
       onPersistNow?.((ep) => ({
         ...ep,
         shots: ep.shots.map((s) => {
           if (s.id !== shot.id) return s;
           const vc = s.videoConfig ?? defaultVideoConfig;
-          const urls = vc.referenceImageAssetUrls ?? [];
-          const vcNames = vc.referenceImageAssetNames ?? [];
-          return {
-            ...s,
-            storyboardUrl: finalUrl,
-            imageTaskId: "",
-            videoConfig: {
+          let videoConfig: ShotVideoConfig;
+          if (imageGenTarget === "firstFrame") {
+            videoConfig = { ...vc, firstFrameImageUrl: finalUrl };
+          } else if (imageGenTarget === "lastFrame") {
+            videoConfig = { ...vc, lastFrameImageUrl: finalUrl };
+          } else {
+            const urls = vc.referenceImageAssetUrls ?? [];
+            const vcNames = vc.referenceImageAssetNames ?? [];
+            videoConfig = {
               ...vc,
               referenceImageAssetUrls: urls.includes(finalUrl) ? urls : [...urls, finalUrl],
               referenceImageAssetNames: urls.includes(finalUrl) ? vcNames : [...vcNames, name],
-            },
-          };
+            };
+          }
+          return { ...s, storyboardUrl: finalUrl, imageTaskId: "", imageTaskTarget: undefined, videoConfig };
         }),
         assets: ep.assets.some((a) => a.type === "storyboard" && a.imageUrl === finalUrl)
           ? ep.assets
@@ -2356,6 +2636,7 @@ function VideoCard({
       const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         onUpdateShotField("imageTaskId", "");
+        onUpdateShotField("imageTaskTarget", "");
         showError(`故事板生成失败：${(e as Error).message}`);
       }
     } finally {
@@ -2364,20 +2645,27 @@ function VideoCard({
   }
 
   /** 打开生成图片弹框：带上卡片所有参考图（关联资产 + 手动/故事板参考图），不附加任何提示词模板 */
-  function openGenerateImageDialog() {
+  function openGenerateImageDialog(target: "refImage" | "firstFrame" | "lastFrame" = "refImage") {
+    setImageGenTarget(target);
     setGenImageConfig({ ...defaultImageConfig });
     // 卡片参考图区域 = 关联资产（@ 引用，自动作为参考图）+ 手动/故事板添加的参考图
     const linkedAssets = relatedAssets.filter((a) => a.imageUrl);
-    const manualUrls = config.referenceImageAssetUrls ?? [];
-    const manualNames = config.referenceImageAssetNames ?? [];
-    setGenImageRefImages([
-      ...linkedAssets.map((a) => a.imageUrl),
-      ...manualUrls,
-    ]);
-    setGenImageRefImageLabels([
-      ...linkedAssets.map((a) => a.name),
-      ...manualUrls.map((_, i) => getRefImgName(manualNames, i)),
-    ]);
+    if (target === "refImage") {
+      const manualUrls = config.referenceImageAssetUrls ?? [];
+      const manualNames = config.referenceImageAssetNames ?? [];
+      setGenImageRefImages([
+        ...linkedAssets.map((a) => a.imageUrl),
+        ...manualUrls,
+      ]);
+      setGenImageRefImageLabels([
+        ...linkedAssets.map((a) => a.name),
+        ...manualUrls.map((_, i) => getRefImgName(manualNames, i)),
+      ]);
+    } else {
+      // firstFrame/lastFrame：仅用关联资产作为参考图
+      setGenImageRefImages(linkedAssets.map((a) => a.imageUrl));
+      setGenImageRefImageLabels(linkedAssets.map((a) => a.name));
+    }
     // 预填分镜中对静态画面有视觉参考价值的信息（画面描述、景别、光影氛围），
     // 不带运镜（动态）、音效/对白旁白（声音）、时长（时间）等与静态图片无关的字段
     setGenImagePrompt(buildShotInfoBlockForImage(shot));
@@ -2390,15 +2678,24 @@ function VideoCard({
     setGenImageConfig(params.config);
     setIsGeneratingImage(true);
     try {
+      // 发送给图片模型前确定性替换 @资产名称/@参考图N -> 图片N（与故事板一致，编号与 images 数组顺序对齐）
+      const assetImageNo = new Map<string, number | null>();
+      const genLabels = params.imageLabels ?? [];
+      params.images.forEach((_, i) => {
+        const name = genLabels[i] || `图片${i + 1}`;
+        assetImageNo.set(name, i + 1);
+      });
+      const finalGenPrompt = replaceAssetTagsWithImageNos(params.prompt, assetImageNo);
       const result = await generateImage(
-        params.prompt,
+        finalGenPrompt,
         params.config,
         params.images.length > 0 ? params.images : undefined,
         (jobId) => {
-          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider + imageTaskKind，切页/刷新后可恢复轮询
+          // 异步任务创建后立即持久化 imageTaskId + imageTaskProvider + imageTaskKind + imageTaskTarget，切页/刷新后可恢复轮询
           onUpdateShotField("imageTaskId", jobId);
           if (params.config.provider) onUpdateShotField("imageTaskProvider", params.config.provider);
           onUpdateShotField("imageTaskKind", "genImage");
+          onUpdateShotField("imageTaskTarget", imageGenTarget);
           // 立即落盘（mutation 直写，组件卸载后仍有效）
           onPersistNow?.((ep) => ({
             ...ep,
@@ -2409,6 +2706,7 @@ function VideoCard({
                     imageTaskId: jobId,
                     ...(params.config.provider ? { imageTaskProvider: params.config.provider } : {}),
                     imageTaskKind: "genImage" as const,
+                    imageTaskTarget: imageGenTarget,
                   }
                 : s
             ),
@@ -2418,14 +2716,13 @@ function VideoCard({
         { cosPrefix: "ai-script/generated" }
       );
       onUpdateShotField("imageTaskId", "");
+      onUpdateShotField("imageTaskTarget", "");
       // imageUrl 已经服务端 COS 转存，无需再转存
       const finalUrl = result.imageUrl;
-      const names = config.referenceImageAssetNames ?? [];
-      const newName = `生成图${nextGenImgNumber(names)}`;
-      onUpdateVideoConfig({
-        referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), finalUrl],
-        referenceImageAssetNames: [...names, newName],
-      });
+      const isFrame = imageGenTarget === "firstFrame" || imageGenTarget === "lastFrame";
+      const newName = isFrame
+        ? (imageGenTarget === "firstFrame" ? "首帧图" : "尾帧图")
+        : `生成图${nextGenImgNumber(config.referenceImageAssetNames ?? [])}`;
 
       // 存入资产库（类型：生成，避免重复入库）
       const refImgExists = episode.assets.some(
@@ -2438,7 +2735,7 @@ function VideoCard({
           ...emptyAsset(assetName, "generated"),
           imageUrl: finalUrl,
           status: "ready",
-          description: params.prompt,
+          description: finalGenPrompt,
           shotId: shot.id,
         };
         createdAsset = asset;
@@ -2448,7 +2745,7 @@ function VideoCard({
           url: finalUrl,
           entityType: "generated",
           entityName: assetName,
-          prompt: params.prompt,
+          prompt: finalGenPrompt,
           source: "generated",
           seriesId: episode.seriesId,
           seriesTitle: seriesTitle ?? "",
@@ -2456,25 +2753,43 @@ function VideoCard({
           episodeTitle: episode.title,
         });
       }
+
+      // 写入对应字段：首帧/尾帧模式直接设置帧图；参考图模式追加到参考图列表
+      if (imageGenTarget === "firstFrame") {
+        onUpdateVideoConfig({ firstFrameImageUrl: finalUrl });
+      } else if (imageGenTarget === "lastFrame") {
+        onUpdateVideoConfig({ lastFrameImageUrl: finalUrl });
+      } else {
+        const names = config.referenceImageAssetNames ?? [];
+        onUpdateVideoConfig({
+          referenceImageAssetUrls: [...(config.referenceImageAssetUrls ?? []), finalUrl],
+          referenceImageAssetNames: [...names, newName],
+        });
+      }
+
       // DB 直写补丁：页面离开后组件已卸载，上面的 setState 链全部静默丢弃，
-      // 此处基于卸载前快照把参考图/资产/清 taskId 直写落库，保证图片不丢
+      // 此处基于卸载前快照把帧图/参考图/资产/清 taskId 直写落库，保证图片不丢
       const assetToAdd = createdAsset;
       onPersistNow?.((ep) => ({
         ...ep,
         shots: ep.shots.map((s) => {
           if (s.id !== shot.id) return s;
           const vc = s.videoConfig ?? defaultVideoConfig;
-          const urls = vc.referenceImageAssetUrls ?? [];
-          const vcNames = vc.referenceImageAssetNames ?? [];
-          return {
-            ...s,
-            imageTaskId: "",
-            videoConfig: {
+          let videoConfig: ShotVideoConfig;
+          if (imageGenTarget === "firstFrame") {
+            videoConfig = { ...vc, firstFrameImageUrl: finalUrl };
+          } else if (imageGenTarget === "lastFrame") {
+            videoConfig = { ...vc, lastFrameImageUrl: finalUrl };
+          } else {
+            const urls = vc.referenceImageAssetUrls ?? [];
+            const vcNames = vc.referenceImageAssetNames ?? [];
+            videoConfig = {
               ...vc,
               referenceImageAssetUrls: urls.includes(finalUrl) ? urls : [...urls, finalUrl],
               referenceImageAssetNames: urls.includes(finalUrl) ? vcNames : [...vcNames, newName],
-            },
-          };
+            };
+          }
+          return { ...s, imageTaskId: "", imageTaskTarget: undefined, videoConfig };
         }),
         assets:
           assetToAdd && !ep.assets.some((a) => a.type === "generated" && a.imageUrl === finalUrl)
@@ -2485,6 +2800,7 @@ function VideoCard({
       const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
       if (!isAborted) {
         onUpdateShotField("imageTaskId", "");
+        onUpdateShotField("imageTaskTarget", "");
         showError(`图片生成失败：${(e as Error).message}`);
       }
     } finally {
@@ -2678,6 +2994,7 @@ function VideoCard({
                   renderTags
                   atMentionOptions={cardMentionOptions}
                   onAtMentionSelect={handleMentionSelect}
+                  allowCreateTag
                 />
               </div>
               <div className="grid grid-cols-3 gap-2.5">
@@ -2768,6 +3085,7 @@ function VideoCard({
               value={config.mode}
               onChange={(v) => onUpdateVideoConfig({ mode: v as VideoGenerationMode })}
               options={cap.modes.map((m) => ({ value: m, label: MODE_LABELS[m] }))}
+              disabled={isGeneratingImage || isGeneratingStoryboard}
             />
           </label>
         </div>
@@ -2804,8 +3122,12 @@ function VideoCard({
                       label="首帧图片"
                       url={config.firstFrameImageUrl}
                       uploading={uploadingKind === "firstFrame"}
+                      generating={(isGeneratingImage || isGeneratingStoryboard) && imageGenTarget === "firstFrame"}
                       onUpload={() => handleUploadRef("firstFrame")}
                       onPickAsset={() => setPickerTarget("firstFrame")}
+                      onAddFromUrl={() => setUrlInputTarget("firstFrame")}
+                      onGenerateImage={() => openGenerateImageDialog("firstFrame")}
+                      onGenerateFromStoryboard={() => openStoryboardDialog("firstFrame")}
                       onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
                     />
                   </div>
@@ -2817,16 +3139,24 @@ function VideoCard({
                         label="首帧图片"
                         url={config.firstFrameImageUrl}
                         uploading={uploadingKind === "firstFrame"}
+                        generating={(isGeneratingImage || isGeneratingStoryboard) && imageGenTarget === "firstFrame"}
                         onUpload={() => handleUploadRef("firstFrame")}
                         onPickAsset={() => setPickerTarget("firstFrame")}
+                        onAddFromUrl={() => setUrlInputTarget("firstFrame")}
+                        onGenerateImage={() => openGenerateImageDialog("firstFrame")}
+                        onGenerateFromStoryboard={() => openStoryboardDialog("firstFrame")}
                         onRemove={() => onUpdateVideoConfig({ firstFrameImageUrl: undefined })}
                       />
                       <FrameImageUpload
                         label="尾帧图片"
                         url={config.lastFrameImageUrl}
                         uploading={uploadingKind === "lastFrame"}
+                        generating={(isGeneratingImage || isGeneratingStoryboard) && imageGenTarget === "lastFrame"}
                         onUpload={() => handleUploadRef("lastFrame")}
                         onPickAsset={() => setPickerTarget("lastFrame")}
+                        onAddFromUrl={() => setUrlInputTarget("lastFrame")}
+                        onGenerateImage={() => openGenerateImageDialog("lastFrame")}
+                        onGenerateFromStoryboard={() => openStoryboardDialog("lastFrame")}
                         onRemove={() => onUpdateVideoConfig({ lastFrameImageUrl: undefined })}
                       />
                     </div>
@@ -2842,13 +3172,9 @@ function VideoCard({
                         </span>
                         <button
                           type="button"
-                          disabled={!canLinkMentionedAssets}
                           onClick={onLinkMentionedAssets}
-                          className={`rounded px-1.5 py-1 text-[11px] transition-colors ${
-                            canLinkMentionedAssets
-                              ? "text-brand-600 hover:bg-brand-50"
-                              : "cursor-not-allowed text-slate-400"
-                          }`}
+                          className="rounded px-1.5 py-1 text-[11px] text-brand-600 transition-colors hover:bg-brand-50"
+                          title="关联画面描述中 @标签 对应的资产（不存在的自动从设定创建）"
                         >
                           一键关联
                         </button>
@@ -2942,15 +3268,11 @@ function VideoCard({
                           onUpload={() => handleUploadRef("refImage")}
                           onPickAsset={() => setPickerTarget("refImage")}
                           onPickPreset={() => setPresetPickerTarget("refImage")}
+                          onAddFromUrl={() => setUrlInputTarget("refImage")}
                           onGenerateFromStoryboard={openStoryboardDialog}
                           onGenerateImage={openGenerateImageDialog}
                         />
                       </div>
-                      {relatedAssets.length > 0 && relatedAssets.every((a) => !a.description) && (
-                        <p className="text-xs text-amber-600">
-                          ⚠ 关联资产尚未生成描述（请返回第三步生成资产信息），提示词可能无法准确引用资产特征
-                        </p>
-                      )}
                     </div>
 
                     {/* 参考视频：一个添加入口 hover 展开本地上传/资产库 */}
@@ -3099,8 +3421,17 @@ function VideoCard({
                       onClick={() => setPresetPickerTarget("promptText")}
                       className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
                     >
-                      从预设库获取
+                      添加文本
                     </button>
+                    {config.mode === "multimodal-ref" && (
+                      <button
+                        type="button"
+                        onClick={() => setPresetPickerTarget("camera")}
+                        className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
+                      >
+                        添加镜头
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -3116,12 +3447,14 @@ function VideoCard({
               <AiOptimizeButton
                 text={shot.finalPrompt}
                 onOptimized={onUpdatePrompt}
+                onRunningChange={setOptimizingPrompt}
               />
             </div>
           </div>
           <EditableCell
             value={shot.finalPrompt}
             onChange={onUpdatePrompt}
+            disabled={optimizingPrompt}
             placeholder="输入视频提示词，或点击上方按钮生成…"
             multiline
             minWidth="100%"
@@ -3211,8 +3544,8 @@ function VideoCard({
                   type="number"
                   min={cap.durationRange[0]}
                   max={cap.durationRange[1]}
-                  value={config.duration === -1 ? "" : config.duration}
-                  disabled={config.duration === -1}
+                  value={effectiveDuration === -1 ? "" : effectiveDuration}
+                  disabled={effectiveDuration === -1}
                   onChange={(e) => onUpdateVideoConfig({ duration: Number(e.target.value) })}
                   className="input"
                 />
@@ -3220,7 +3553,7 @@ function VideoCard({
                   <label className="flex items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
                     <input
                       type="checkbox"
-                      checked={config.duration === -1}
+                      checked={effectiveDuration === -1}
                       onChange={(e) => onUpdateVideoConfig({ duration: e.target.checked ? -1 : cap.durationRange[0] })}
                       className="h-3.5 w-3.5"
                     />
@@ -3306,6 +3639,7 @@ function VideoCard({
           open={!!pickerTarget}
           onClose={() => setPickerTarget(null)}
           mediaType={pickerTarget === "refVideo" ? "video" : pickerTarget === "refAudio" ? "audio" : "image"}
+          defaultSeriesId={episode.seriesId}
           multiple={pickerTarget === "refImage" || pickerTarget === "refVideo" || pickerTarget === "refAudio"}
           max={
             pickerTarget === "refVideo" ? 3
@@ -3379,9 +3713,11 @@ function VideoCard({
                 ? "video"
                 : presetPickerTarget === "refAudio"
                   ? "audio"
-                  : "text"
+                  : presetPickerTarget === "camera"
+                    ? "camera"
+                    : "text"
           }
-          multiple={true}
+          multiple={presetPickerTarget !== "camera"}
           max={
             presetPickerTarget === "refImage"
               ? 10
@@ -3450,11 +3786,35 @@ function VideoCard({
                 const next = current.trim() ? `${current.trim()}\n${block}` : block;
                 onUpdatePrompt(next);
               }
+            } else if (presetPickerTarget === "camera") {
+              const text = items[0]?.content ?? "";
+              if (text.trim()) {
+                if (/\{\{.+?\}\}/.test(text)) {
+                  setCameraPresetContent(text);
+                } else {
+                  const current = shot.finalPrompt ?? "";
+                  const next = current.trim() ? `${current.trim()}\n\n${text}` : text;
+                  onUpdatePrompt(next);
+                }
+              }
             }
             setPresetPickerTarget(null);
           }}
         />
       )}
+
+      <CameraPlaceholderDialog
+        open={cameraPresetContent !== null}
+        content={cameraPresetContent ?? ""}
+        refImageOptions={refImageNameOptions}
+        onClose={() => setCameraPresetContent(null)}
+        onConfirm={(generated) => {
+          const current = shot.finalPrompt ?? "";
+          const next = current.trim() ? `${current.trim()}\n\n${generated}` : generated;
+          onUpdatePrompt(next);
+          setCameraPresetContent(null);
+        }}
+      />
 
       <ImageGenerationDialog
         open={storyboardOpen}
@@ -3471,6 +3831,7 @@ function VideoCard({
         loading={isGeneratingStoryboard}
         onConfirm={handleGenerateStoryboard}
         keepMentionPrefix
+        defaultSeriesId={episode.seriesId}
         promptFooterExtra={
           <label className="flex cursor-pointer items-center gap-1.5">
             <input
@@ -3498,8 +3859,75 @@ function VideoCard({
         confirmText="生成图片"
         loading={isGeneratingImage}
         onConfirm={handleGenerateImage}
+        keepMentionPrefix
         enablePresetPrompt
+        defaultSeriesId={episode.seriesId}
       />
+
+      <Modal
+        open={!!urlInputTarget}
+        onClose={closeUrlInputDialog}
+        title="从 URL 添加图片"
+        width="max-w-md"
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeUrlInputDialog}>
+              取消
+            </Button>
+            <Button onClick={handleConfirmAddFromUrl} disabled={!urlInputValue.trim()}>
+              添加
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <label className="block">
+            <span className="mb-1 block text-xs text-slate-500">
+              图片 URL
+              {urlInputTarget === "firstFrame" && "（首帧图片）"}
+              {urlInputTarget === "lastFrame" && "（尾帧图片）"}
+              {urlInputTarget === "refImage" && "（参考图）"}
+            </span>
+            <input
+              type="url"
+              autoFocus
+              value={urlInputValue}
+              onChange={(e) => {
+                setUrlInputValue(e.target.value);
+                setUrlPreviewError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleConfirmAddFromUrl();
+                }
+              }}
+              placeholder="https://example.com/image.png"
+              className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+            />
+          </label>
+          {/^https?:\/\//i.test(urlInputValue.trim()) && (
+            <div className="overflow-hidden rounded-md border border-slate-200 bg-slate-50">
+              {urlPreviewError ? (
+                <div className="flex h-32 items-center justify-center text-xs text-slate-400">
+                  无法加载图片预览，请检查 URL 是否可公开访问
+                </div>
+              ) : (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={urlInputValue.trim()}
+                  alt="预览"
+                  className="max-h-48 w-full object-contain"
+                  onError={() => setUrlPreviewError(true)}
+                />
+              )}
+            </div>
+          )}
+          <p className="text-[11px] text-slate-400">
+            公网图片 URL 将直接作为素材添加，不会上传到 COS。请确保链接可公开访问且为图片格式。
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

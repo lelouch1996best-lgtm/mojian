@@ -43,6 +43,8 @@ export interface CharacterProfile {
   version: number;
   /** 版本标签（如"少年期""觉醒后"） */
   versionLabel: string;
+  /** 是否为该角色的默认（最新）版本；未设置时回退到 version 最大者 */
+  isDefault?: boolean;
   /** 姓名 */
   name: string;
   /** 角色定位（主角/配角/反派等） */
@@ -84,6 +86,8 @@ export interface ObjectProfile {
   version: number;
   /** 版本标签（如"初始形态""觉醒后"） */
   versionLabel: string;
+  /** 是否为该物品的默认（最新）版本；未设置时回退到 version 最大者 */
+  isDefault?: boolean;
   /** 名称 */
   name: string;
   /** 分类（武器/道具/载具等） */
@@ -113,6 +117,8 @@ export interface SceneProfile {
   version: number;
   /** 版本标签（如"白天""夜晚""破败后"） */
   versionLabel: string;
+  /** 是否为该场景的默认（最新）版本；未设置时回退到 version 最大者 */
+  isDefault?: boolean;
   /** 名称 */
   name: string;
   /** 分类（室内/室外/特定地点等） */
@@ -219,6 +225,8 @@ export interface Shot {
   imageTaskProvider?: ImageGenSettings["provider"];
   /** 该图片任务的类型（恢复轮询时按此区分完成处理：storyboard 写故事板+入库；genImage 仅加入参考图；旧数据缺省视为 storyboard） */
   imageTaskKind?: "storyboard" | "genImage";
+  /** 图片生成任务的目标（恢复轮询时按此区分写入位置：refImage 加入参考图列表；firstFrame/lastFrame 写入对应帧图；旧数据缺省视为 refImage） */
+  imageTaskTarget?: "refImage" | "firstFrame" | "lastFrame";
 }
 
 /** 资产类型 */
@@ -241,6 +249,10 @@ export interface Asset {
   imageTaskProvider?: ImageGenSettings["provider"];
   /** 卡片级图片生成配置；缺省时回退 DEFAULT_ASSET_IMAGE_CONFIG */
   imageConfig?: AssetImageConfig;
+  /** 该人物资产所选版本关联的音色音频 URL（COS 持久 URL）。
+   *  由资产准备页切换人物版本时写入，视频生成时优先用作参考音频，
+   *  确保音色跟随用户所选版本而非始终取最新版本。 */
+  voiceUrl?: string;
   /** 故事板资产关联的镜头 ID（仅在 type === "storyboard" 时使用） */
   shotId?: string;
 }
@@ -414,6 +426,30 @@ export interface ImageTaskRecord {
   completedAt?: number;
 }
 
+/** 第三方 API 调用日志记录（api_call_logs 表） */
+export interface ApiCallLog {
+  id: string;
+  type: "image" | "video";
+  provider: string;
+  model: string;
+  upstreamUrl: string;
+  requestBody: string;
+  responseBody: string;
+  status: "success" | "failed";
+  error?: string;
+  durationMs: number;
+  createdAt: number;
+  taskId?: string;
+  finalStatus?: string;
+  finalResult?: string;
+  finalUpdatedAt?: number;
+}
+
+export interface ApiCallLogListResponse {
+  items: ApiCallLog[];
+  total: number;
+}
+
 /** 腾讯云 COS 配置 */
 export interface CosSettings {
   secretId: string;
@@ -422,6 +458,20 @@ export interface CosSettings {
   region: string; // 如 ap-guangzhou
   /** 自定义域名（CDN 加速域名），可选；填写后优先使用 */
   customDomain?: string;
+}
+
+/** 存储供应商 */
+export type StorageProvider = "cos" | "qiniu";
+
+/** 七牛云 Kodo 配置 */
+export interface QiniuSettings {
+  accessKey: string;
+  secretKey: string;
+  bucket: string;
+  /** 存储区域 ID：z0(华东-浙江)/cn-east-2(华东-浙江2)/z1(华北-河北)/z2(华南-广东)/na0(北美)/as0(新加坡) */
+  region: string;
+  /** 空间绑定的访问域名（如 https://cdn.example.com 或 http://xxx.qnssl.com），公开访问 URL 基址 */
+  domain: string;
 }
 
 /** 视频生成状态 */
@@ -839,7 +889,7 @@ export interface VoicePersona {
 }
 
 /** 预设库资源类型 */
-export type PresetType = "image" | "video" | "audio" | "text";
+export type PresetType = "image" | "video" | "audio" | "text" | "camera";
 
 /** 预设库资源项（用户自管理，媒体类上传 / 文本类在线编辑） */
 export interface PresetItem {

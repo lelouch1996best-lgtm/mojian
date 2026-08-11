@@ -28,6 +28,8 @@ interface AssetPickerProps {
   onConfirm: (items: PickedAssetItem[]) => void;
   /** 最大数量上限（含已选） */
   max?: number;
+  /** 打开时默认筛选的企划 ID（当前企划）；未提供时为「全部企划」 */
+  defaultSeriesId?: string;
 }
 
 type EntityTypeFilter = "all" | "character" | "scene" | "object" | "screenshot" | "storyboard";
@@ -55,6 +57,7 @@ export default function AssetPicker({
   selectedUrls,
   onConfirm,
   max,
+  defaultSeriesId,
 }: AssetPickerProps) {
   const [items, setItems] = useState<MediaAsset[]>([]);
   const [loading, setLoading] = useState(false);
@@ -173,9 +176,10 @@ export default function AssetPicker({
   useEffect(() => {
     if (open) {
       setPickedIds([]);
+      setSeriesId(defaultSeriesId ?? "");
       loadData();
     }
-  }, [open, loadData]);
+  }, [open, loadData, defaultSeriesId]);
 
   // 视频预览：ESC 关闭 + 禁止滚动（捕获阶段拦截，避免同时关闭外层 Modal）
   useEffect(() => {

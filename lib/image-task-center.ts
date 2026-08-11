@@ -1,6 +1,7 @@
 import { getDb } from "./db";
 import { queryUpstreamImageTask, type UpstreamQueryResult } from "./image-upstream";
-import { readCosSettingsFromDb, transferToCos } from "./cos-transfer";
+import { isStorageConfiguredInDb, transferToStorage } from "./storage-transfer";
+import { maybeCleanOldApiCallLogs, updateApiCallFinal } from "./api-call-logger";
 import type { ImageGenSettings, ImageTaskRecord, ImageTaskStatus } from "./types";
 
 const POLL_INTERVAL_MS = 3000;
@@ -169,6 +170,7 @@ class ImageTaskCenter {
         .prepare("SELECT job_id FROM image_tasks WHERE status IN ('pending','running')")
         .all() as Array<{ job_id: string }>;
       for (const r of rows) this.startLoop(r.job_id);
+      maybeCleanOldApiCallLogs(7);
     } catch (e) {
       console.error("[image-task-center] ensureRunning 失败：", e);
     }
@@ -207,6 +209,7 @@ class ImageTaskCenter {
         db.prepare(
           "UPDATE image_tasks SET status = 'expired', error = ?, updated_at = ? WHERE job_id = ?"
         ).run("轮询超时（30 分钟），可重试", Date.now(), jobId);
+        updateApiCallFinal(jobId, "expired", "轮询超时（30 分钟），可重试");
         return;
       }
 
@@ -230,6 +233,7 @@ class ImageTaskCenter {
         db.prepare(
           "UPDATE image_tasks SET status = 'failed', error = ?, fail_count = 0, updated_at = ? WHERE job_id = ?"
         ).run(result.error ?? "图片生成失败", Date.now(), jobId);
+        updateApiCallFinal(jobId, "failed", result.error ?? "图片生成失败");
         return;
       }
 
@@ -244,6 +248,7 @@ class ImageTaskCenter {
             Date.now(),
             jobId
           );
+          updateApiCallFinal(jobId, "failed", `连续 ${fails} 次查询失败：${result.error ?? "未知错误"}`);
           return;
         }
         db.prepare(
@@ -265,17 +270,16 @@ class ImageTaskCenter {
     let imageUrl = upstreamUrl;
     let transferError: string | null = null;
 
-    const cosSettings = readCosSettingsFromDb();
-    if (cosSettings) {
+    if (isStorageConfiguredInDb()) {
       for (let attempt = 0; attempt < 3; attempt++) {
         if (signal.aborted) break;
         try {
-          const { url } = await transferToCos(cosSettings, upstreamUrl, row.cos_prefix);
+          const { url } = await transferToStorage(upstreamUrl, row.cos_prefix);
           imageUrl = url;
           transferError = null;
           break;
         } catch (e) {
-          transferError = `COS 转存失败：${(e as Error).message}`;
+          transferError = `存储转存失败：${(e as Error).message}`;
           if (attempt < 2) await sleep(1000 * 2 ** attempt, signal);
         }
       }
@@ -286,6 +290,7 @@ class ImageTaskCenter {
          SET status = 'done', image_url = ?, upstream_url = ?, error = ?, fail_count = 0, updated_at = ?, completed_at = ?
        WHERE job_id = ?`
     ).run(imageUrl, upstreamUrl, transferError, Date.now(), Date.now(), row.job_id);
+    updateApiCallFinal(row.job_id, "done", transferError ? `${imageUrl}（${transferError}）` : imageUrl);
   }
 }
 

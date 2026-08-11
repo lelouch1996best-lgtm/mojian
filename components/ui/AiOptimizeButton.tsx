@@ -1,8 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Button from "./Button";
-import { streamLLM } from "@/lib/llm-client";
+import { callLLM } from "@/lib/llm-client";
 import { optimizeTextMessages } from "@/lib/prompts";
 
 interface AiOptimizeButtonProps {
@@ -10,6 +10,7 @@ interface AiOptimizeButtonProps {
   onOptimized: (optimizedText: string) => void;
   disabled?: boolean;
   className?: string;
+  onRunningChange?: (running: boolean) => void;
 }
 
 export default function AiOptimizeButton({
@@ -17,32 +18,43 @@ export default function AiOptimizeButton({
   onOptimized,
   disabled = false,
   className = "",
+  onRunningChange,
 }: AiOptimizeButtonProps) {
   const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   async function handleOptimize() {
     if (!text.trim()) return;
     setError(null);
     setOptimizing(true);
+    onRunningChange?.(true);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      let acc = "";
-      for await (const chunk of streamLLM(optimizeTextMessages(text.trim()), {
+      const result = await callLLM(optimizeTextMessages(text.trim()), {
         signal: controller.signal,
         temperature: 0.7,
-      })) {
-        acc += chunk;
-        onOptimized(acc);
-      }
+      });
+      if (mountedRef.current) onOptimized(result);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") {
+      if (mountedRef.current && (e as Error).name !== "AbortError") {
         setError(e instanceof Error ? e.message : "优化失败，请重试");
       }
     } finally {
-      setOptimizing(false);
+      if (mountedRef.current) {
+        setOptimizing(false);
+        onRunningChange?.(false);
+      }
       abortRef.current = null;
     }
   }
@@ -54,7 +66,11 @@ export default function AiOptimizeButton({
   return (
     <div className={`inline-flex flex-col items-start ${className}`}>
       {optimizing ? (
-        <Button variant="ghost" size="sm" onClick={handleStop}>
+        <Button variant="ghost" size="sm" onClick={handleStop} title="点击停止">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" className="mr-0.5 animate-spin" aria-hidden>
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" opacity="0.25" />
+            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+          </svg>
           停止优化
         </Button>
       ) : (

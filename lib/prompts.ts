@@ -548,6 +548,24 @@ export function optimizeTextMessages(
   ];
 }
 
+// (i2) 根据输入内容生成视频首帧画面的图片提示词（AI 动作下拉使用），流式输出
+export function generateFirstFramePromptMessages(content: string): LLMMessage[] {
+  return [
+    {
+      role: "system",
+      content: `你是一位专业的视频分镜与画面设计师。请根据用户提供的镜头信息或描述，生成一段用于生成「视频首帧图片」的画面提示词。
+
+要求：
+1. 从输入内容中提取画面描述、景别、光影氛围等静态视觉信息
+2. 生成的提示词需强调静态画面要素：构图、人物姿态与位置、表情、场景布局、光影与氛围
+3. 去除与静态图片无关的信息：运镜（推拉摇移等）、音效、对白旁白、时长等动态与声音信息
+4. 输入内容中若包含 @标签（如 @韩立、@南宫婉），必须在结果中原样保留这些 @ 前缀，不得删除、改名或移动位置
+5. 直接输出提示词文本，不要任何额外说明、前缀或 markdown 代码块`,
+    },
+    { role: "user", content },
+  ];
+}
+
 // (j) 智能添加单个镜头：根据简短内容描述，扩写并生成 1 个完整镜头（全部 7 字段）
 // 输出：JSON {"shots":[{...}]}（调用方取首项）
 export function smartShotMessages(content: string): LLMMessage[] {
