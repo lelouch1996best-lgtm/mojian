@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Button from "./Button";
 import { callLLM } from "@/lib/llm-client";
 import { optimizeTextMessages } from "@/lib/prompts";
+import type { LLMMessage } from "@/lib/types";
 
 interface AiOptimizeButtonProps {
   text: string;
@@ -11,6 +12,8 @@ interface AiOptimizeButtonProps {
   disabled?: boolean;
   className?: string;
   onRunningChange?: (running: boolean) => void;
+  /** 自定义提示词构造函数，默认使用通用文本润色 optimizeTextMessages */
+  buildMessages?: (text: string) => LLMMessage[];
 }
 
 export default function AiOptimizeButton({
@@ -19,6 +22,7 @@ export default function AiOptimizeButton({
   disabled = false,
   className = "",
   onRunningChange,
+  buildMessages = optimizeTextMessages,
 }: AiOptimizeButtonProps) {
   const [optimizing, setOptimizing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +45,7 @@ export default function AiOptimizeButton({
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const result = await callLLM(optimizeTextMessages(text.trim()), {
+      const result = await callLLM(buildMessages(text.trim()), {
         signal: controller.signal,
         temperature: 0.7,
       });

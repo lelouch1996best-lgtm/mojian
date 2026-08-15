@@ -30,6 +30,8 @@ interface CharacterAssetCardProps {
   onRegenerate?: () => void;
   /** 未提取时：是否正在重新生成外貌 */
   isRegenerating?: boolean;
+  /** 停止重新生成外貌 */
+  onCancelRegenerate?: () => void;
   /** 未提取时：提取到人物设定回调 */
   onExtract?: () => void;
   /** 系列ID，用于跳转到设定页面 */
@@ -47,6 +49,7 @@ export default function CharacterAssetCard({
   isUploading = false,
   onRegenerate,
   isRegenerating = false,
+  onCancelRegenerate,
   onExtract,
   seriesId,
 }: CharacterAssetCardProps) {
@@ -326,15 +329,15 @@ export default function CharacterAssetCard({
                 <span>👤 外貌</span>
                 <div className="flex items-center gap-1">
                   {onRegenerate && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={onRegenerate}
-                      loading={isRegenerating}
-                      disabled={isRegenerating}
-                    >
-                      重新生成外貌
-                    </Button>
+                    isRegenerating ? (
+                      <Button size="sm" variant="ghost" onClick={onCancelRegenerate} title="点击停止">
+                        <Spinner size={11} /> 停止
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={onRegenerate}>
+                        重新生成外貌
+                      </Button>
+                    )
                   )}
                   <AiOptimizeButton
                     text={asset.description}

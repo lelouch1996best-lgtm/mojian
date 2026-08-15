@@ -15,6 +15,7 @@ import CharacterConflictModal, {
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings, PROVIDER_PRESETS } from "@/lib/llm-client";
 import { getStyleTemplates } from "@/lib/style-settings";
+import { getCustomPrompts } from "@/lib/system-prompts";
 import { emptyShot, debounce, removeTagPrefix, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import { useUnloadPersist } from "@/lib/use-unload-persist";
 import { getLatestVersions } from "@/lib/character-settings";
@@ -160,6 +161,7 @@ export default function EpisodePage() {
     const ep = episodeRef.current;
     if (!ep) return;
     const next = mutate ? mutate(ep) : ep;
+    next.updatedAt = Date.now();
     episodeRef.current = next;
     void saveEpisode(next);
   }, []);
@@ -219,6 +221,8 @@ export default function EpisodePage() {
       const allEpisodes = await getEpisodesBySeries(ep.seriesId);
       // 预加载全局风格模板缓存，保证 VideoGeneration 中 sync 函数能正确解析选中风格
       await getStyleTemplates();
+      // 预加载自定义 LLM 系统提示词缓存，保证 prompts.ts 中 sync 函数能读到用户自定义
+      await getCustomPrompts();
       const currentIdx = seriesData?.episodeOrder.indexOf(ep.id) ?? -1;
       setSeriesOrder(currentIdx >= 0 ? currentIdx + 1 : 1);
       setSeriesTitle(seriesData?.title ?? "");
@@ -684,7 +688,7 @@ export default function EpisodePage() {
             <MenuItem onClick={() => router.push("/logs")}>任务日志</MenuItem>
             <MenuItem onClick={() => router.push("/assets")}>资产库</MenuItem>
             <MenuItem onClick={() => router.push("/preset-library")}>预设库</MenuItem>
-            <MenuItem onClick={() => router.push("/style-templates")}>风格模板</MenuItem>
+            <MenuItem onClick={() => router.push("/style-templates")}>提示词管理</MenuItem>
           </HoverMenu>
 
           <HoverMenu
@@ -706,7 +710,7 @@ export default function EpisodePage() {
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/characters`)}>人物设定</MenuItem>
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/objects`)}>物品设定</MenuItem>
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/scenes`)}>场景设定</MenuItem>
-            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/style-settings`)}>风格设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/style-settings`)}>提示词设定</MenuItem>
           </HoverMenu>
         </div>
       </header>

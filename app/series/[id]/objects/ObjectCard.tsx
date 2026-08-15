@@ -63,10 +63,12 @@ export function ObjectCard({
           <button
             type="button"
             onClick={onSetDefault}
-            className="absolute bottom-2 left-2 rounded-md bg-brand-500/90 px-2 py-1 text-xs font-medium text-white shadow-sm backdrop-blur transition-colors hover:bg-brand-600"
+            className="absolute bottom-2 left-2 flex h-7 w-7 items-center justify-center rounded bg-black/55 text-white opacity-0 backdrop-blur-sm transition-opacity hover:bg-black/75 group-hover:opacity-100"
             title="将此版本设为默认（最新）版本"
           >
-            ⭐ 设为最新
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 17l-5.4 2.6 1.2-6L3.3 9.4l6.1-.8L12 3z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
           </button>
         )}
       </AssetImageZone>

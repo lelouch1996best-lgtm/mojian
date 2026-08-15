@@ -28,6 +28,8 @@ interface SceneAssetCardProps {
   onRegenerate?: () => void;
   /** 未提取时：是否正在重新生成外观 */
   isRegenerating?: boolean;
+  /** 停止重新生成外观 */
+  onCancelRegenerate?: () => void;
   onExtract?: () => void;
   seriesId?: string;
 }
@@ -43,6 +45,7 @@ export default function SceneAssetCard({
   isUploading = false,
   onRegenerate,
   isRegenerating = false,
+  onCancelRegenerate,
   onExtract,
   seriesId,
 }: SceneAssetCardProps) {
@@ -296,15 +299,15 @@ export default function SceneAssetCard({
                 <span>🎨 外观</span>
                 <div className="flex items-center gap-1">
                   {onRegenerate && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={onRegenerate}
-                      loading={isRegenerating}
-                      disabled={isRegenerating}
-                    >
-                      重新生成外观
-                    </Button>
+                    isRegenerating ? (
+                      <Button size="sm" variant="ghost" onClick={onCancelRegenerate} title="点击停止">
+                        <Spinner size={11} /> 停止
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={onRegenerate}>
+                        重新生成外观
+                      </Button>
+                    )
                   )}
                   <AiOptimizeButton
                     text={asset.description}

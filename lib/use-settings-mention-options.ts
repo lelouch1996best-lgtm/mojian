@@ -10,17 +10,30 @@ export interface SettingsMentionOption {
   value: string;
 }
 
+export interface SettingsMentionData {
+  /** @ 补全选项（[世界]/[人物]/[物品]/[场景] 前缀） */
+  options: SettingsMentionOption[];
+  /** 世界设定文本（系列级优先，缺失时回退全局） */
+  worldText: string;
+  /** 人物设定最新版本（系列级优先，缺失时回退全局） */
+  latestCharacters: CharacterProfile[];
+  /** 物品设定最新版本 */
+  latestObjects: ObjectProfile[];
+  /** 场景设定最新版本 */
+  latestScenes: SceneProfile[];
+}
+
 /**
- * 构建系列设定（世界/人物/物品/场景）的 @ 补全选项。
- * 逻辑与第一步 ContentExpansion 完全一致：系列级优先，世界/人物设定缺失时回退全局。
- * 用于分镜生成页、视频编辑页的画面描述 @ 召唤已有设定资产。
+ * 构建系列设定（世界/人物/物品/场景）的 @ 补全选项，并暴露中间数据供其他用途复用。
+ * 逻辑：系列级优先，世界/人物设定缺失时回退全局。
+ * 用于内容扩写、分镜生成页、视频编辑页的画面描述 @ 召唤已有设定资产。
  */
 export function useSettingsMentionOptions(opts: {
   worldSettings?: WorldSettings | null;
   characterSettings?: CharacterProfile[] | null;
   objectSettings?: ObjectProfile[] | null;
   sceneSettings?: SceneProfile[] | null;
-}): SettingsMentionOption[] {
+}): SettingsMentionData {
   const { worldSettings, characterSettings, objectSettings, sceneSettings } = opts;
 
   const [globalWorldText, setGlobalWorldText] = useState("");
@@ -53,14 +66,16 @@ export function useSettingsMentionOptions(opts: {
     [sceneSettings],
   );
 
-  return useMemo(() => {
-    const options: SettingsMentionOption[] = [];
+  const options = useMemo(() => {
+    const list: SettingsMentionOption[] = [];
     if (worldText.trim()) {
-      options.push({ label: "[世界] 世界设定", value: "世界设定" });
+      list.push({ label: "[世界] 世界设定", value: "世界设定" });
     }
-    latestCharacters.forEach((c) => options.push({ label: `[人物] ${c.name}`, value: c.name }));
-    latestObjects.forEach((o) => options.push({ label: `[物品] ${o.name}`, value: o.name }));
-    latestScenes.forEach((s) => options.push({ label: `[场景] ${s.name}`, value: s.name }));
-    return options;
+    latestCharacters.forEach((c) => list.push({ label: `[人物] ${c.name}`, value: c.name }));
+    latestObjects.forEach((o) => list.push({ label: `[物品] ${o.name}`, value: o.name }));
+    latestScenes.forEach((s) => list.push({ label: `[场景] ${s.name}`, value: s.name }));
+    return list;
   }, [worldText, latestCharacters, latestObjects, latestScenes]);
+
+  return { options, worldText, latestCharacters, latestObjects, latestScenes };
 }

@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useRef, type TextareaHTMLAttributes } from "react";
+import { useEffect, useMemo, useRef, type TextareaHTMLAttributes } from "react";
 import { useAtMention, AtMentionDropdown, type AtMentionOption } from "./AtMentionDropdown";
+import HighlightedTextarea from "./HighlightedTextarea";
+import { extractTags } from "@/lib/utils";
 
 export type { AtMentionOption };
 
@@ -51,8 +53,16 @@ export default function AtMentionTextarea({
     onSelect: onAtMentionSelect,
   });
 
-  function handleChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    onChange(e.target.value);
+  // 高亮 @ 标签来源：可选选项 + 文本中已出现的标签（兼容 allowCreateTag 新建后未在 options 中的情况）
+  const highlightValues = useMemo(() => {
+    const set = new Set<string>();
+    options.forEach((o) => set.add(o.value));
+    extractTags(value).forEach((t) => set.add(t));
+    return Array.from(set);
+  }, [options, value]);
+
+  // 原生 onChange：先检测 @ 触发，再由 HighlightedTextarea 回调 onChange 更新 value
+  function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     at.detectFromEvent(e);
   }
 
@@ -66,14 +76,16 @@ export default function AtMentionTextarea({
 
   return (
     <div className="relative">
-      <textarea
+      <HighlightedTextarea
         ref={textareaRef}
         value={value}
-        onChange={handleChange}
+        onChange={onChange}
+        onTextareaChange={handleTextareaChange}
         onKeyDown={handleKeyDown}
         onBlur={handleBlur}
+        highlightValues={highlightValues}
         rows={rows}
-        className={`block w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-sm leading-relaxed text-slate-800 placeholder:text-slate-400 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30 ${className}`}
+        className={className}
         {...rest}
       />
       {at.showDropdown && (

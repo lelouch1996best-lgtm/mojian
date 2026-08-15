@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Button from "./ui/Button";
 import AiOptimizeButton from "./ui/AiOptimizeButton";
-import AtMentionTextarea, { type AtMentionOption } from "./AtMentionTextarea";
+import AtMentionTextarea from "./AtMentionTextarea";
 import TagList from "./TagList";
 import { streamLLM, callLLM } from "@/lib/llm-client";
 import {
@@ -11,10 +11,10 @@ import {
   storyboardMessages,
   extractCharacterMessages,
 } from "@/lib/prompts";
-import { worldSettingsToText, getWorldSettings } from "@/lib/world-settings";
-import { characterSettingsToText, getCharacterSettings, getLatestVersions } from "@/lib/character-settings";
-import { objectSettingsToText, getLatestObjectVersions } from "@/lib/object-settings";
-import { sceneSettingsToText, getLatestSceneVersions } from "@/lib/scene-settings";
+import { characterSettingsToText } from "@/lib/character-settings";
+import { objectSettingsToText } from "@/lib/object-settings";
+import { sceneSettingsToText } from "@/lib/scene-settings";
+import { useSettingsMentionOptions } from "@/lib/use-settings-mention-options";
 import { extractShots, toShot, extractCharacters, toCharacterProfile, extractTags, removeTagPrefix } from "@/lib/utils";
 import ExpansionContextModal, {
   type ExpansionContextSelection,
@@ -74,47 +74,16 @@ export default function ContentExpansion({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [contextModalOpen, setContextModalOpen] = useState(false);
-  const [globalWorldText, setGlobalWorldText] = useState("");
-  const worldText = worldSettings ? worldSettingsToText(worldSettings) : globalWorldText;
-  const [globalCharacters, setGlobalCharacters] = useState<CharacterProfile[]>([]);
-  const effectiveCharacters = characterSettings ?? globalCharacters;
-
-  useEffect(() => {
-    if (!worldSettings) {
-      getWorldSettings().then((ws) => setGlobalWorldText(worldSettingsToText(ws)));
-    }
-  }, [worldSettings]);
-
-  useEffect(() => {
-    if (!characterSettings) {
-      getCharacterSettings().then(setGlobalCharacters);
-    }
-  }, [characterSettings]);
   const abortRef = useRef<AbortController | null>(null);
 
-  const latestCharacters = useMemo(
-    () => getLatestVersions(effectiveCharacters).filter((c) => c.name.trim()),
-    [effectiveCharacters]
-  );
-  const latestObjects = useMemo(
-    () => getLatestObjectVersions(objectSettings ?? []).filter((o) => o.name.trim()),
-    [objectSettings]
-  );
-  const latestScenes = useMemo(
-    () => getLatestSceneVersions(sceneSettings ?? []).filter((s) => s.name.trim()),
-    [sceneSettings]
-  );
-
-  const atMentionOptions: AtMentionOption[] = useMemo(() => {
-    const options: AtMentionOption[] = [];
-    if (worldText.trim()) {
-      options.push({ label: "[世界] 世界设定", value: "世界设定" });
-    }
-    latestCharacters.forEach((c) => options.push({ label: `[人物] ${c.name}`, value: c.name }));
-    latestObjects.forEach((o) => options.push({ label: `[物品] ${o.name}`, value: o.name }));
-    latestScenes.forEach((s) => options.push({ label: `[场景] ${s.name}`, value: s.name }));
-    return options;
-  }, [worldText, latestCharacters, latestObjects, latestScenes]);
+  // 系列设定（世界/人物/物品/场景）共享计算：@ 补全选项 + 中间数据复用于扩写上下文
+  const {
+    options: atMentionOptions,
+    worldText,
+    latestCharacters,
+    latestObjects,
+    latestScenes,
+  } = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
 
   // 故事内容（原文 + 扩写）中的 @ 标签（去重，按首次出现顺序）
   const contentTags = useMemo(() => {
@@ -318,7 +287,7 @@ export default function ContentExpansion({
           onAtMentionSelect={onAtMentionSelect}
           placeholder="输入你的故事大概、剧情梗概、想要表达的内容…&#10;例如：一个雨天，女孩在咖啡馆等一个不会来的人，窗外雨声渐大，她慢慢喝完最后一口咖啡。"
           rows={5}
-          className="min-h-[120px] leading-relaxed"
+          className="min-h-[120px]"
           disabled={expanding || optimizingOriginal}
         />
         <div className="mt-2 flex items-center gap-2">
@@ -353,7 +322,7 @@ export default function ContentExpansion({
           onAtMentionSelect={onAtMentionSelect}
           placeholder={expanding ? "正在生成…" : "扩写后的内容将显示在这里，你可以手动修改"}
           rows={10}
-          className="min-h-[200px] leading-relaxed"
+          className="min-h-[200px]"
           disabled={expanding || optimizingExpanded}
         />
         <div className="mt-2 flex items-center gap-2">

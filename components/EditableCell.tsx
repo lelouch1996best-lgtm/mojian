@@ -1,8 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TaggedText from "./TaggedText";
+import HighlightedTextarea from "./HighlightedTextarea";
 import { useAtMention, AtMentionDropdown, type AtMentionOption } from "./AtMentionDropdown";
+import { extractTags } from "@/lib/utils";
 
 export type { AtMentionOption };
 
@@ -71,6 +73,14 @@ export default function EditableCell({
     onSelect: onAtMentionSelect,
   });
 
+  // 高亮 @ 标签来源：可选选项 + 草稿中已出现的标签（兼容 allowCreateTag 新建后未在 options 中的情况）
+  const highlightValues = useMemo(() => {
+    const set = new Set<string>();
+    (atMentionOptions ?? []).forEach((o) => set.add(o.value));
+    extractTags(draft).forEach((t) => set.add(t));
+    return Array.from(set);
+  }, [atMentionOptions, draft]);
+
   useEffect(() => {
     setDraft(value);
   }, [value]);
@@ -114,9 +124,8 @@ export default function EditableCell({
     at.closeDropdown();
   }
 
-  /** textarea 输入时更新 draft 并检测 @ 触发 */
+  /** textarea 输入时检测 @ 触发（draft 更新由 HighlightedTextarea 的 onChange 负责） */
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    setDraft(e.target.value);
     at.detectFromEvent(e);
   }
 
@@ -143,16 +152,19 @@ export default function EditableCell({
     if (multiline) {
       return (
         <div className="relative">
-          <textarea
+          <HighlightedTextarea
             ref={inputRef as React.RefObject<HTMLTextAreaElement>}
             value={draft}
-            readOnly={disabled}
-            onChange={handleTextareaChange}
-            onBlur={handleTextareaBlur}
+            onChange={setDraft}
+            onTextareaChange={handleTextareaChange}
             onKeyDown={handleTextareaKeyDown}
+            onBlur={handleTextareaBlur}
+            highlightValues={highlightValues}
             rows={minHeight ? 1 : 3}
-            className={`w-full rounded border border-brand-400 bg-white px-2 py-1 text-xs leading-relaxed text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 ${minHeight ? "resize-none" : "resize-y"}`}
+            className={`w-full rounded border border-brand-400 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 ${minHeight ? "resize-none" : "resize-y"}`}
+            layoutClassName="px-2 py-1 text-xs leading-relaxed break-words whitespace-pre-wrap"
             style={{ minWidth, ...(minHeight ? { minHeight } : {}), ...(maxHeight ? { maxHeight, overflowY: "auto" } : {}) }}
+            readOnly={disabled}
           />
           {at.showDropdown && (
             <AtMentionDropdown

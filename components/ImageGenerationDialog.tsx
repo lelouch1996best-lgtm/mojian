@@ -814,7 +814,7 @@ export function ImageGenerationDialog({
                 className="h-3.5 w-3.5 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
               />
               <span className="text-xs text-slate-500">
-                使用参考图（风格参考）
+                使用参考图（提示词参考）
                 {useImageRef && (
                   <span className="ml-1 text-slate-400">（参考图作为图片1，提示词已拼接固定句）</span>
                 )}
@@ -869,7 +869,7 @@ export function ImageGenerationDialog({
                   </ImageLightbox>
                   {isTemplateRef && (
                     <span className="absolute left-0 top-0 rounded-br bg-amber-500 px-1 text-[9px] font-medium text-white">
-                      风格参考
+                      提示词参考
                     </span>
                   )}
                   <span className="absolute bottom-0 left-0 right-0 truncate bg-black/55 px-1 text-[10px] text-white">

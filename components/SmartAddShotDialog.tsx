@@ -1,15 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Modal from "@/components/ui/Modal";
 import Button from "@/components/ui/Button";
-import AtMentionTextarea, { type AtMentionOption } from "./AtMentionTextarea";
+import AtMentionTextarea from "./AtMentionTextarea";
 import { callLLM } from "@/lib/llm-client";
 import { smartShotMessages } from "@/lib/prompts";
-import { worldSettingsToText } from "@/lib/world-settings";
-import { getLatestVersions } from "@/lib/character-settings";
-import { getLatestObjectVersions } from "@/lib/object-settings";
-import { getLatestSceneVersions } from "@/lib/scene-settings";
+import { useSettingsMentionOptions } from "@/lib/use-settings-mention-options";
 import { extractShots, toShot, extractTags, ensureExistingTagsPrefixed } from "@/lib/utils";
 import type { Shot, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile } from "@/lib/types";
 
@@ -42,20 +39,13 @@ export function SmartAddShotDialog({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  const atMentionOptions: AtMentionOption[] = useMemo(() => {
-    const worldText = worldSettings ? worldSettingsToText(worldSettings) : "";
-    const options: AtMentionOption[] = [];
-    if (worldText.trim()) {
-      options.push({ label: "[世界] 世界设定", value: "世界设定" });
-    }
-    const latestCharacters = getLatestVersions(characterSettings ?? []).filter((c) => c.name.trim());
-    const latestObjects = getLatestObjectVersions(objectSettings ?? []).filter((o) => o.name.trim());
-    const latestScenes = getLatestSceneVersions(sceneSettings ?? []).filter((s) => s.name.trim());
-    latestCharacters.forEach((c) => options.push({ label: `[人物] ${c.name}`, value: c.name }));
-    latestObjects.forEach((o) => options.push({ label: `[物品] ${o.name}`, value: o.name }));
-    latestScenes.forEach((s) => options.push({ label: `[场景] ${s.name}`, value: s.name }));
-    return options;
-  }, [worldSettings, characterSettings, objectSettings, sceneSettings]);
+  // 系列设定（世界/人物/物品/场景）@ 补全选项：系列级优先，缺失时回退全局
+  const { options: atMentionOptions } = useSettingsMentionOptions({
+    worldSettings,
+    characterSettings,
+    objectSettings,
+    sceneSettings,
+  });
 
   useEffect(() => {
     if (open) {

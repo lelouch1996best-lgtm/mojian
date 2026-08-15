@@ -14,6 +14,7 @@ import AssetPicker from "./AssetPicker";
 import PresetPicker from "./PresetPicker";
 import CameraPlaceholderDialog from "./CameraPlaceholderDialog";
 import { callLLM } from "@/lib/llm-client";
+import { useAbortableTask } from "@/lib/use-abortable-task";
 import {
   createVideoTask,
   cancelVideoTask,
@@ -21,8 +22,10 @@ import {
   isGrokVideoModel,
   getAllConfiguredVideoModels,
 } from "@/lib/video-client";
+import { estimateVideoCostWith, getUserVideoPriceTable, type VideoPriceEntry } from "@/lib/video-pricing";
 import {
   videoPromptMessages,
+  optimizeVideoPromptMessages,
   wrapStoryboardTemplate,
   buildShotInfoBlock,
   buildShotInfoBlockForImage,
@@ -266,6 +269,8 @@ export default function VideoGeneration({
   const [capturingIds, setCapturingIds] = useState<Set<string>>(new Set());
   const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [generatingAll, setGeneratingAll] = useState(false);
+  // 提示词生成（generateOne/generateAll）的可中止任务管理，参考 AiOptimizeButton 的停止机制
+  const promptAbort = useAbortableTask();
   const [bulkCollapsed, setBulkCollapsed] = useState(false);
   const [bulkCollapseToken, setBulkCollapseToken] = useState(0);
   const [smartAddOpen, setSmartAddOpen] = useState(false);
@@ -698,7 +703,7 @@ export default function VideoGeneration({
   const tags = useMemo(() => extractAllTags(episode.shots), [episode.shots]);
 
   // 系列设定（人物/物品/场景/世界）@ 补全选项，与第一步一致
-  const settingsOptions = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
+  const { options: settingsOptions } = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
   // @ 补全选项（供所有 VideoCard 共享）：系列设定优先，再补齐第三步资产准备中的人物/场景/物品
   const atMentionOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -733,39 +738,22 @@ export default function VideoGeneration({
 
   async function generateOne(shot: Shot) {
     setGeneratingIds((prev) => new Set(prev).add(shot.id));
+    const signal = promptAbort.start(shot.id);
     try {
       const related = getRelatedAssets(shot);
       const messages = videoPromptMessages(shot, related);
       console.log("[VideoPrompt] 镜头提示词生成 messages：", messages);
-      const prompt = await callLLM(messages, { temperature: 0.6 });
+      const prompt = await callLLM(messages, { temperature: 0.6, signal });
       console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
-      onUpdateShot(shot.id, "finalPrompt", prompt.trim());
+      if (promptAbort.mountedRef.current && !signal.aborted) {
+        onUpdateShot(shot.id, "finalPrompt", prompt.trim());
+      }
     } catch (e) {
+      if ((e as Error).name === "AbortError") return;
       showError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
     } finally {
-      setGeneratingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(shot.id);
-        return next;
-      });
-    }
-  }
-
-  async function generateAll() {
-    setGeneratingAll(true);
-    for (const shot of episode.shots) {
-      setGeneratingIds((prev) => new Set(prev).add(shot.id));
-      try {
-        const related = getRelatedAssets(shot);
-        const messages = videoPromptMessages(shot, related);
-        console.log("[VideoPrompt] 镜头提示词生成 messages：", messages);
-        const prompt = await callLLM(messages, { temperature: 0.6 });
-        console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
-        onUpdateShot(shot.id, "finalPrompt", prompt.trim());
-      } catch (e) {
-        showError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
-        break;
-      } finally {
+      if (promptAbort.mountedRef.current) {
+        promptAbort.clear(shot.id);
         setGeneratingIds((prev) => {
           const next = new Set(prev);
           next.delete(shot.id);
@@ -773,6 +761,55 @@ export default function VideoGeneration({
         });
       }
     }
+  }
+
+  /** 停止指定镜头的提示词生成 */
+  function cancelGeneratePrompt(shot: Shot) {
+    promptAbort.stop(shot.id);
+    setGeneratingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(shot.id);
+      return next;
+    });
+  }
+
+  async function generateAll() {
+    setGeneratingAll(true);
+    for (const shot of episode.shots) {
+      setGeneratingIds((prev) => new Set(prev).add(shot.id));
+      const signal = promptAbort.start(shot.id);
+      try {
+        const related = getRelatedAssets(shot);
+        const messages = videoPromptMessages(shot, related);
+        console.log("[VideoPrompt] 镜头提示词生成 messages：", messages);
+        const prompt = await callLLM(messages, { temperature: 0.6, signal });
+        console.log("[VideoPrompt] 镜头提示词生成结果：", prompt);
+        if (promptAbort.mountedRef.current && !signal.aborted) {
+          onUpdateShot(shot.id, "finalPrompt", prompt.trim());
+        }
+        if (signal.aborted) break;
+      } catch (e) {
+        if ((e as Error).name === "AbortError") break;
+        showError(`镜头 ${episode.shots.indexOf(shot) + 1} 提示词生成失败：${(e as Error).message}`);
+        break;
+      } finally {
+        if (promptAbort.mountedRef.current) {
+          promptAbort.clear(shot.id);
+          setGeneratingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(shot.id);
+            return next;
+          });
+        }
+      }
+    }
+    setGeneratingAll(false);
+  }
+
+  /** 停止批量生成提示词 */
+  function cancelGenerateAll() {
+    promptAbort.stopAll();
+    setGeneratingIds(new Set());
     setGeneratingAll(false);
   }
 
@@ -1304,6 +1341,112 @@ export default function VideoGeneration({
     }
   }
 
+  /** 截取视频首帧并保存为截屏资产 */
+  async function captureFirstFrame(shot: Shot, index: number) {
+    if (!(await isCosConfigured())) {
+      showError("请先配置存储方式，再截取首帧");
+      return;
+    }
+    const key = `${shot.id}#first`;
+    setCapturingIds((prev) => new Set(prev).add(key));
+
+    try {
+      const base64 = await extractVideoFrameAt(shot.videoUrl, 0);
+      const name = `${episode.title || "未命名剧集"}-镜头${index + 1}-首帧`;
+      const url = await uploadRefBase64(base64, `screenshot-${shot.id}-first`);
+
+      const asset: Asset = {
+        ...emptyAsset(name, "screenshot"),
+        imageUrl: url,
+        status: "ready",
+        description: `视频首帧截图：${shot.visualDescription || ""}`.trim(),
+      };
+
+      onAddScreenshot(asset);
+      void recordMediaAsset({
+        mediaType: "image",
+        url,
+        entityType: "screenshot",
+        entityName: name,
+        prompt: asset.description,
+        source: "screenshot",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
+      setSavedIds((prev) => new Set(prev).add(key));
+      setTimeout(() => {
+        setSavedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }, 2000);
+    } catch (e) {
+      showError(`截取首帧失败：${(e as Error).message}`);
+    } finally {
+      setCapturingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  /** 截取视频当前播放帧并保存为截屏资产 */
+  async function captureCurrentFrame(shot: Shot, index: number, currentTime: number) {
+    if (!(await isCosConfigured())) {
+      showError("请先配置存储方式，再截取当前帧");
+      return;
+    }
+    const key = `${shot.id}#current`;
+    setCapturingIds((prev) => new Set(prev).add(key));
+
+    try {
+      const base64 = await extractVideoFrameAt(shot.videoUrl, Math.max(0, currentTime));
+      const name = `${episode.title || "未命名剧集"}-镜头${index + 1}-当前帧`;
+      const url = await uploadRefBase64(base64, `screenshot-${shot.id}-current`);
+
+      const asset: Asset = {
+        ...emptyAsset(name, "screenshot"),
+        imageUrl: url,
+        status: "ready",
+        description: `视频当前帧截图：${shot.visualDescription || ""}`.trim(),
+      };
+
+      onAddScreenshot(asset);
+      void recordMediaAsset({
+        mediaType: "image",
+        url,
+        entityType: "screenshot",
+        entityName: name,
+        prompt: asset.description,
+        source: "screenshot",
+        seriesId: episode.seriesId,
+        seriesTitle: seriesTitle ?? "",
+        episodeId: episode.id,
+        episodeTitle: episode.title,
+      });
+      setSavedIds((prev) => new Set(prev).add(key));
+      setTimeout(() => {
+        setSavedIds((prev) => {
+          const next = new Set(prev);
+          next.delete(key);
+          return next;
+        });
+      }, 2000);
+    } catch (e) {
+      showError(`截取当前帧失败：${(e as Error).message}`);
+    } finally {
+      setCapturingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
   /** 从视频 URL 提取最后一帧，返回 PNG data URL */
   function extractVideoLastFrame(videoUrl: string): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -1414,6 +1557,121 @@ export default function VideoGeneration({
     });
   }
 
+  /** 从视频 URL 提取指定时刻的帧，返回 PNG data URL（timeSec=0 取首帧） */
+  function extractVideoFrameAt(videoUrl: string, timeSec: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.crossOrigin = "anonymous";
+      video.src = videoUrl;
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+
+      let settled = false;
+      const cleanup = () => {
+        settled = true;
+        video.onloadedmetadata = null;
+        video.onloadeddata = null;
+        video.onseeked = null;
+        video.onerror = null;
+        video.onstalled = null;
+        video.pause();
+        video.src = "";
+        video.load();
+      };
+
+      const fail = (msg: string) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(msg));
+      };
+
+      const timeout = setTimeout(() => {
+        fail("视频加载超时，请检查网络或视频 URL 是否可访问");
+      }, 30000);
+
+      const drawAndResolve = () => {
+        try {
+          const canvas = document.createElement("canvas");
+          canvas.width = video.videoWidth || 1920;
+          canvas.height = video.videoHeight || 1080;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            clearTimeout(timeout);
+            fail("创建 canvas 失败");
+            return;
+          }
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL("image/png");
+          clearTimeout(timeout);
+          cleanup();
+          resolve(dataUrl);
+        } catch (err) {
+          clearTimeout(timeout);
+          const code = (video as HTMLVideoElement & { error?: MediaError }).error?.code;
+          if (err instanceof DOMException && err.name === "SecurityError") {
+            fail(
+              "视频跨域策略阻止截图。请将 COS 存储桶的 CORS 配置为允许当前域名访问，或在同域名下使用。"
+            );
+          } else {
+            fail(`截取画面失败${code ? `（视频错误码：${code}）` : ""}：${(err as Error).message}`);
+          }
+        }
+      };
+
+      const seekTarget = () => {
+        const duration = video.duration;
+        const max = isFinite(duration) && duration > 0 ? duration - 0.001 : timeSec;
+        return Math.max(0, Math.min(timeSec, max));
+      };
+
+      video.onloadedmetadata = () => {
+        const target = seekTarget();
+        if (target > 0 && video.readyState >= 2) {
+          video.currentTime = target;
+        }
+      };
+
+      video.onloadeddata = () => {
+        const target = seekTarget();
+        if (target <= 0) {
+          // 首帧：loadeddata 触发时第一帧已就绪，直接绘制
+          drawAndResolve();
+        } else if (video.readyState >= 2) {
+          video.currentTime = target;
+        }
+      };
+
+      video.onseeked = drawAndResolve;
+
+      video.onerror = () => {
+        clearTimeout(timeout);
+        const code = video.error?.code;
+        const codeText: Record<number, string> = {
+          1: "MEDIA_ERR_ABORTED",
+          2: "MEDIA_ERR_NETWORK",
+          3: "MEDIA_ERR_DECODE",
+          4: "MEDIA_ERR_SRC_NOT_SUPPORTED",
+        };
+        const corsHint =
+          "截图需要 COS 存储桶开启跨域访问。请在 COS 控制台 > 存储桶详情 > 安全管理 > CORS 设置中添加规则：来源为当前域名（如 http://localhost:3000 或实际部署域名），允许的 Method 包含 GET，允许的 Header 包含 * 或 Origin，并勾选“允许跨域访问”。保存后刷新页面再试。";
+        fail(
+          code === 2 || code === 4
+            ? `视频加载失败（${codeText[code]}），可能是 COS CORS 配置未允许当前域名。${corsHint}`
+            : `视频加载失败${code ? `（${codeText[code] ?? code}）` : ""}，请确认视频 URL 可访问且格式正确。${corsHint}`
+        );
+      };
+
+      video.onstalled = () => {
+        // 仅作为日志，不直接失败，由 timeout 兜底
+        console.warn("[extractVideoFrameAt] 视频加载停滞");
+      };
+
+      video.load();
+    });
+  }
+
   const allReady = episode.shots.length > 0 && episode.shots.every((s) => s.finalPrompt);
 
   return (
@@ -1500,6 +1758,7 @@ export default function VideoGeneration({
                 defaultVideoConfig={defaultVideoConfig}
                 defaultImageConfig={defaultImageConfig}
                 isGeneratingPrompt={generatingIds.has(shot.id)}
+                onCancelGeneratePrompt={() => cancelGeneratePrompt(shot)}
                 isGeneratingVideo={videoGeneratingIds.has(shot.id)}
                 isGeneratingStoryboard={generatingStoryboardIds.has(shot.id)}
                 initiallyExpanded={shot.id === newlyAddedShotId}
@@ -1528,6 +1787,12 @@ export default function VideoGeneration({
                 onCaptureScreenshot={() => captureLastFrame(shot, i + 1)}
                 isCapturing={capturingIds.has(shot.id)}
                 isSaved={savedIds.has(shot.id)}
+                onCaptureFirstFrame={() => captureFirstFrame(shot, i + 1)}
+                isCapturingFirst={capturingIds.has(`${shot.id}#first`)}
+                isSavedFirst={savedIds.has(`${shot.id}#first`)}
+                onCaptureCurrentFrame={(t: number) => captureCurrentFrame(shot, i + 1, t)}
+                isCapturingCurrent={capturingIds.has(`${shot.id}#current`)}
+                isSavedCurrent={savedIds.has(`${shot.id}#current`)}
                 onAddAsset={onAddScreenshot}
                 abortSignal={abortRef.current?.signal}
                 onPersistNow={onPersistNow}
@@ -2062,6 +2327,7 @@ function VideoCard({
   isGeneratingStoryboard,
   videoConfigured,
   onGeneratePrompt,
+  onCancelGeneratePrompt,
   onGenerateVideo,
   onPrecheckVideo,
   onCancelVideo,
@@ -2077,6 +2343,12 @@ function VideoCard({
   onCaptureScreenshot,
   isCapturing,
   isSaved,
+  onCaptureFirstFrame,
+  isCapturingFirst,
+  isSavedFirst,
+  onCaptureCurrentFrame,
+  isCapturingCurrent,
+  isSavedCurrent,
   initiallyExpanded,
   bulkCollapse,
   onAddAsset,
@@ -2111,11 +2383,17 @@ function VideoCard({
   videoConfigured: boolean;
   isCapturing: boolean;
   isSaved: boolean;
+  isCapturingFirst: boolean;
+  isSavedFirst: boolean;
+  isCapturingCurrent: boolean;
+  isSavedCurrent: boolean;
   /** 新添加的镜头初始展开「分镜信息」区域 */
   initiallyExpanded?: boolean;
   /** 父级「一键折叠/展开」指令：每次触发 token 递增，卡片据 value 设置折叠状态 */
   bulkCollapse?: { value: boolean; token: number };
   onGeneratePrompt: () => void;
+  /** 停止当前镜头的提示词生成 */
+  onCancelGeneratePrompt: () => void;
   onGenerateVideo: () => void;
   onPrecheckVideo: () => Promise<boolean>;
   onCancelVideo: () => void;
@@ -2133,6 +2411,8 @@ function VideoCard({
   isGeneratingStoryboard: boolean;
   onSetGeneratingStoryboard: (value: boolean) => void;
   onCaptureScreenshot: () => void;
+  onCaptureFirstFrame: () => void;
+  onCaptureCurrentFrame: (currentTime: number) => void;
   onAddAsset: (asset: Asset) => void;
   /** 组件级 AbortSignal，切页/卸载时取消故事板图片生成轮询（保留 jobId 供恢复） */
   abortSignal?: AbortSignal;
@@ -2171,6 +2451,7 @@ function VideoCard({
   // 模型所属供应商未配置 apiKey（不在 videoOptions 中）时，ModelPicker 显示空让用户自选
   const displayModel = (config.model && selectedVidOption) ? config.model : "";
   const [videoConfigOpen, setVideoConfigOpen] = useState(false);
+  const [userPriceTable, setUserPriceTable] = useState<Record<string, VideoPriceEntry> | undefined>(undefined);
   const [showInputMaterials, setShowInputMaterials] = useState(true);
   const [showShotInfo, setShowShotInfo] = useState(true);
   const [collapsed, setCollapsed] = useState(() => {
@@ -2180,7 +2461,14 @@ function VideoCard({
   useEffect(() => {
     window.localStorage.setItem(`video:shot:collapsed:${shot.id}`, collapsed ? "1" : "0");
   }, [collapsed, shot.id]);
+  // 加载用户自定义价格表（用于费用估算）
+  useEffect(() => {
+    if (!videoConfigOpen || !config.provider) return;
+    getUserVideoPriceTable(config.provider).then(setUserPriceTable);
+  }, [videoConfigOpen, config.provider]);
   const lastBulkTokenRef = useRef(0);
+  // 视频元素引用，用于「截取当前帧」读取当前播放位置
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {
     if (bulkCollapse && bulkCollapse.token !== lastBulkTokenRef.current) {
       lastBulkTokenRef.current = bulkCollapse.token;
@@ -2892,6 +3180,7 @@ function VideoCard({
           <div className="space-y-2">
             <div className="overflow-hidden rounded-lg bg-black">
               <video
+                ref={videoRef}
                 src={shot.videoUrl}
                 controls
                 className="max-h-64 w-full"
@@ -2911,6 +3200,63 @@ function VideoCard({
                 </svg>
                 下载视频
               </a>
+              <button
+                type="button"
+                onClick={onCaptureFirstFrame}
+                disabled={isCapturingFirst || isSavedFirst}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isCapturingFirst ? (
+                  <>
+                    <Spinner size={12} />
+                    <span>截取中…</span>
+                  </>
+                ) : isSavedFirst ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span>已保存到资产库</span>
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2" />
+                      <path d="M9 8v8M14 12l-5 4V8z" fill="currentColor" stroke="none" />
+                    </svg>
+                    <span>截取首帧</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => onCaptureCurrentFrame(videoRef.current?.currentTime ?? 0)}
+                disabled={isCapturingCurrent || isSavedCurrent}
+                className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isCapturingCurrent ? (
+                  <>
+                    <Spinner size={12} />
+                    <span>截取中…</span>
+                  </>
+                ) : isSavedCurrent ? (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span>已保存到资产库</span>
+                  </>
+                ) : (
+                  <>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <rect x="3" y="3" width="18" height="18" rx="3" stroke="currentColor" strokeWidth="2" />
+                      <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2" />
+                      <path d="M3 8h18" stroke="currentColor" strokeWidth="2" />
+                    </svg>
+                    <span>截取当前帧</span>
+                  </>
+                )}
+              </button>
               <button
                 type="button"
                 onClick={onCaptureScreenshot}
@@ -3435,19 +3781,24 @@ function VideoCard({
                   </div>
                 </div>
               </div>
-              <Button
-                size="sm"
-                variant={hasPrompt ? "ghost" : "secondary"}
-                onClick={onGeneratePrompt}
-                loading={isGeneratingPrompt}
-                disabled={isGeneratingPrompt}
-              >
-                {hasPrompt ? "重新生成" : "生成提示词"}
-              </Button>
+              {isGeneratingPrompt ? (
+                <Button size="sm" variant="ghost" onClick={onCancelGeneratePrompt} title="点击停止">
+                  <Spinner size={11} /> 停止生成
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant={hasPrompt ? "ghost" : "secondary"}
+                  onClick={onGeneratePrompt}
+                >
+                  {hasPrompt ? "重新生成" : "生成提示词"}
+                </Button>
+              )}
               <AiOptimizeButton
                 text={shot.finalPrompt}
                 onOptimized={onUpdatePrompt}
                 onRunningChange={setOptimizingPrompt}
+                buildMessages={optimizeVideoPromptMessages}
               />
             </div>
           </div>
@@ -3485,11 +3836,6 @@ function VideoCard({
             <Button variant="ghost" size="sm" onClick={onCancelVideo}>
               取消
             </Button>
-          )}
-          {isGeneratingPrompt && (
-            <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-              <Spinner size={11} /> 调用 LLM 中…
-            </span>
           )}
         </div>
         </div>
@@ -3631,6 +3977,27 @@ function VideoCard({
               </label>
             )}
           </div>
+
+          {/* 预估费用 */}
+          {(() => {
+            const cost = estimateVideoCostWith(config.provider, config.model, config.resolution, effectiveDuration, userPriceTable);
+            return (
+              <div className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                <span className="text-[11px] text-slate-500">预估费用</span>
+                <div className="text-right">
+                  <span className={cost.amount !== null ? "text-sm font-medium text-slate-700" : "text-[11px] text-slate-400"}>
+                    {cost.label}
+                  </span>
+                  {cost.breakdown && (
+                    <span className="ml-1.5 text-[11px] text-slate-400">{cost.breakdown}</span>
+                  )}
+                  {cost.note && (
+                    <span className="ml-1.5 text-[10px] font-bold text-red-500">· {cost.note}</span>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
         </div>
       </Modal>
 

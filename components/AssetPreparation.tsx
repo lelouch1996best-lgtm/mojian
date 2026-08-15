@@ -9,6 +9,7 @@ import ObjectAssetCard from "./ObjectAssetCard";
 import SceneAssetCard from "./SceneAssetCard";
 import TagList from "./TagList";
 import { callLLM, streamLLM } from "@/lib/llm-client";
+import { useAbortableTask } from "@/lib/use-abortable-task";
 import { generateImage, DEFAULT_ASSET_IMAGE_CONFIG, getDefaultAssetImageConfig, isPollingSupported, getAllConfiguredImageModels } from "@/lib/image-client";
 import { recoverImageTasks } from "@/lib/image-task-recovery";
 import { type ModelOption } from "@/lib/model-presets";
@@ -170,6 +171,8 @@ export default function AssetPreparation({
   const [generating, setGenerating] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
   const [regeneratingIds, setRegeneratingIds] = useState<Set<string>>(new Set());
+  // 资产外貌重新生成（流式）的可中止任务管理，补全原本缺失的 signal
+  const regenerateAbort = useAbortableTask();
   const [uploadingIds, setUploadingIds] = useState<Set<string>>(new Set());
   const showError = useErrorDialog();
 
@@ -562,27 +565,43 @@ export default function AssetPreparation({
     onReplaceAssets([...episode.assets, ...newAssets]);
   }
 
-  /** 重新生成单个资产的外貌/外观描述（流式） */
+  /** 重新生成单个资产的外貌/外观描述（流式，可中止） */
   async function handleRegenerateAsset(asset: Asset) {
     setRegeneratingIds((prev) => new Set(prev).add(asset.id));
+    const signal = regenerateAbort.start(asset.id);
     try {
       const style = await getActiveStyle(seriesStyleSettings);
       const styleText = styleTemplateForType(style, asset.type);
       const messages = regenerateAssetMessages(asset.name, asset.type, episode.expandedContent, styleText);
       let acc = "";
-      for await (const chunk of streamLLM(messages, { temperature: 0.7 })) {
+      for await (const chunk of streamLLM(messages, { temperature: 0.7, signal })) {
+        if (signal.aborted) break;
         acc += chunk;
         onUpdateAsset(asset.id, "description", acc);
       }
     } catch (e) {
+      if ((e as Error).name === "AbortError") return;
       showError(`「${asset.name}」重新生成失败：${(e as Error).message}`);
     } finally {
-      setRegeneratingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(asset.id);
-        return next;
-      });
+      if (regenerateAbort.mountedRef.current) {
+        regenerateAbort.clear(asset.id);
+        setRegeneratingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(asset.id);
+          return next;
+        });
+      }
     }
+  }
+
+  /** 停止指定资产的重新生成 */
+  function cancelRegenerateAsset(asset: Asset) {
+    regenerateAbort.stop(asset.id);
+    setRegeneratingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(asset.id);
+      return next;
+    });
   }
 
   /** 打开图片生成弹框（先做必要校验） */
@@ -865,6 +884,7 @@ export default function AssetPreparation({
             onUploadImage: (file: File) => handleUploadImage(asset, file),
             isRegenerating: regeneratingIds.has(asset.id),
             onRegenerate: () => handleRegenerateAsset(asset),
+            onCancelRegenerate: () => cancelRegenerateAsset(asset),
           };
 
           if (asset.type === "character") {

@@ -190,6 +190,25 @@ export interface StylePreset {
   objectRefImageTaskProvider?: ImageGenSettings["provider"];
 }
 
+/** LLM 系统提示词的 key 枚举（对应 lib/prompts.ts 中 13 个活跃函数） */
+export type SystemPromptKey =
+  | "expansion"          // 内容扩写
+  | "storyboard"         // 分镜生成
+  | "videoPrompt"        // 视频提示词生成
+  | "tagging"            // 批量智能标注
+  | "singleRowTagging"   // 单行智能标注
+  | "asset"              // 批量资产生成
+  | "regenerateAsset"    // 单资产外貌重生
+  | "optimizeText"       // 通用文本润色
+  | "optimizeVideo"      // 视频提示词优化
+  | "generateFirstFrame" // 首帧画面提示词
+  | "smartShot"          // 智能添加单镜头
+  | "generateAppearance" // 随机外貌生成
+  | "extractCharacter";  // 提取人物设定
+
+/** 用户自定义系统提示词映射（key → 自定义文本；未出现的 key 回退默认） */
+export type SystemPromptMap = Partial<Record<SystemPromptKey, string>>;
+
 /** 风格配置（全局，存服务端数据库） */
 export interface StyleSettings {
   selectedStyleId: string;

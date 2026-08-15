@@ -598,3 +598,45 @@ export function toCharacterProfile(raw: RawCharacter): CharacterProfile {
     relationships: raw.relationships?.trim() ?? "",
   };
 }
+
+/**
+ * 根据 @ 提及标签构建正则（最长优先，避免短名误匹配长名前缀）。
+ * 例：values=["图片1","图片10"] 时，正则会先匹配 "图片10" 再匹配 "图片1"，避免 "图片1" 被当作 "图片10" 的前缀。
+ */
+export function buildMentionRegex(values: string[]): RegExp | null {
+  const unique = Array.from(new Set(values)).filter(Boolean);
+  if (unique.length === 0) return null;
+  const sorted = unique.sort((a, b) => b.length - a.length);
+  const escaped = sorted.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`@(${escaped.join("|")})`, "g");
+}
+
+/** 高亮切分片段：普通文字段 highlighted=false，@标签段 highlighted=true */
+export interface MentionSpan {
+  text: string;
+  highlighted: boolean;
+}
+
+/**
+ * 将文本按 @提及 标签切分为片段数组（供 React 组件 map 渲染为高亮 span）。
+ * values 为需要高亮的标签名列表（不含 @ 前缀）。
+ */
+export function renderMentionSpans(text: string, values: string[]): MentionSpan[] {
+  const regex = buildMentionRegex(values);
+  if (!regex) return [{ text, highlighted: false }];
+  const spans: MentionSpan[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      spans.push({ text: text.slice(lastIndex, match.index), highlighted: false });
+    }
+    spans.push({ text: match[0], highlighted: true });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    spans.push({ text: text.slice(lastIndex), highlighted: false });
+  }
+  return spans;
+}
+

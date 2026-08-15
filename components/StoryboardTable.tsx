@@ -76,7 +76,7 @@ export default function StoryboardTable({
   // 当前已有标签数（用于判断是否已标注过）
   const tagCount = tags.length;
   // 系列设定（人物/物品/场景/世界）@ 补全选项，与第一步一致
-  const settingsOptions = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
+  const { options: settingsOptions } = useSettingsMentionOptions({ worldSettings, characterSettings, objectSettings, sceneSettings });
   // 画面描述 @ 补全选项：系列设定优先，再补齐已添加的标签，并允许新建
   const atMentionOptions = useMemo(() => {
     const seen = new Set<string>();

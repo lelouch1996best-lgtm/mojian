@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 interface CameraPlaceholderDialogProps {
   open: boolean;
@@ -34,10 +35,76 @@ export default function CameraPlaceholderDialog({
   const placeholders = useMemo(() => parsePlaceholders(content), [content]);
   const [selections, setSelections] = useState<Record<string, string>>({});
 
+  // Portal / 拖拽
+  const [mounted, setMounted] = useState(false);
+  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [size, setSize] = useState<{ width: number; height: number }>({ width: 560, height: 520 });
+  const dragState = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const w = Math.min(560, window.innerWidth - 32);
+    const h = Math.min(520, window.innerHeight - 32);
+    setSize({ width: w, height: h });
+    setPos({
+      x: Math.max(16, Math.round((window.innerWidth - w) / 2)),
+      y: Math.max(16, Math.round((window.innerHeight - h) / 2)),
+    });
+  }, [open]);
+
   // 打开时重置选择
   useEffect(() => {
     if (open) setSelections({});
   }, [open, content]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [open, onClose]);
+
+  const handleDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      if ((e.target as HTMLElement).closest("button, input, textarea, select")) return;
+      e.preventDefault();
+      dragState.current = { startX: e.clientX, startY: e.clientY, origX: pos.x, origY: pos.y };
+      const onMove = (ev: MouseEvent) => {
+        const st = dragState.current;
+        if (!st) return;
+        const dx = ev.clientX - st.startX;
+        const dy = ev.clientY - st.startY;
+        const minX = -size.width + 120;
+        const maxX = window.innerWidth - 120;
+        const minY = 0;
+        const maxY = window.innerHeight - 48;
+        setPos({
+          x: Math.min(Math.max(minX, st.origX + dx), maxX),
+          y: Math.min(Math.max(minY, st.origY + dy), maxY),
+        });
+      };
+      const onUp = () => {
+        dragState.current = null;
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        document.body.style.userSelect = "";
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+      document.body.style.userSelect = "none";
+    },
+    [pos.x, pos.y, size.width]
+  );
 
   const allFilled =
     placeholders.length === 0 || placeholders.every((ph) => selections[ph]);
@@ -54,21 +121,20 @@ export default function CameraPlaceholderDialog({
     return text;
   }, [content, placeholders, selections]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+  return createPortal(
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
       <div
-        className="flex max-h-[90vh] w-full max-w-lg flex-col overflow-hidden rounded-xl bg-white shadow-xl"
-        onClick={(e) => e.stopPropagation()}
+        style={{ position: "absolute", left: pos.x, top: pos.y, width: size.width, height: size.height }}
+        className="flex flex-col overflow-hidden rounded-xl bg-white shadow-2xl"
       >
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
-          <h3 className="text-base font-semibold text-slate-800">填充运镜占位符</h3>
+        <div
+          onMouseDown={handleDragStart}
+          className="flex cursor-move items-center justify-between border-b border-slate-200 px-5 py-3.5"
+        >
+          <h3 className="select-none text-base font-semibold text-slate-800">填充运镜占位符</h3>
           <button
             onClick={onClose}
             className="text-slate-400 transition-colors hover:text-slate-600"
@@ -144,6 +210,7 @@ export default function CameraPlaceholderDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

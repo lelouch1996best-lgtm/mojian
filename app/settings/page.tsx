@@ -101,6 +101,14 @@ import {
 } from "@/lib/cos-client";
 import type { CosSettings, QiniuSettings, StorageProvider, ImageGenSettings, LLMSettings, ProviderCache, VideoGenSettings, AudioGenSettings, MusicGenSettings, AssetImageConfig, ShotVideoConfig } from "@/lib/types";
 import { apiClient } from "@/lib/api-client";
+import {
+  VIDEO_PRICE_TABLE,
+  getUserVideoPriceTable,
+  saveUserVideoPriceTable,
+  resetUserVideoPriceTable,
+  type VideoPriceEntry,
+  type VideoPriceRate,
+} from "@/lib/video-pricing";
 
 /** 设置页自动保存防抖间隔（ms）—— 比全局 1500ms 更短，配置类操作更跟手 */
 const SETTINGS_AUTOSAVE_DEBOUNCE_MS = 500;
@@ -178,6 +186,7 @@ export default function SettingsPage() {
   // ---- 视频模型管理 ----
   const [videoModels, setVideoModels] = useState<ModelEntry[]>([]);
   const [showVideoManager, setShowVideoManager] = useState(false);
+  const [priceModalOpen, setPriceModalOpen] = useState(false);
   const [newVideoValue, setNewVideoValue] = useState("");
   const [newVideoLabel, setNewVideoLabel] = useState("");
 
@@ -1675,7 +1684,19 @@ export default function SettingsPage() {
                     );
                   })}
                 </div>
+                <div className="mt-2 flex justify-end">
+                  <Button variant="ghost" size="sm" onClick={() => setPriceModalOpen(true)}>
+                    查看价格
+                  </Button>
+                </div>
               </div>
+
+              <PriceTableModal
+                open={priceModalOpen}
+                onClose={() => setPriceModalOpen(false)}
+                provider={vidSettings.provider}
+                models={videoModels}
+              />
 
               <Field label="Base URL">
                 <input type="text" value={vidSettings.baseURL} onChange={(e) => updateVid("baseURL", e.target.value)} placeholder="https://ark.cn-beijing.volces.com/api/v3" className="input" />
@@ -2226,6 +2247,343 @@ export default function SettingsPage() {
 }
 
 // ==================== 模型管理面板（内联组件） ====================
+
+// ─── 价格表编辑弹框 ───────────────────────────────────────────────
+function PriceTableModal({
+  open,
+  onClose,
+  provider,
+  models,
+}: {
+  open: boolean;
+  onClose: () => void;
+  provider: VideoGenSettings["provider"];
+  models: ModelEntry[];
+}) {
+  const confirm = useConfirm();
+  const [priceTable, setPriceTable] = useState<Record<string, VideoPriceEntry>>({});
+  const [expandedModel, setExpandedModel] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [fetchUrl, setFetchUrl] = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchError, setFetchError] = useState("");
+  const [newModelValue, setNewModelValue] = useState("");
+  const [newModelLabel, setNewModelLabel] = useState("");
+
+  // 加载价格表
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setDirty(false);
+    setFetchError("");
+    (async () => {
+      const userTable = await getUserVideoPriceTable(provider);
+      const base = userTable ?? VIDEO_PRICE_TABLE[provider] ?? {};
+      setPriceTable(JSON.parse(JSON.stringify(base)));
+      setLoading(false);
+    })();
+  }, [open, provider]);
+
+  // 特殊 provider
+  if (provider === "ark-plan") {
+    return (
+      <Modal open={open} onClose={onClose} title="价格表" width="max-w-md">
+        <div className="space-y-2 py-4 text-sm text-slate-600">
+          <p>火山引擎 Agent Plan 为套餐订阅制，按 AFP 积分计费，不按条计价。</p>
+          <p className="text-xs text-slate-400">无需配置每秒单价，费用估算会显示"套餐制"。</p>
+        </div>
+      </Modal>
+    );
+  }
+  if (provider === "custom") {
+    return (
+      <Modal open={open} onClose={onClose} title="价格表" width="max-w-md">
+        <div className="space-y-2 py-4 text-sm text-slate-600">
+          <p>自定义 API 端点，无法预估费用。</p>
+          <p className="text-xs text-slate-400">如需价格估算，请使用其他供应商。</p>
+        </div>
+      </Modal>
+    );
+  }
+
+  const providerLabel = VIDEO_PROVIDER_PRESETS[provider]?.label ?? provider;
+
+  /** 更新某模型某分辨率的单价 */
+  const updateRate = (modelValue: string, resolution: string, perSecond: number) => {
+    setPriceTable((prev) => {
+      const next = { ...prev };
+      const entry = next[modelValue];
+      if (!entry || entry.kind !== "rate") {
+        next[modelValue] = { kind: "rate", rates: { [resolution]: { perSecond } } };
+      } else {
+        next[modelValue] = {
+          ...entry,
+          rates: { ...entry.rates, [resolution]: { perSecond } },
+        };
+      }
+      return next;
+    });
+    setDirty(true);
+  };
+
+  /** 删除某模型的价格条目 */
+  const deleteEntry = (modelValue: string) => {
+    setPriceTable((prev) => {
+      const next = { ...prev };
+      delete next[modelValue];
+      return next;
+    });
+    setDirty(true);
+  };
+
+  /** 添加新模型价格条目 */
+  const addEntry = () => {
+    if (!newModelValue.trim()) return;
+    setPriceTable((prev) => ({
+      ...prev,
+      [newModelValue.trim()]: { kind: "rate", rates: {} },
+    }));
+    setNewModelValue("");
+    setNewModelLabel("");
+    setDirty(true);
+  };
+
+  /** 一键获取 */
+  const handleFetch = async () => {
+    if (!fetchUrl.trim()) return;
+    setFetching(true);
+    setFetchError("");
+    try {
+      const modelsPayload = models.map((m) => ({
+        value: m.value,
+        label: m.label,
+        resolutions: m.videoCapability?.resolutions ?? [],
+      }));
+      const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
+      const res = await fetch("/api/fetch-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ url: fetchUrl.trim(), provider, models: modelsPayload }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setFetchError(data.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      const prices: Record<string, Record<string, number>> = data.prices ?? {};
+      // 合并到 priceTable：仅更新匹配到的模型
+      setPriceTable((prev) => {
+        const next = { ...prev };
+        for (const [modelValue, resMap] of Object.entries(prices)) {
+          const entry = next[modelValue];
+          const rates: Record<string, VideoPriceRate> = {};
+          for (const [res, price] of Object.entries(resMap)) {
+            rates[res] = { perSecond: price, source: `LLM 从 ${fetchUrl.trim()} 获取` };
+          }
+          if (!entry || entry.kind !== "rate") {
+            next[modelValue] = { kind: "rate", rates };
+          } else {
+            next[modelValue] = { kind: "rate", rates: { ...entry.rates, ...rates } };
+          }
+        }
+        return next;
+      });
+      setDirty(true);
+    } catch (e) {
+      setFetchError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFetching(false);
+    }
+  };
+
+  /** 重置为默认 */
+  const handleReset = async () => {
+    const ok = await confirm({
+      title: "重置为内置默认价格",
+      message: `将清除 ${providerLabel} 的自定义价格，恢复为代码内置的初始价格。确定？`,
+    });
+    if (!ok) return;
+    await resetUserVideoPriceTable(provider);
+    const base = VIDEO_PRICE_TABLE[provider] ?? {};
+    setPriceTable(JSON.parse(JSON.stringify(base)));
+    setDirty(false);
+  };
+
+  /** 保存 */
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await saveUserVideoPriceTable(provider, priceTable);
+      setDirty(false);
+      onClose();
+    } catch (e) {
+      setFetchError(e instanceof Error ? e.message : "保存失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`${providerLabel} · 价格表`}
+      width="max-w-2xl"
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={handleReset} disabled={loading || saving}>
+            重置为默认
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            取消
+          </Button>
+          <Button variant="primary" size="sm" onClick={handleSave} disabled={!dirty || saving}>
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </>
+      }
+    >
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Spinner />
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {/* 一键获取区 */}
+          <div className="rounded-md border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <div className="text-xs font-medium text-slate-500">一键获取（LLM 解析网页价格）</div>
+            <div className="flex gap-2">
+              <input
+                type="url"
+                value={fetchUrl}
+                onChange={(e) => setFetchUrl(e.target.value)}
+                placeholder="https://apib.ai/zh/pricing"
+                className="input flex-1 text-sm"
+                onKeyDown={(e) => { if (e.key === "Enter" && !fetching) handleFetch(); }}
+              />
+              <Button variant="primary" size="sm" onClick={handleFetch} disabled={fetching || !fetchUrl.trim()}>
+                {fetching ? <Spinner /> : "获取"}
+              </Button>
+            </div>
+            {fetchError && (
+              <p className="text-xs text-red-500">{fetchError}</p>
+            )}
+            <p className="text-[11px] text-slate-400">
+              输入供应商价格页 URL，LLM 会抓取网页内容并自动解析每个模型的每秒单价（美元按 1:7 换算）。获取后可再手动调整，确认后点「保存」。
+            </p>
+          </div>
+
+          {/* 价格列表 */}
+          <div className="text-xs font-medium text-slate-500">模型价格（元/秒）</div>
+          <div className="max-h-72 overflow-y-auto space-y-1">
+            {Object.keys(priceTable).length === 0 && (
+              <p className="text-xs text-slate-400">暂无价格数据，可手动添加或使用上方「获取」。</p>
+            )}
+            {Object.entries(priceTable).map(([modelValue, entry]) => {
+              const modelInfo = models.find((m) => m.value === modelValue);
+              const label = modelInfo?.label ?? modelValue;
+              const resolutions = modelInfo?.videoCapability?.resolutions ?? [];
+              const expanded = expandedModel === modelValue;
+              const isRate = entry.kind === "rate";
+              const rateSummary = isRate
+                ? Object.entries(entry.rates)
+                    .map(([r, v]) => `${r}: ¥${v.perSecond}/秒`)
+                    .join("  ")
+                : entry.kind === "subscription" ? entry.label : "未知";
+              return (
+                <div key={modelValue} className="rounded-md bg-white border border-slate-200">
+                  <div className="flex items-center justify-between px-2.5 py-1.5 text-sm">
+                    <div className="min-w-0 flex-1 flex items-center gap-1.5">
+                      {isRate && (
+                        <button
+                          type="button"
+                          onClick={() => setExpandedModel(expanded ? null : modelValue)}
+                          className="shrink-0 text-slate-400 hover:text-slate-600"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" className={`transition-transform ${expanded ? "rotate-90" : ""}`}>
+                            <path d="M8 4l8 8-8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                          </svg>
+                        </button>
+                      )}
+                      <span className="truncate">
+                        {label} <span className="text-xs text-slate-400">{modelValue}</span>
+                      </span>
+                      <span className="ml-1.5 text-[10px] text-slate-400">{rateSummary}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => deleteEntry(modelValue)}
+                      className="text-xs text-red-400 hover:text-red-600"
+                    >
+                      删除
+                    </button>
+                  </div>
+                  {expanded && isRate && (
+                    <div className="border-t border-slate-100 px-2.5 py-2 space-y-1.5">
+                      {/* 已有的分辨率价格 */}
+                      {Object.entries(entry.rates).map(([res, v]) => (
+                        <div key={res} className="flex items-center gap-2">
+                          <span className="w-16 text-xs text-slate-500">{res}</span>
+                          <span className="text-xs text-slate-400">¥</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={v.perSecond}
+                            onChange={(e) => updateRate(modelValue, res, Number(e.target.value))}
+                            className="input w-24 py-0.5 text-sm"
+                          />
+                          <span className="text-xs text-slate-400">/秒</span>
+                          {v.source && <span className="text-[10px] text-slate-400">· {v.source}</span>}
+                        </div>
+                      ))}
+                      {/* 模型支持但尚未配置的分辨率（快捷添加） */}
+                      {resolutions.filter((r) => !entry.rates[r]).map((res) => (
+                        <button
+                          key={res}
+                          type="button"
+                          onClick={() => updateRate(modelValue, res, 0)}
+                          className="text-[11px] text-brand-600 hover:text-brand-800"
+                        >
+                          + 添加 {res}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 添加自定义模型价格 */}
+          <div className="flex gap-2 border-t border-slate-200 pt-2">
+            <input
+              type="text"
+              value={newModelValue}
+              onChange={(e) => setNewModelValue(e.target.value)}
+              placeholder="模型 value"
+              className="input flex-1 text-sm"
+            />
+            <input
+              type="text"
+              value={newModelLabel}
+              onChange={(e) => setNewModelLabel(e.target.value)}
+              placeholder="显示名（可选）"
+              className="input flex-1 text-sm"
+            />
+            <Button variant="secondary" size="sm" onClick={addEntry} disabled={!newModelValue.trim()}>
+              添加
+            </Button>
+          </div>
+
+          {dirty && <p className="text-[11px] text-amber-500">有未保存的修改</p>}
+        </div>
+      )}
+    </Modal>
+  );
+}
 
 const ALL_RESOLUTIONS = ["1K", "2K", "3K", "4K", "auto", "1024x1024", "1024x1536", "1536x1024", "3840x2160"];
 

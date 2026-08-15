@@ -64,6 +64,13 @@ export async function POST(request: Request) {
   const db = getDb();
   const now = Date.now();
 
+  // 乐观并发控制：使用客户端 updatedAt（而非服务端 now），
+  // 并通过 WHERE 条件拒绝旧数据覆盖新数据。
+  // 解决场景：persistNow 保存了带 imageTaskId 的新 episode，但 useUnloadPersist
+  // 的 flush（在 onJobCreated 之前触发）携带旧 episode 的 fetch 晚到服务端，
+  // 若无此条件会覆盖掉 imageTaskId 导致任务丢失。
+  const clientUpdatedAt = ep.updatedAt ?? now;
+
   db.prepare(`
     INSERT INTO episodes (id, title, series_id, step, original_content, expanded_content, shots, assets, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -71,6 +78,7 @@ export async function POST(request: Request) {
       title = excluded.title, series_id = excluded.series_id, step = excluded.step,
       original_content = excluded.original_content, expanded_content = excluded.expanded_content,
       shots = excluded.shots, assets = excluded.assets, updated_at = excluded.updated_at
+    WHERE excluded.updated_at >= episodes.updated_at
   `).run(
     ep.id,
     ep.title ?? "",
@@ -81,7 +89,7 @@ export async function POST(request: Request) {
     JSON.stringify(ep.shots ?? []),
     JSON.stringify(ep.assets ?? []),
     ep.createdAt ?? now,
-    now
+    clientUpdatedAt
   );
 
   return Response.json({ ok: true });

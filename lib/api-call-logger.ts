@@ -71,16 +71,19 @@ export function logApiCall(input: ApiCallLogInput): void {
 
 const g = globalThis as { __apiLogCleanAt?: number };
 
-/** 轮询终态回填：按 taskId 更新最终状态与结果（无匹配行时 no-op） */
+/** 轮询终态回填：按 taskId 更新最终状态与结果（无匹配行时 no-op）。
+ *  最终结果为失败（failed/expired）时，外层 status 也同步标记为 failed。 */
 export function updateApiCallFinal(
   taskId: string,
   finalStatus: "done" | "failed" | "expired",
   finalResult: string
 ): void {
   try {
-    getDb().prepare(
-      `UPDATE api_call_logs SET final_status = ?, final_result = ?, final_updated_at = ? WHERE task_id = ?`
-    ).run(finalStatus, finalResult.slice(0, 4000), Date.now(), taskId);
+    const isFailed = finalStatus === "failed" || finalStatus === "expired";
+    const sql = isFailed
+      ? `UPDATE api_call_logs SET status = 'failed', final_status = ?, final_result = ?, final_updated_at = ? WHERE task_id = ?`
+      : `UPDATE api_call_logs SET final_status = ?, final_result = ?, final_updated_at = ? WHERE task_id = ?`;
+    getDb().prepare(sql).run(finalStatus, finalResult.slice(0, 4000), Date.now(), taskId);
   } catch (e) {
     console.warn("[api-call-logger] 回填最终结果失败", e);
   }
