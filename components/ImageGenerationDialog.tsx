@@ -3,14 +3,16 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import Button from "./ui/Button";
-import AiOptimizeButton from "./ui/AiOptimizeButton";
+import AiActionsButton, { type AiAction } from "./ui/AiActionsButton";
 import { useConfirm } from "./ui/ConfirmDialog";
 import AssetPicker, { type PickedAssetItem } from "./AssetPicker";
 import PresetPicker from "./PresetPicker";
 import ImageLightbox from "./ImageLightbox";
 import { ImageConfigFields } from "./ImageConfigFields";
 import { getImageModelCapability, findModelOption, type ModelOption } from "@/lib/model-presets";
+import { optimizeTextMessages, generateFirstFramePromptMessages } from "@/lib/prompts";
 import type { AssetImageConfig, PickedPresetItem } from "@/lib/types";
+import { isMentionedInText } from "@/lib/utils";
 
 /** 弹框确认时回传的完整生成参数 */
 export interface ImageGenerationParams {
@@ -68,6 +70,22 @@ function renderHighlightedText(text: string, values: string[]): ReactNode[] {
   return parts;
 }
 
+/** 提示词区的 AI 动作下拉配置（优化文本 / 生成首帧提示词） */
+const PROMPT_AI_ACTIONS: AiAction[] = [
+  {
+    key: "optimize",
+    label: "优化文本",
+    buildMessages: (text) => optimizeTextMessages(text),
+    temperature: 0.7,
+  },
+  {
+    key: "firstFrame",
+    label: "生成首帧提示词",
+    buildMessages: (text) => generateFirstFramePromptMessages(text),
+    temperature: 0.7,
+  },
+];
+
 /**
  * 图片生成弹框（人物 / 物品 / 场景设定 & 资产准备共用）。
  * 包含：提示词编辑区（支持 @ 引用参考图）、参考图上传（单图/多图生图）、风格模板开关、高级参数折叠区。
@@ -96,6 +114,7 @@ export function ImageGenerationDialog({
   promptFooterExtra,
   keepMentionPrefix = false,
   enablePresetPrompt = false,
+  defaultSeriesId,
 }: {
   open: boolean;
   onClose: () => void;
@@ -130,8 +149,11 @@ export function ImageGenerationDialog({
   keepMentionPrefix?: boolean;
   /** 是否启用「添加提示词 -> 从预设库获取」按钮（提示词标题栏右侧） */
   enablePresetPrompt?: boolean;
+  /** 从资产库选择参考图时默认筛选的企划 ID（当前企划） */
+  defaultSeriesId?: string;
 }) {
   const [prompt, setPrompt] = useState(initialPrompt);
+  const [aiRunning, setAiRunning] = useState(false);
   const [config, setConfig] = useState<AssetImageConfig>(initialConfig);
   const [useTemplate, setUseTemplate] = useState(!!styleTemplate);
   const [useImageRef, setUseImageRef] = useState(false);
@@ -554,13 +576,21 @@ export function ImageGenerationDialog({
    * - 检测：每张参考图的提及标签（资产名 / 图片N）是否出现在最终提示词中
    * - 过滤：移除未使用的参考图链接，同步过滤 imageLabels
    * - 重编号：对默认标签「图片N」按新下标重写提示词中的引用（资产名不变）；
-   *   从大到小替换避免误匹配，负向先行断言避免命中「图片10」等更长编号
+   *   单遍查表替换避免「从大到小顺序替换」时新旧编号冲突导致级联误替换
    */
   async function handleConfirm() {
     const base = keepMentionPrefix ? prompt : resolveMentions(prompt, mentionValues);
     const resolved = base.trim();
 
-    const usedFlags = effectiveImages.map((_, i) => resolved.includes(mentionValues[i]));
+    // 仅当标签以 @ 提及形式出现时才视为「已使用」：避免裸文本（如「韩立」）被误判为引用，
+    // 导致未 @ 的资产图片也被当作参考图上传。基于原始 prompt 检测（保留 @ 前缀）。
+    // 「的」作为额外尾部边界，使「@韩立的风格」中的 @韩立 被识别为已引用。
+    const usedFlags = effectiveImages.map((_, i) => {
+      // 模板参考图（图片1）由 STYLE_REFERENCE_PHRASE「请严格参考此@图片1风格。」固定引用，
+      // 「图片1」后接「风」非边界字符，边界检测会漏判，故开启参考图模式时首位始终视为已使用
+      if (useImageRef && templateReferenceImage && i === 0) return true;
+      return isMentionedInText(prompt, mentionValues[i], "的");
+    });
     const hasUnused = effectiveImages.length > 0 && usedFlags.some((used) => !used);
 
     if (hasUnused) {
@@ -592,18 +622,26 @@ export function ImageGenerationDialog({
         }
       });
 
-      for (let oldIdx = effectiveImages.length - 1; oldIdx >= 0; oldIdx--) {
+      // 构建默认标签「图片N」的旧编号 -> 新编号映射（仅默认标签需要重编号；
+      // 资产名 / 参考图N 等稳定标签由后续 replaceAssetTagsWithImageNos 按名称映射，无需在此重编号）
+      const oldToNewNo = new Map<number, number>();
+      for (let oldIdx = 0; oldIdx < effectiveImages.length; oldIdx++) {
         const newIdx = oldToNewIndex[oldIdx];
         if (newIdx === -1) continue;
         const oldLabel = mentionValues[oldIdx];
         const oldN = oldIdx + 1;
         const newN = newIdx + 1;
         if (oldLabel === `图片${oldN}` && oldN !== newN) {
-          finalPrompt = finalPrompt.replace(
-            new RegExp(`图片${oldN}(?!\\d)`, "g"),
-            `图片${newN}`
-          );
+          oldToNewNo.set(oldN, newN);
         }
+      }
+      // 单遍替换 图片N -> 图片{新编号}：基于原始编号查表，避免「从大到小顺序替换」造成级联误替换
+      // （如 图片4->图片3 后，原有的 图片3 再被替换为 图片2，导致两个引用塌缩为同一编号）
+      if (oldToNewNo.size > 0) {
+        finalPrompt = finalPrompt.replace(/图片(\d+)/g, (m, numStr) => {
+          const newN = oldToNewNo.get(parseInt(numStr, 10));
+          return newN != null ? `图片${newN}` : m;
+        });
       }
 
       finalImages = filteredImages;
@@ -703,7 +741,12 @@ export function ImageGenerationDialog({
                 </div>
               )}
               {promptHeaderExtra}
-              <AiOptimizeButton text={prompt} onOptimized={setPrompt} />
+              <AiActionsButton
+                text={prompt}
+                onResult={setPrompt}
+                actions={PROMPT_AI_ACTIONS}
+                onRunningChange={setAiRunning}
+              />
               <span className={`text-xs ${promptLen > 300 ? "text-amber-500" : "text-slate-400"}`}>
                 {promptLen} 字
               </span>
@@ -722,6 +765,7 @@ export function ImageGenerationDialog({
             <textarea
               ref={textareaRef}
               value={prompt}
+              readOnly={aiRunning}
               onChange={handleTextareaChange}
               onScroll={(e) => {
                 const ta = e.currentTarget;
@@ -770,7 +814,7 @@ export function ImageGenerationDialog({
                 className="h-3.5 w-3.5 rounded border-slate-300 text-amber-500 focus:ring-amber-400"
               />
               <span className="text-xs text-slate-500">
-                使用参考图（风格参考）
+                使用参考图（提示词参考）
                 {useImageRef && (
                   <span className="ml-1 text-slate-400">（参考图作为图片1，提示词已拼接固定句）</span>
                 )}
@@ -825,7 +869,7 @@ export function ImageGenerationDialog({
                   </ImageLightbox>
                   {isTemplateRef && (
                     <span className="absolute left-0 top-0 rounded-br bg-amber-500 px-1 text-[9px] font-medium text-white">
-                      风格参考
+                      提示词参考
                     </span>
                   )}
                   <span className="absolute bottom-0 left-0 right-0 truncate bg-black/55 px-1 text-[10px] text-white">
@@ -970,6 +1014,7 @@ export function ImageGenerationDialog({
         multiple
         selectedUrls={images}
         max={maxRefImages - (useImageRef && templateReferenceImage ? 1 : 0)}
+        defaultSeriesId={defaultSeriesId}
         onConfirm={(items: PickedAssetItem[]) => {
           if (items.length > 0) {
             appendImages(

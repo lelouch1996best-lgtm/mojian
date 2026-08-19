@@ -48,7 +48,7 @@ export function isBuiltinPreset(id: string): boolean {
 export function createEmptyTemplate(source?: StylePreset | null): StylePreset {
   return {
     id: `custom-${uuid()}`,
-    name: "新风格",
+    name: "新提示词",
     description: "",
     characterTemplate: source?.characterTemplate ?? "",
     sceneTemplate: source?.sceneTemplate ?? "",

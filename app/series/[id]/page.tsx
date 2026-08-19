@@ -231,7 +231,7 @@ export default function SeriesPage() {
           <circle cx="15" cy="8" r="1.2" fill="currentColor" />
           <circle cx="17.5" cy="12" r="1.2" fill="currentColor" />
         </svg>
-        风格设定
+        提示词设定
       </Button>
     </div>
   );

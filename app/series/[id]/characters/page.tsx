@@ -247,6 +247,17 @@ export default function CharacterSettingsPage() {
     setDetailTargetId(newVersion.id);
   }
 
+  /** 将指定版本设为该角色的默认（最新）版本：清除同组其他版本的 isDefault，置目标为 true */
+  function handleSetDefault(id: string) {
+    const target = characters.find((c) => c.id === id);
+    if (!target) return;
+    const gid = target.characterId || target.id;
+    setCharacters((prev) => prev.map((c) => {
+      if ((c.characterId || c.id) !== gid) return c;
+      return { ...c, isDefault: c.id === id };
+    }));
+  }
+
   async function handleDelete(id: string) {
     if (!await confirm({
       message: "确定删除该人物版本？",
@@ -672,7 +683,7 @@ export default function CharacterSettingsPage() {
       ) : (
         <div className="space-y-6">
           {grouped.map((group) => {
-            const latest = group[0];
+            const latest = group.find((v) => v.isDefault) ?? group[0];
             const gid = latest.characterId || latest.id;
             return (
               <div key={gid} className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
@@ -691,6 +702,7 @@ export default function CharacterSettingsPage() {
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {group.map((char) => (
                     <CharacterCard key={char.id} character={char} isLatest={char.id === latest.id}
+                      onSetDefault={group.length > 1 ? () => handleSetDefault(char.id) : undefined}
                       onOpenDetail={() => setDetailTargetId(char.id)}
                       onUpdate={(field, value) => updateField(char.id, field, value)}
                       onDelete={() => handleDelete(char.id)}
@@ -749,6 +761,7 @@ export default function CharacterSettingsPage() {
         character={characters.find((c) => c.id === voiceTargetId)}
         audioModels={audioModels}
         storageConfigured={cosConfigured}
+        defaultSeriesId={seriesId}
       />
 
       <AssetPicker
@@ -757,6 +770,7 @@ export default function CharacterSettingsPage() {
         mediaType="audio"
         multiple={false}
         selectedUrls={[]}
+        defaultSeriesId={seriesId}
         onConfirm={handleVoiceAssetConfirm}
       />
 

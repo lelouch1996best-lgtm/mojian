@@ -30,6 +30,8 @@ interface CharacterAssetCardProps {
   onRegenerate?: () => void;
   /** 未提取时：是否正在重新生成外貌 */
   isRegenerating?: boolean;
+  /** 停止重新生成外貌 */
+  onCancelRegenerate?: () => void;
   /** 未提取时：提取到人物设定回调 */
   onExtract?: () => void;
   /** 系列ID，用于跳转到设定页面 */
@@ -47,21 +49,29 @@ export default function CharacterAssetCard({
   isUploading = false,
   onRegenerate,
   isRegenerating = false,
+  onCancelRegenerate,
   onExtract,
   seriesId,
 }: CharacterAssetCardProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [urlPasteOpen, setUrlPasteOpen] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
     const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
-    return byImage?.id ?? versions[versions.length - 1]?.id ?? "";
+    if (byImage) return byImage.id;
+    // 首次添加资产时默认选最新（默认）版本：优先 isDefault，回退最高 version
+    const defaultVersion = versions.find((v) => v.isDefault);
+    return defaultVersion?.id ?? versions[versions.length - 1]?.id ?? "";
   });
 
   const selected = useMemo(
-    () => versions.find((v) => v.id === selectedId) ?? versions[versions.length - 1] ?? null,
+    () => versions.find((v) => v.id === selectedId)
+      ?? versions.find((v) => v.isDefault)
+      ?? versions[versions.length - 1]
+      ?? null,
     [versions, selectedId]
   );
 
@@ -75,11 +85,24 @@ export default function CharacterAssetCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [extracted, selected, asset.imageUrl]);
 
+  // 同步所选版本的音色到资产：切换版本、或所选版本在设定页新增/变更音色后回写，
+  // 确保视频生成页读取到的是用户所选版本的音色（而非始终取最新版本）。
+  useEffect(() => {
+    if (!extracted || !selected) return;
+    const nextVoiceUrl = selected.voiceUrl ?? "";
+    if (nextVoiceUrl !== (asset.voiceUrl ?? "")) {
+      onUpdate("voiceUrl", nextVoiceUrl);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extracted, selected, asset.voiceUrl]);
+
   useEffect(() => {
     if (versions.length === 0) return;
     if (selectedId && versions.some((v) => v.id === selectedId)) return;
     const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
-    setSelectedId(byImage?.id ?? versions[versions.length - 1]?.id ?? "");
+    if (byImage) { setSelectedId(byImage.id); return; }
+    const defaultVersion = versions.find((v) => v.isDefault);
+    setSelectedId(defaultVersion?.id ?? versions[versions.length - 1]?.id ?? "");
   }, [versions, selectedId, asset.imageUrl]);
 
   function handleSelectVersion(id: string) {
@@ -89,6 +112,7 @@ export default function CharacterAssetCard({
     onUpdate("imageUrl", v.imageUrl ?? "");
     onUpdate("description", v.appearance.trim());
     onUpdate("status", v.imageUrl ? "ready" : "pending");
+    onUpdate("voiceUrl", v.voiceUrl ?? "");
   }
 
   function handleGotoSettings() {
@@ -207,10 +231,10 @@ export default function CharacterAssetCard({
             {selected.versionLabel || `v${selected.version ?? 1}`}
           </span>
         )}
-        {versions.some((v) => !!v.voiceUrl) && (
+        {extracted && selected?.voiceUrl && (
           <span
             className="absolute left-2 top-9 flex items-center gap-1 rounded-full bg-brand-500/90 px-2 py-0.5 text-[10px] font-medium text-white shadow backdrop-blur"
-            title="已关联音色，视频生成时将作为参考音频传入"
+            title="当前版本已关联音色，视频生成时将作为参考音频传入"
           >
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
               <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
@@ -269,6 +293,7 @@ export default function CharacterAssetCard({
                 {versions.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.versionLabel || `v${v.version ?? 1}`}
+                    {v.isDefault ? " · 默认" : ""}
                     {v.imageUrl ? " · 有图" : ""}
                   </option>
                 ))}
@@ -304,20 +329,21 @@ export default function CharacterAssetCard({
                 <span>👤 外貌</span>
                 <div className="flex items-center gap-1">
                   {onRegenerate && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={onRegenerate}
-                      loading={isRegenerating}
-                      disabled={isRegenerating}
-                    >
-                      重新生成外貌
-                    </Button>
+                    isRegenerating ? (
+                      <Button size="sm" variant="ghost" onClick={onCancelRegenerate} title="点击停止">
+                        <Spinner size={11} /> 停止
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={onRegenerate}>
+                        重新生成外貌
+                      </Button>
+                    )
                   )}
                   <AiOptimizeButton
                     text={asset.description}
                     onOptimized={(v) => onUpdate("description", v)}
                     disabled={isRegenerating}
+                    onRunningChange={setOptimizing}
                   />
                 </div>
               </div>
@@ -327,6 +353,7 @@ export default function CharacterAssetCard({
                 placeholder="描述人物外貌特征…"
                 multiline
                 minWidth="100%"
+                disabled={isRegenerating || optimizing}
               />
             </div>
 

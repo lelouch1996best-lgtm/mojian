@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import TaggedText from "./TaggedText";
+import HighlightedTextarea from "./HighlightedTextarea";
+import { useAtMention, AtMentionDropdown, type AtMentionOption } from "./AtMentionDropdown";
+import { extractTags } from "@/lib/utils";
 
-export interface AtMentionOption {
-  label: string;
-  value: string;
-}
+export type { AtMentionOption };
 
 interface EditableCellProps {
   value: string;
@@ -18,7 +18,7 @@ interface EditableCellProps {
   minHeight?: string;
   /** 编辑态/显示态最大高度，超出后内部滚动 */
   maxHeight?: string;
-  /** 显示态是否把 @名称@ 渲染为蓝色标签 */
+  /** 显示态是否把 @名称 渲染为蓝色标签 */
   renderTags?: boolean;
   /** 点击标签上的 × 移除标注时回调（传入不含 @ 的标签名） */
   onRemoveTag?: (tagName: string) => void;
@@ -37,11 +37,13 @@ interface EditableCellProps {
    * 开启后，当输入的关键词非空且与已有选项不完全重复时，下拉末尾会追加"新建标签"项。
    */
   allowCreateTag?: boolean;
+  /** 禁用编辑（优化等生成期间锁定，禁止进入编辑态/输入） */
+  disabled?: boolean;
 }
 
 /**
  * 行内编辑单元格：点击进入编辑态，失焦或 Ctrl+Enter 提交。
- * multiline + atMentionOptions 时支持 @ 触发下拉补全。
+ * multiline + atMentionOptions 时支持 @ 触发下拉补全（逻辑与 AtMentionTextarea 共用 useAtMention）。
  */
 export default function EditableCell({
   value,
@@ -56,17 +58,28 @@ export default function EditableCell({
   atMentionOptions,
   onAtMentionSelect,
   allowCreateTag = false,
+  disabled = false,
 }: EditableCellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement | HTMLInputElement>(null);
-  const highlightRef = useRef<HTMLDivElement | null>(null);
 
-  // @ 下拉状态
-  const [mentionQuery, setMentionQuery] = useState<string | null>(null); // null = 未触发，"" 或字符串 = 触发后关键词
-  const [mentionIndex, setMentionIndex] = useState(0);
-  const [dropdownPos, setDropdownPos] = useState<{ top: number; bottom: number; left: number }>({ top: 0, bottom: 0, left: 0 });
-  const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const at = useAtMention({
+    options: atMentionOptions ?? [],
+    allowCreateTag,
+    getText: () => draft,
+    setText: setDraft,
+    inputRef,
+    onSelect: onAtMentionSelect,
+  });
+
+  // 高亮 @ 标签来源：可选选项 + 草稿中已出现的标签（兼容 allowCreateTag 新建后未在 options 中的情况）
+  const highlightValues = useMemo(() => {
+    const set = new Set<string>();
+    (atMentionOptions ?? []).forEach((o) => set.add(o.value));
+    extractTags(draft).forEach((t) => set.add(t));
+    return Array.from(set);
+  }, [atMentionOptions, draft]);
 
   useEffect(() => {
     setDraft(value);
@@ -101,234 +114,67 @@ export default function EditableCell({
 
   function commit() {
     setEditing(false);
-    setMentionQuery(null);
+    at.closeDropdown();
     if (draft !== value) onChange(draft);
   }
 
   function cancel() {
     setEditing(false);
     setDraft(value);
-    setMentionQuery(null);
+    at.closeDropdown();
   }
 
-  /** 计算下拉框位置（固定定位，记录 textarea rect，渲染时按剩余空间决定向上/向下弹出） */
-  function updateDropdownPos() {
-    if (!inputRef.current) return;
-    const rect = inputRef.current.getBoundingClientRect();
-    setDropdownPos({
-      top: rect.top,
-      bottom: rect.bottom,
-      left: rect.left,
-    });
-  }
-
-  /** textarea 输入时检测 @ 触发 */
+  /** textarea 输入时检测 @ 触发（draft 更新由 HighlightedTextarea 的 onChange 负责） */
   function handleTextareaChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
-    const newDraft = e.target.value;
-    setDraft(newDraft);
-
-    const hasOptions = !!atMentionOptions && atMentionOptions.length > 0;
-    if (!hasOptions && !allowCreateTag) return;
-
-    const cursor = e.target.selectionStart ?? newDraft.length;
-    const textBefore = newDraft.slice(0, cursor);
-
-    // 从光标往前找最近的 @，且 @ 前面是行首或空白/标点
-    const match = textBefore.match(/@([^\s@，。、,\.！？!?\n：:；;）)、】"'`（）\[\]{}｜|《》〈〉…—·]*)$/);
-    if (match) {
-      setMentionQuery(match[1]); // 可以是空字符串（刚输入 @）
-      setMentionIndex(0);
-      updateDropdownPos();
-    } else {
-      setMentionQuery(null);
-    }
-  }
-
-  /** 过滤选项 */
-  const filteredOptions =
-    mentionQuery !== null && atMentionOptions
-      ? atMentionOptions.filter((o) =>
-          o.value.toLowerCase().includes(mentionQuery.toLowerCase()) ||
-          o.label.toLowerCase().includes(mentionQuery.toLowerCase())
-        )
-      : [];
-
-  /** 允许新建标签：输入关键词非空且与已有选项不完全重复时，追加"新建标签"项 */
-  const trimmedQuery = mentionQuery !== null ? mentionQuery.trim() : "";
-  const createOption: AtMentionOption | null =
-    allowCreateTag &&
-    trimmedQuery !== "" &&
-    !(atMentionOptions ?? []).some(
-      (o) => o.value.toLowerCase() === trimmedQuery.toLowerCase()
-    )
-      ? { label: trimmedQuery, value: trimmedQuery }
-      : null;
-
-  const displayOptions = createOption
-    ? [...filteredOptions, createOption]
-    : filteredOptions;
-
-  const showDropdown = mentionQuery !== null && displayOptions.length > 0;
-
-  // 弹框打开时监听所有可滚动容器，滚动时实时跟随
-  useEffect(() => {
-    if (!showDropdown) return;
-
-    function handleScroll() {
-      updateDropdownPos();
-    }
-
-    // 捕获阶段监听，捕获所有祖先滚动容器的 scroll 事件
-    window.addEventListener("scroll", handleScroll, true);
-    return () => window.removeEventListener("scroll", handleScroll, true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showDropdown]);
-
-  // 键盘上下移动时，高亮项自动滚入弹框视口
-  useEffect(() => {
-    if (showDropdown && highlightRef.current) {
-      highlightRef.current.scrollIntoView({ block: "nearest" });
-    }
-  }, [mentionIndex, showDropdown]);
-
-  /** 选中某个选项，将 @query 替换为 @value + 空格 */
-  function selectMention(opt: AtMentionOption) {
-    if (!inputRef.current) return;
-    const ta = inputRef.current as HTMLTextAreaElement;
-    const cursor = ta.selectionStart ?? draft.length;
-    const textBefore = draft.slice(0, cursor);
-    const textAfter = draft.slice(cursor);
-
-    // 找到光标前最近的 @
-    const atIdx = textBefore.lastIndexOf("@");
-    if (atIdx === -1) return;
-
-    const newText = textBefore.slice(0, atIdx) + "@" + opt.value + " " + textAfter;
-    setDraft(newText);
-    setMentionQuery(null);
-
-    // 光标移到插入位置之后
-    const newCursor = atIdx + opt.value.length + 2; // @ + value + 空格
-    requestAnimationFrame(() => {
-      ta.focus();
-      ta.setSelectionRange(newCursor, newCursor);
-    });
-
-    // 通知父组件
-    onAtMentionSelect?.(opt.value);
+    at.detectFromEvent(e);
   }
 
   /** textarea 键盘事件 */
   function handleTextareaKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (showDropdown) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setMentionIndex((i) => Math.min(i + 1, displayOptions.length - 1));
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setMentionIndex((i) => Math.max(i - 1, 0));
-        return;
-      }
-      if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        selectMention(displayOptions[mentionIndex]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setMentionQuery(null);
-        return;
-      }
-    }
+    if (at.handleKeyDown(e)) return;
 
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       commit();
     }
-    if (e.key === "Escape" && !showDropdown) {
+    if (e.key === "Escape" && !at.showDropdown) {
       e.preventDefault();
       cancel();
     }
   }
 
-  /** blur 时延迟关闭，留时间给下拉项 mousedown */
+  /** blur 时延迟提交，留时间给下拉项 mousedown */
   function handleTextareaBlur() {
-    closeTimeoutRef.current = setTimeout(() => {
-      commit();
-    }, 160);
-  }
-
-  /** 点击下拉项时先取消 blur 延迟 */
-  function handleDropdownMouseDown(e: React.MouseEvent, opt: AtMentionOption) {
-    e.preventDefault(); // 阻止 textarea blur 先触发
-    if (closeTimeoutRef.current) {
-      clearTimeout(closeTimeoutRef.current);
-      closeTimeoutRef.current = null;
-    }
-    selectMention(opt);
+    at.scheduleClose(commit);
   }
 
   if (editing) {
     if (multiline) {
       return (
         <div className="relative">
-          <textarea
+          <HighlightedTextarea
             ref={inputRef as React.RefObject<HTMLTextAreaElement>}
             value={draft}
-            onChange={handleTextareaChange}
-            onBlur={handleTextareaBlur}
+            onChange={setDraft}
+            onTextareaChange={handleTextareaChange}
             onKeyDown={handleTextareaKeyDown}
+            onBlur={handleTextareaBlur}
+            highlightValues={highlightValues}
             rows={minHeight ? 1 : 3}
-            className={`w-full rounded border border-brand-400 bg-white px-2 py-1 text-xs leading-relaxed text-slate-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 ${minHeight ? "resize-none" : "resize-y"}`}
+            className={`w-full rounded border border-brand-400 bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 ${minHeight ? "resize-none" : "resize-y"}`}
+            layoutClassName="px-2 py-1 text-xs leading-relaxed break-words whitespace-pre-wrap"
             style={{ minWidth, ...(minHeight ? { minHeight } : {}), ...(maxHeight ? { maxHeight, overflowY: "auto" } : {}) }}
+            readOnly={disabled}
           />
-          {showDropdown && (() => {
-            // 下方/上方剩余空间，估算菜单高度（每项约 36px，上限 200px）
-            const estHeight = Math.min(200, Math.max(1, displayOptions.length) * 36);
-            const margin = 4;
-            const belowSpace = window.innerHeight - dropdownPos.bottom;
-            const aboveSpace = dropdownPos.top;
-            const placeAbove = belowSpace < estHeight + margin && aboveSpace > belowSpace;
-            const top = placeAbove
-              ? Math.max(0, dropdownPos.top - margin - estHeight)
-              : dropdownPos.bottom + margin;
-            return (
-              <div
-                style={{ top, left: dropdownPos.left, maxHeight: "200px" }}
-                className="fixed z-50 min-w-[160px] max-w-[260px] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg"
-              >
-                {displayOptions.map((opt, i) => {
-                  const isCreate = opt === createOption;
-                  return (
-                    <div
-                      key={isCreate ? `__create__${opt.value}` : opt.value}
-                      ref={i === mentionIndex ? highlightRef : null}
-                      onMouseDown={(e) => handleDropdownMouseDown(e, opt)}
-                      className={`cursor-pointer px-3 py-2 text-xs ${
-                        i === mentionIndex
-                          ? "bg-brand-50 text-brand-700"
-                          : "text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      {isCreate ? (
-                        <span>
-                          <span className="font-medium text-emerald-600">+ 新建标签</span>{" "}
-                          <span className="font-medium text-amber-600">@{opt.label}</span>
-                        </span>
-                      ) : (
-                        <span>
-                          <span className="font-medium text-amber-600">@</span>
-                          {opt.label}
-                        </span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
+          {at.showDropdown && (
+            <AtMentionDropdown
+              displayOptions={at.displayOptions}
+              createOption={at.createOption}
+              mentionIndex={at.mentionIndex}
+              dropdownPos={at.dropdownPos}
+              onItemMouseDown={at.handleDropdownMouseDown}
+            />
+          )}
         </div>
       );
     }
@@ -337,6 +183,7 @@ export default function EditableCell({
         ref={inputRef as React.RefObject<HTMLInputElement>}
         type="text"
         value={draft}
+        readOnly={disabled}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
@@ -357,10 +204,10 @@ export default function EditableCell({
 
   return (
     <div
-      onClick={() => setEditing(true)}
-      className={`min-h-[24px] cursor-text whitespace-pre-wrap break-words rounded px-2 py-1 text-xs leading-relaxed text-slate-700 hover:bg-brand-50/60${maxHeight ? " overflow-y-auto" : ""}`}
+      onClick={disabled ? undefined : () => setEditing(true)}
+      className={`min-h-[24px] whitespace-pre-wrap break-words rounded px-2 py-1 text-xs leading-relaxed text-slate-700 ${disabled ? "cursor-not-allowed opacity-60" : "cursor-text hover:bg-brand-50/60"}${maxHeight ? " overflow-y-auto" : ""}`}
       style={{ minWidth, ...(maxHeight ? { maxHeight } : {}) }}
-      title="点击编辑"
+      title={disabled ? "优化中，请稍候" : "点击编辑"}
     >
       {value ? (
         renderTags ? (

@@ -1,6 +1,7 @@
 /** 服务端 API 客户端 */
 
-import type { AssetLibraryItem, ImageTaskRecord, MediaAsset, MediaAssetInput, PresetItem, PresetTag, VoicePersona } from "@/lib/types";
+import type { ApiCallLog, ApiCallLogListResponse, AssetLibraryItem, ImageTaskRecord, MediaAsset, MediaAssetInput, PresetItem, PresetTag, VoicePersona } from "@/lib/types";
+import { findNonSerializablePath } from "@/lib/utils";
 
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
 
@@ -23,8 +24,18 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export const apiClient = {
   // Episodes
   getEpisode: (id: string) => request<any>(`/data/episodes/${id}`),
-  saveEpisode: (ep: any) =>
-    request<any>("/data/episodes", { method: "POST", body: JSON.stringify(ep) }),
+  saveEpisode: (ep: any) => {
+    const badPath = findNonSerializablePath(ep);
+    if (badPath) {
+      // eslint-disable-next-line no-console
+      console.error("Episode contains non-serializable value at:", badPath, ep);
+      return Promise.resolve({
+        ok: false,
+        error: `保存失败：数据包含无法序列化的对象（路径：${badPath}）。请刷新页面后重试，若仍出现请反馈。`,
+      });
+    }
+    return request<any>("/data/episodes", { method: "POST", body: JSON.stringify(ep) });
+  },
   deleteEpisode: (id: string) =>
     request<void>(`/data/episodes/${id}`, { method: "DELETE" }),
   getEpisodesBySeries: (seriesId: string) =>
@@ -143,4 +154,31 @@ export const apiClient = {
       `/image-tasks/${encodeURIComponent(jobId)}/retry`,
       { method: "POST" }
     ),
+
+  // API Call Logs（第三方调用日志）
+  listApiLogs: (params: {
+    type?: string;
+    provider?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const q = new URLSearchParams();
+    if (params.type) q.set("type", params.type);
+    if (params.provider) q.set("provider", params.provider);
+    if (params.status) q.set("status", params.status);
+    q.set("limit", String(params.limit ?? 50));
+    q.set("offset", String(params.offset ?? 0));
+    return request<ApiCallLogListResponse>(`/data/api-logs?${q.toString()}`);
+  },
+  clearApiLogs: (ids?: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/data/api-logs", {
+      method: "DELETE",
+      body: JSON.stringify(ids && ids.length ? { ids } : {}),
+    }),
+  finalizeApiCallLog: (taskId: string, finalStatus: "done" | "failed" | "expired", finalResult: string) =>
+    request<{ ok: boolean }>("/data/api-logs", {
+      method: "POST",
+      body: JSON.stringify({ taskId, finalStatus, finalResult }),
+    }),
 };

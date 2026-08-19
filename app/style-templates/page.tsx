@@ -10,6 +10,17 @@ import {
   isBuiltinPreset,
   saveStyleTemplates,
 } from "@/lib/style-settings";
+import {
+  DEFAULT_SYSTEM_PROMPTS,
+  SYSTEM_PROMPT_META,
+  SYSTEM_PROMPT_GROUP_ORDER,
+  getCustomPrompts,
+  saveCustomPrompts,
+  resetSystemPrompt,
+  resetAllSystemPrompts,
+  isCustomized,
+  SYSTEM_PROMPTS_KEY,
+} from "@/lib/system-prompts";
 import { debounce, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import {
   generateImage,
@@ -23,7 +34,7 @@ import { recoverImageTasks, type ImageTaskRecoveryEntry } from "@/lib/image-task
 import { isCosConfigured, uploadRefFile } from "@/lib/cos-client";
 import { ImageGenerationDialog, type ImageGenerationParams } from "@/components/ImageGenerationDialog";
 import type { ModelOption } from "@/lib/model-presets";
-import type { AssetImageConfig, StylePreset } from "@/lib/types";
+import type { AssetImageConfig, StylePreset, SystemPromptKey } from "@/lib/types";
 
 /** 风格模板中支持参考图的字段（故事板不接入） */
 type ReferenceImageFieldKey =
@@ -51,6 +62,8 @@ export default function StyleTemplatesPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [savedHint, setSavedHint] = useState(false);
+  // Tab 切换：图片提示词模板（现有） / LLM 系统提示词（新）
+  const [tab, setTab] = useState<"imageTemplates" | "systemPrompts">("imageTemplates");
 
   // 图片生成 / COS 配置（用于参考图的生成与上传）
   const [imageConfigured, setImageConfigured] = useState(false);
@@ -210,19 +223,104 @@ export default function StyleTemplatesPage() {
     persist(templates);
   }, [templates, persist, loading]);
 
+  // —— LLM 系统提示词 state + 自动保存 + beforeunload 兜底 ——
+  const [customPrompts, setCustomPrompts] = useState<Record<SystemPromptKey, string>>(
+    () => ({ ...DEFAULT_SYSTEM_PROMPTS })
+  );
+  const customPromptsLoadedRef = useRef(false);
+  const customPromptsRef = useRef(customPrompts);
+  customPromptsRef.current = customPrompts;
+  const skipPromptPersistRef = useRef(true);
+
+  useEffect(() => {
+    (async () => {
+      const map = await getCustomPrompts();
+      // 合并：默认值 + 用户自定义覆盖
+      setCustomPrompts({ ...DEFAULT_SYSTEM_PROMPTS, ...map });
+      customPromptsLoadedRef.current = true;
+    })();
+  }, []);
+
+  const persistPrompts = useCallback(
+    debounce(async (map: Record<SystemPromptKey, string>) => {
+      // 只保存与默认值不同的项，减少存储体积
+      const diff: Partial<Record<SystemPromptKey, string>> = {};
+      (Object.keys(map) as SystemPromptKey[]).forEach((k) => {
+        if (map[k] !== DEFAULT_SYSTEM_PROMPTS[k]) diff[k] = map[k];
+      });
+      await saveCustomPrompts(diff);
+      setSavedHint(true);
+      setTimeout(() => setSavedHint(false), 1500);
+    }, AUTOSAVE_DEBOUNCE_MS),
+    []
+  );
+
+  useEffect(() => {
+    if (skipPromptPersistRef.current) {
+      if (customPromptsLoadedRef.current) skipPromptPersistRef.current = false;
+      return;
+    }
+    persistPrompts(customPrompts);
+  }, [customPrompts, persistPrompts]);
+
+  function updatePrompt(key: SystemPromptKey, value: string) {
+    setCustomPrompts((prev) => ({ ...prev, [key]: value }));
+  }
+
+  async function handleResetPrompt(key: SystemPromptKey) {
+    if (!(await confirm({
+      message: `确定将「${SYSTEM_PROMPT_META[key].label}」恢复为默认提示词吗？你的修改将丢失。`,
+      confirmText: "恢复默认",
+    }))) return;
+    setCustomPrompts((prev) => ({ ...prev, [key]: DEFAULT_SYSTEM_PROMPTS[key] }));
+    await resetSystemPrompt(key);
+    setSavedHint(true);
+    setTimeout(() => setSavedHint(false), 1500);
+  }
+
+  async function handleResetAllPrompts() {
+    if (!(await confirm({
+      message: "确定将所有 LLM 系统提示词恢复为默认值吗？所有自定义修改将丢失。",
+      confirmText: "全部恢复默认",
+    }))) return;
+    setCustomPrompts({ ...DEFAULT_SYSTEM_PROMPTS });
+    await resetAllSystemPrompts();
+    setSavedHint(true);
+    setTimeout(() => setSavedHint(false), 1500);
+  }
+
   useEffect(() => {
     const handler = () => {
+      // 图片提示词模板兜底落盘
       const list = templatesRef.current;
-      if (list.length === 0) return;
-      fetch("/api/settings/style-templates", {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
-        },
-        body: JSON.stringify({ value: list }),
-        keepalive: true,
+      if (list.length > 0) {
+        fetch("/api/settings/style-templates", {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+          },
+          body: JSON.stringify({ value: list }),
+          keepalive: true,
+        });
+      }
+      // LLM 系统提示词兜底落盘（只存与默认值不同的项）
+      const promptsMap = customPromptsRef.current;
+      const diff: Partial<Record<SystemPromptKey, string>> = {};
+      (Object.keys(promptsMap) as SystemPromptKey[]).forEach((k) => {
+        if (promptsMap[k] !== DEFAULT_SYSTEM_PROMPTS[k]) diff[k] = promptsMap[k];
       });
+      if (Object.keys(diff).length > 0) {
+        fetch(`/api/settings/${SYSTEM_PROMPTS_KEY}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+          },
+          body: JSON.stringify({ value: diff }),
+          keepalive: true,
+        });
+      }
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
@@ -360,11 +458,11 @@ export default function StyleTemplatesPage() {
 
   async function handleDeleteTemplate(id: string) {
     if (templates.length <= 1) {
-      alert("至少需要保留一个风格模板，无法删除。");
+      alert("至少需要保留一个提示词，无法删除。");
       return;
     }
     if (!await confirm({
-      message: "确定删除该风格模板？该操作不可恢复。",
+      message: "确定删除该提示词？该操作不可恢复。",
       confirmText: "删除",
       variant: "danger",
     })) return;
@@ -410,8 +508,8 @@ export default function StyleTemplatesPage() {
             </svg>
           </button>
           <div>
-            <h1 className="text-lg font-semibold text-slate-800">风格模板</h1>
-            <p className="text-xs text-slate-400">管理全局风格模板，供各企划的风格设定选择使用</p>
+            <h1 className="text-lg font-semibold text-slate-800">提示词管理</h1>
+            <p className="text-xs text-slate-400">管理全局提示词，供各企划的提示词设定选择使用</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -421,14 +519,42 @@ export default function StyleTemplatesPage() {
         </div>
       </header>
 
+      {/* Tab 切换 */}
+      <div className="mb-5 flex gap-1 border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => setTab("imageTemplates")}
+          className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "imageTemplates"
+              ? "border-brand-500 text-brand-600"
+              : "border-transparent text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          图片提示词模板
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("systemPrompts")}
+          className={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+            tab === "systemPrompts"
+              ? "border-brand-500 text-brand-600"
+              : "border-transparent text-slate-500 hover:text-slate-700"
+          }`}
+        >
+          LLM 系统提示词
+        </button>
+      </div>
+
+      {tab === "imageTemplates" && (
+        <>
       {/* 说明条 */}
       <div className="mb-5 rounded-md bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800">
-        在此新增、编辑风格模板。修改后自动保存，并应用于所有企划的风格设定。各企划的「风格设定」页仅可选择此处已存在的模板，无法修改。
+        在此新增、编辑提示词。修改后自动保存，并应用于所有企划的提示词设定。各企划的「提示词设定」页仅可选择此处已存在的提示词，无法修改。
       </div>
 
       {/* 模板选择列表 */}
       <div className="mb-6">
-        <label className="mb-3 block text-sm font-medium text-slate-700">风格模板列表</label>
+        <label className="mb-3 block text-sm font-medium text-slate-700">提示词列表</label>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {templates.map((tpl) => {
             const isSelected = selectedId === tpl.id;
@@ -468,7 +594,7 @@ export default function StyleTemplatesPage() {
                   type="button"
                   onClick={() => handleDeleteTemplate(tpl.id)}
                   className="absolute right-1.5 top-1.5 rounded p-1 text-slate-300 opacity-0 transition-opacity hover:bg-red-50 hover:text-red-500 group-hover:opacity-100"
-                  title="删除该模板"
+                  title="删除该提示词"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
                     <path d="M6 6l12 12M6 18L18 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -486,7 +612,7 @@ export default function StyleTemplatesPage() {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
             </svg>
-            新增模板
+            新增提示词
           </button>
         </div>
       </div>
@@ -496,7 +622,7 @@ export default function StyleTemplatesPage() {
         <div className="space-y-4">
           <div className="border-t border-slate-200 pt-4">
             <span className="text-sm font-medium text-slate-700">
-              模板编辑 - {editingTemplate.name}
+              提示词编辑 - {editingTemplate.name}
             </span>
           </div>
 
@@ -506,11 +632,11 @@ export default function StyleTemplatesPage() {
               value={editingTemplate.name}
               onChange={(e) => updateField("name", e.target.value)}
               className="ss-input"
-              placeholder="风格名称"
+              placeholder="提示词名称"
             />
           </TemplateField>
 
-          <TemplateField label="描述" hint="简短说明该风格的特色">
+          <TemplateField label="描述" hint="简短说明该提示词的特色">
             <input
               type="text"
               value={editingTemplate.description}
@@ -520,7 +646,7 @@ export default function StyleTemplatesPage() {
             />
           </TemplateField>
 
-          <TemplateField label="人物图片提示词模板" hint="包含三视图要求，拼接到 LLM 生成的提示词末尾">
+          <TemplateField label="人物图片提示词" hint="包含三视图要求，拼接到 LLM 生成的提示词末尾">
             <textarea
               value={editingTemplate.characterTemplate}
               onChange={(e) => updateField("characterTemplate", e.target.value)}
@@ -544,7 +670,7 @@ export default function StyleTemplatesPage() {
             />
           </TemplateField>
 
-          <TemplateField label="场景图片提示词模板">
+          <TemplateField label="场景图片提示词">
             <textarea
               value={editingTemplate.sceneTemplate}
               onChange={(e) => updateField("sceneTemplate", e.target.value)}
@@ -568,7 +694,7 @@ export default function StyleTemplatesPage() {
             />
           </TemplateField>
 
-          <TemplateField label="物品图片提示词模板">
+          <TemplateField label="物品图片提示词">
             <textarea
               value={editingTemplate.objectTemplate}
               onChange={(e) => updateField("objectTemplate", e.target.value)}
@@ -592,7 +718,7 @@ export default function StyleTemplatesPage() {
             />
           </TemplateField>
 
-          <TemplateField label="故事板图片提示词模板" hint="可用 {镜头信息} 占位符标记镜头信息插入位置；无占位符时镜头信息追加在末尾">
+          <TemplateField label="故事板图片提示词" hint="可用 {镜头信息} 占位符标记镜头信息插入位置；无占位符时镜头信息追加在末尾">
             <textarea
               value={editingTemplate.storyboardTemplate}
               onChange={(e) => updateField("storyboardTemplate", e.target.value)}
@@ -612,12 +738,93 @@ export default function StyleTemplatesPage() {
         onImagesChange={setGenImages}
         imageOptions={imageOptions}
         loading={generatingRef}
-        title="生成风格参考图"
+        title="生成参考图"
         confirmText="生成参考图"
         onConfirm={(params) => {
           void handleRefGenerateConfirm(params);
         }}
       />
+        </>
+      )}
+
+      {/* LLM 系统提示词 Tab */}
+      {tab === "systemPrompts" && (
+        <div className="space-y-5">
+          {/* 说明条 */}
+          <div className="rounded-md bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800">
+            在此编辑各步骤调用 LLM 时使用的系统提示词。修改后自动保存，全局生效（应用于所有企划）。含 <code className="rounded bg-amber-100 px-1">{"{占位符}"}</code> 的提示词请保留占位符，否则动态内容无法注入。
+          </div>
+
+          {/* 全部恢复默认 */}
+          <div className="flex justify-end">
+            <Button variant="secondary" size="sm" onClick={handleResetAllPrompts}>
+              全部恢复默认
+            </Button>
+          </div>
+
+          {/* 按分组渲染 */}
+          {SYSTEM_PROMPT_GROUP_ORDER.map((group) => {
+            const keys = (Object.keys(SYSTEM_PROMPT_META) as SystemPromptKey[]).filter(
+              (k) => SYSTEM_PROMPT_META[k].group === group
+            );
+            if (keys.length === 0) return null;
+            return (
+              <section key={group}>
+                <h3 className="mb-2 text-sm font-semibold text-slate-700">{group}</h3>
+                <div className="space-y-4">
+                  {keys.map((key) => {
+                    const meta = SYSTEM_PROMPT_META[key];
+                    const customized = isCustomized(key);
+                    return (
+                      <div key={key} className="rounded-lg border border-slate-200 bg-white p-3">
+                        <div className="mb-1.5 flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-slate-800">{meta.label}</span>
+                            {customized && (
+                              <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600">
+                                已修改
+                              </span>
+                            )}
+                          </div>
+                          {customized && (
+                            <button
+                              type="button"
+                              onClick={() => handleResetPrompt(key)}
+                              className="rounded-md px-2 py-1 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                            >
+                              恢复默认
+                            </button>
+                          )}
+                        </div>
+                        <p className="mb-1.5 text-xs text-slate-400">{meta.description}</p>
+                        <textarea
+                          value={customPrompts[key]}
+                          onChange={(e) => updatePrompt(key, e.target.value)}
+                          rows={Math.min(12, Math.max(6, Math.ceil(customPrompts[key].length / 60)))}
+                          className="w-full rounded-md border border-slate-200 p-2 font-mono text-xs leading-relaxed text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400"
+                          spellCheck={false}
+                        />
+                        {meta.placeholders && meta.placeholders.length > 0 && (
+                          <div className="mt-1.5 text-[11px] leading-relaxed text-slate-400">
+                            <span className="font-medium">可用占位符：</span>
+                            {meta.placeholders.map((p) => (
+                              <span key={p.token} className="mr-2">
+                                <code className="rounded bg-slate-100 px-1 text-slate-600">{p.token}</code>
+                                <span className="ml-0.5">（{p.meaning}）</span>
+                              </span>
+                            ))}
+                            <span className="text-amber-600">请保留这些占位符</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
 
       <style jsx>{`
         :global(.ss-input) {
@@ -696,7 +903,7 @@ function ReferenceImageField({
     <div className="mt-2 rounded-md border border-slate-200 bg-slate-50/60 p-2.5">
       <div className="mb-1.5 flex items-center justify-between">
         <span className="text-xs font-medium text-slate-600">{label}</span>
-        {hasImage && <span className="text-[10px] text-amber-600">已设为风格参考</span>}
+        {hasImage && <span className="text-[10px] text-amber-600">已设为提示词参考</span>}
       </div>
       <div className="flex items-start gap-3">
         {hasImage ? (
@@ -704,7 +911,7 @@ function ReferenceImageField({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={imageUrl} alt={label} className="h-full w-full object-cover" />
             <span className="absolute left-0 top-0 rounded-br bg-amber-500 px-1 text-[9px] font-medium text-white">
-              风格参考
+              提示词参考
             </span>
           </div>
         ) : (

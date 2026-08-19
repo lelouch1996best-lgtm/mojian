@@ -5,6 +5,7 @@ import type {
 } from "@/lib/types";
 import { getImageModelCapability } from "@/lib/model-presets";
 import { getImageTaskCenter } from "@/lib/image-task-center";
+import { logApiCall } from "@/lib/api-call-logger";
 
 export const runtime = "nodejs";
 
@@ -50,9 +51,17 @@ export async function POST(req: Request) {
       upstreamBody.image_urls = body.images.slice(0, 16);
     }
 
+    const upstreamUrl = `${base}/images/generations`;
+    const t0 = Date.now();
+    const finish = (o: { status: "success" | "failed"; responseBody: string; error?: string; taskId?: string; finalStatus?: "done" | "failed"; finalResult?: string }) => {
+      const finalStatus = o.finalStatus ?? (o.status === "failed" ? "failed" : undefined);
+      const finalResult = o.finalResult ?? (o.status === "failed" ? (o.error ?? o.responseBody.slice(0, 500)) : undefined);
+      logApiCall({ type: "image", provider: "apimart", model: body.model, upstreamUrl, requestBody: upstreamBody, durationMs: Date.now() - t0, status: o.status, responseBody: o.responseBody, error: o.error, taskId: o.taskId, finalStatus, finalResult });
+    };
+
     let apimartRes: Response;
     try {
-      apimartRes = await fetch(`${base}/images/generations`, {
+      apimartRes = await fetch(upstreamUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -62,6 +71,7 @@ export async function POST(req: Request) {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      finish({ status: "failed", responseBody: "", error: msg });
       return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });
     }
 
@@ -74,6 +84,7 @@ export async function POST(req: Request) {
       } catch {
         /* keep raw */
       }
+      finish({ status: "failed", responseBody: errText, error: friendly });
       return Response.json(
         { error: `上游错误（${apimartRes.status}）：${friendly}` },
         { status: apimartRes.status || 502 }
@@ -86,6 +97,7 @@ export async function POST(req: Request) {
       apimartData = JSON.parse(apimartRaw);
     } catch {
       const snippet = apimartRaw.slice(0, 300).replace(/\s+/g, " ").trim();
+      finish({ status: "failed", responseBody: apimartRaw, error: `非 JSON 响应：${snippet || "(空)"}` });
       return Response.json(
         {
           error: `上游返回了非 JSON 响应（可能是 baseURL 错误或代理返回了 HTML 页面）。HTTP ${apimartRes.status}，内容片段：${snippet || "(空)"}`,
@@ -99,6 +111,7 @@ export async function POST(req: Request) {
     const first = Array.isArray(arr) && arr.length > 0 ? arr[0] : undefined;
     const taskId = first?.task_id;
     if (!taskId) {
+      finish({ status: "failed", responseBody: apimartRaw, error: "APIMart 未返回 task_id" });
       return Response.json({ error: "APIMart 未返回 task_id" }, { status: 502 });
     }
     const result: ImageAsyncCreateResponse = {
@@ -106,6 +119,7 @@ export async function POST(req: Request) {
       status: first?.status ?? "submitted",
     };
     register(taskId);
+    finish({ status: "success", responseBody: apimartRaw, taskId });
     return Response.json(result);
   }
 
@@ -117,49 +131,56 @@ export async function POST(req: Request) {
   const hasRefImages = cap.maxRefImages > 0 && body.images && body.images.length > 0;
   const url = `${base}/images/generations`;
 
+  // /images/generations 端点：JSON body
+  const upstreamBody: Record<string, unknown> = {
+    model: body.model,
+    prompt: body.prompt,
+    response_format: cap.responseFormat
+      ? (body.responseFormat ?? "url")
+      : "url",
+  };
+
+  // Seedream 参考图（单图/多图生图）：1 张传 string，多张传 array
+  if (hasRefImages) {
+    upstreamBody.image =
+      body.images!.length === 1 ? body.images![0] : body.images;
+  }
+
+  if (body.size) upstreamBody.size = body.size;
+  if (cap.watermark && typeof body.watermark === "boolean") {
+    upstreamBody.watermark = body.watermark;
+  }
+  if (cap.outputFormat && body.outputFormat) {
+    upstreamBody.output_format = body.outputFormat;
+  }
+  if (cap.sequentialImageGen) {
+    upstreamBody.sequential_image_generation = "disabled";
+  }
+  if (cap.webSearch && body.webSearch) {
+    upstreamBody.tools = [{ type: "web_search" }];
+  }
+  if (cap.optimizePrompt && body.optimizePromptMode) {
+    upstreamBody.optimize_prompt_options = { mode: body.optimizePromptMode };
+  }
+  if (cap.quality && body.quality) {
+    upstreamBody.quality = body.quality;
+  }
+
+  const t0 = Date.now();
+  const finish = (o: { status: "success" | "failed"; responseBody: string; error?: string; taskId?: string; finalStatus?: "done" | "failed"; finalResult?: string }) => {
+    const finalStatus = o.finalStatus ?? (o.status === "failed" ? "failed" : undefined);
+    const finalResult = o.finalResult ?? (o.status === "failed" ? (o.error ?? o.responseBody.slice(0, 500)) : undefined);
+    logApiCall({ type: "image", provider: body.provider, model: body.model, upstreamUrl: url, requestBody: upstreamBody, durationMs: Date.now() - t0, status: o.status, responseBody: o.responseBody, error: o.error, taskId: o.taskId, finalStatus, finalResult });
+  };
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${body.apiKey}`,
+  };
+  if (asyncMode) headers["X-Async-Mode"] = "true";
+
   let upstream: Response;
   try {
-    // /images/generations 端点：JSON body
-    const upstreamBody: Record<string, unknown> = {
-      model: body.model,
-      prompt: body.prompt,
-      response_format: cap.responseFormat
-        ? (body.responseFormat ?? "url")
-        : "url",
-    };
-
-    // Seedream 参考图（单图/多图生图）：1 张传 string，多张传 array
-    if (hasRefImages) {
-      upstreamBody.image =
-        body.images!.length === 1 ? body.images![0] : body.images;
-    }
-
-    if (body.size) upstreamBody.size = body.size;
-    if (cap.watermark && typeof body.watermark === "boolean") {
-      upstreamBody.watermark = body.watermark;
-    }
-    if (cap.outputFormat && body.outputFormat) {
-      upstreamBody.output_format = body.outputFormat;
-    }
-    if (cap.sequentialImageGen) {
-      upstreamBody.sequential_image_generation = "disabled";
-    }
-    if (cap.webSearch && body.webSearch) {
-      upstreamBody.tools = [{ type: "web_search" }];
-    }
-    if (cap.optimizePrompt && body.optimizePromptMode) {
-      upstreamBody.optimize_prompt_options = { mode: body.optimizePromptMode };
-    }
-    if (cap.quality && body.quality) {
-      upstreamBody.quality = body.quality;
-    }
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${body.apiKey}`,
-    };
-    if (asyncMode) headers["X-Async-Mode"] = "true";
-
     upstream = await fetch(url, {
       method: "POST",
       headers,
@@ -167,6 +188,7 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    finish({ status: "failed", responseBody: "", error: msg });
     return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });
   }
 
@@ -179,6 +201,7 @@ export async function POST(req: Request) {
     } catch {
       /* keep raw */
     }
+    finish({ status: "failed", responseBody: errText, error: friendly });
     return Response.json(
       { error: `上游错误（${upstream.status}）：${friendly}` },
       { status: upstream.status || 502 }
@@ -192,6 +215,7 @@ export async function POST(req: Request) {
     data = JSON.parse(rawText);
   } catch {
     const snippet = rawText.slice(0, 300).replace(/\s+/g, " ").trim();
+    finish({ status: "failed", responseBody: rawText, error: `非 JSON 响应：${snippet || "(空)"}` });
     return Response.json(
       {
         error: `上游返回了非 JSON 响应（可能是 baseURL 错误或代理返回了 HTML 页面）。HTTP ${upstream.status}，内容片段：${snippet || "(空)"}`,
@@ -204,6 +228,7 @@ export async function POST(req: Request) {
   if (asyncMode) {
     const jobId = (data as { job_id?: string })?.job_id;
     if (!jobId) {
+      finish({ status: "failed", responseBody: rawText, error: "异步模式上游未返回 job_id" });
       return Response.json(
         { error: "异步模式上游未返回 job_id" },
         { status: 502 }
@@ -214,12 +239,14 @@ export async function POST(req: Request) {
       status: (data as { status?: string })?.status ?? "pending",
     };
     register(jobId);
+    finish({ status: "success", responseBody: rawText, taskId: jobId });
     return Response.json(result);
   }
 
   // 同步模式：响应结构 { model, created, data: [{ url | b64_json, size }], usage }
   const first = (data as { data?: Array<Record<string, unknown>> })?.data?.[0];
   if (!first) {
+    finish({ status: "failed", responseBody: rawText, error: "上游未返回图片数据" });
     return Response.json(
       { error: "上游未返回图片数据" },
       { status: 502 }
@@ -229,6 +256,7 @@ export async function POST(req: Request) {
   // 失败对象
   if (first.error) {
     const err = first.error as { message?: string; code?: string };
+    finish({ status: "failed", responseBody: rawText, error: `${err.message ?? "未知错误"}（code: ${err.code ?? "?"}）` });
     return Response.json(
       {
         error: `图片生成失败：${err.message ?? "未知错误"}（code: ${err.code ?? "?"}）`,
@@ -249,6 +277,7 @@ export async function POST(req: Request) {
   }
 
   if (!imageUrl) {
+    finish({ status: "failed", responseBody: rawText, error: "上游返回的数据中未找到 url 或 b64_json" });
     return Response.json(
       { error: "上游返回的数据中未找到 url 或 b64_json" },
       { status: 502 }
@@ -260,5 +289,6 @@ export async function POST(req: Request) {
     size: first.size as string | undefined,
     model: data.model as string | undefined,
   };
+  finish({ status: "success", responseBody: rawText, finalStatus: "done", finalResult: imageUrl });
   return Response.json(result);
 }

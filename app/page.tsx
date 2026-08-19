@@ -125,7 +125,13 @@ export default function Home() {
                 strokeLinecap="round"
               />
             </svg>
-            风格模板
+            提示词管理
+          </Button>
+          <Button variant="ghost" size="md" onClick={() => router.push("/logs")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            任务日志
           </Button>
           <Button variant="ghost" size="md" onClick={() => router.push("/settings")}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">

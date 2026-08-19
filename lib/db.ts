@@ -146,6 +146,28 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_image_tasks_status ON image_tasks(status);
     CREATE INDEX IF NOT EXISTS idx_image_tasks_created_at ON image_tasks(created_at);
+
+    CREATE TABLE IF NOT EXISTS api_call_logs (
+      id            TEXT PRIMARY KEY,
+      type          TEXT NOT NULL,
+      provider      TEXT NOT NULL,
+      model         TEXT NOT NULL DEFAULT '',
+      upstream_url  TEXT NOT NULL DEFAULT '',
+      request_body  TEXT NOT NULL DEFAULT '',
+      response_body TEXT NOT NULL DEFAULT '',
+      status        TEXT NOT NULL,
+      error         TEXT,
+      duration_ms   INTEGER NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL,
+      task_id       TEXT,
+      final_status  TEXT,
+      final_result  TEXT,
+      final_updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_api_call_logs_type ON api_call_logs(type);
+    CREATE INDEX IF NOT EXISTS idx_api_call_logs_provider ON api_call_logs(provider);
+    CREATE INDEX IF NOT EXISTS idx_api_call_logs_status ON api_call_logs(status);
+    CREATE INDEX IF NOT EXISTS idx_api_call_logs_created_at ON api_call_logs(created_at DESC);
   `);
 
   // 迁移：voice_personas 增加 series_id / series_title 列（历史数据为 NULL）
@@ -157,6 +179,15 @@ export function getDb(): Database.Database {
   if (!vpColNames.has("series_title")) {
     db.exec("ALTER TABLE voice_personas ADD COLUMN series_title TEXT");
   }
+
+  // 迁移：api_call_logs 增加 task_id / final_status / final_result / final_updated_at 列（轮询结果回填）
+  const aclCols = db.prepare("PRAGMA table_info(api_call_logs)").all() as { name: string }[];
+  const aclColNames = new Set(aclCols.map((c) => c.name));
+  if (!aclColNames.has("task_id")) db.exec("ALTER TABLE api_call_logs ADD COLUMN task_id TEXT");
+  if (!aclColNames.has("final_status")) db.exec("ALTER TABLE api_call_logs ADD COLUMN final_status TEXT");
+  if (!aclColNames.has("final_result")) db.exec("ALTER TABLE api_call_logs ADD COLUMN final_result TEXT");
+  if (!aclColNames.has("final_updated_at")) db.exec("ALTER TABLE api_call_logs ADD COLUMN final_updated_at INTEGER");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_call_logs_task_id ON api_call_logs(task_id)");
 
   return db;
 }

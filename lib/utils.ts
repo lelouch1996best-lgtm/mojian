@@ -165,9 +165,72 @@ export function debounce<T extends (...args: never[]) => void>(fn: T, wait = 300
   }) as T;
 }
 
-/** 下载 JSON 文件 */
+/** 是否为 DOM 节点 */
+function isDOMNode(value: unknown): value is Node {
+  return typeof window !== "undefined" && value instanceof Node;
+}
+
+/**
+ * 安全 JSON 序列化：遇到 BigInt、DOM 节点、循环引用时用描述性占位符替换，避免抛错。
+ * 函数、Symbol、undefined 仍按 JSON.stringify 默认行为处理（对象中省略 / 数组中转为 null）。
+ */
+export function safeStringify(value: unknown, space?: number): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(
+    value,
+    (_key: string, val: unknown) => {
+      if (val === null || typeof val === "boolean" || typeof val === "number" || typeof val === "string") {
+        return val;
+      }
+      if (typeof val === "bigint") return `[BigInt: ${val.toString()}]`;
+      if (isDOMNode(val)) return `[DOM ${val.nodeName.toLowerCase()}]`;
+      if (typeof val !== "object") return val;
+      if (seen.has(val)) return "[Circular]";
+      seen.add(val);
+      return val;
+    },
+    space
+  );
+}
+
+/**
+ * 查找对象中第一个会导致 JSON.stringify 抛错的值的路径。
+ * 检测：循环引用、DOM 节点、BigInt。
+ */
+export function findNonSerializablePath(value: unknown, maxDepth = 20): string | null {
+  const seen = new WeakSet<object>();
+  const walk = (v: unknown, path: string, depth: number): string | null => {
+    if (depth > maxDepth) return null;
+    if (v === null || typeof v === "boolean" || typeof v === "number" || typeof v === "string") return null;
+    if (typeof v === "function") return null;
+    if (typeof v === "symbol") return null;
+    if (typeof v === "undefined") return null;
+    if (typeof v === "bigint") return path;
+    if (isDOMNode(v)) return path;
+    if (typeof v !== "object") return path;
+    if (seen.has(v)) return path;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (let i = 0; i < v.length; i++) {
+        const childPath = `${path}[${i}]`;
+        const found = walk(v[i], childPath, depth + 1);
+        if (found) return found;
+      }
+    } else {
+      for (const key of Object.keys(v as Record<string, unknown>)) {
+        const childPath = path ? `${path}.${key}` : key;
+        const found = walk((v as Record<string, unknown>)[key], childPath, depth + 1);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+  return walk(value, "root", 0);
+}
+
+/** 下载 JSON 文件（使用安全序列化，避免循环引用导致崩溃） */
 export function downloadJSON(filename: string, data: unknown): void {
-  const blob = new Blob([JSON.stringify(data, null, 2)], {
+  const blob = new Blob([safeStringify(data, 2)], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
@@ -222,6 +285,36 @@ export function extractAllTags(shots: Shot[]): string[] {
 }
 
 /**
+ * @ 提及标签的尾部边界字符集（用于 @name 后接边界判断，确保完整标签匹配、避免子串误匹配）。
+ * 不含「的」；音色参考等场景（如「@林坤的音色参考」）可通过 isMentionedInText 的
+ * extraTrailingBoundaryChars 追加。统一供 removeTagPrefix / replaceAssetTagsWithImageNos /
+ * 视频提及检测等复用，避免多处重复定义导致不一致。
+ * （「-」转义为字面量避免被当作范围符）
+ */
+export const MENTION_BOUNDARY = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
+
+/**
+ * 判断 name 是否以 @ 提及形式出现在 text 中（要求 @ 前缀 + 尾部边界）。
+ * 用于「参考图/视频/音频是否被 @ 引用」的检测，避免裸文本（如「韩立」）被误判为已引用。
+ * @param text 原始文本（保留 @ 前缀）
+ * @param name 标签名（资产名 / 图片N / 参考图N / 视频N 等）
+ * @param extraTrailingBoundaryChars 额外尾部边界字符（如视频音色参考场景传入 "的"，
+ *   使「@林坤的音色参考」中的 @林坤 被识别为已提及）
+ */
+export function isMentionedInText(
+  text: string,
+  name: string,
+  extraTrailingBoundaryChars?: string
+): boolean {
+  if (!text || !name) return false;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const boundary = extraTrailingBoundaryChars
+    ? MENTION_BOUNDARY.slice(0, -1) + extraTrailingBoundaryChars + "]"
+    : MENTION_BOUNDARY;
+  return new RegExp(`@${escaped}(?=${boundary}|$)`).test(text);
+}
+
+/**
  * 从文本中移除指定标签的 @ 前缀（保留名称文字）。
  * 处理所有出现位置，仅匹配完整标签（@ + tagName + 边界字符）。
  * 同时吸收标签后的一个分隔空格（LLM 标注时按规则在标签后加的空格，
@@ -231,10 +324,8 @@ export function extractAllTags(shots: Shot[]): string[] {
 export function removeTagPrefix(text: string, tagName: string): string {
   if (!text || !tagName) return text ?? "";
   const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // 标签边界字符集（与 extractTags 一致）+ @；- 转义为字面量避免被当作范围符
-  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
   // @tagName + lookahead(边界|$) 确保完整匹配，再消耗一个可选尾随空格
-  const re = new RegExp(`@${escaped}(?=${boundary}|$) ?`, "g");
+  const re = new RegExp(`@${escaped}(?=${MENTION_BOUNDARY}|$) ?`, "g");
   return text.replace(re, tagName);
 }
 
@@ -247,9 +338,9 @@ export function removeTagPrefix(text: string, tagName: string): string {
 export function ensureExistingTagsPrefixed(text: string, tags: string[]): string {
   if (!text || tags.length === 0) return text ?? "";
   // 标签前置边界字符集（不含 @：@ 前缀的视为已标注，不重复处理）
-  const leadingBoundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·]";
+  const leadingBoundary = MENTION_BOUNDARY.replace("@", "");
   // 标签尾部边界字符集（与 removeTagPrefix 一致，含 @）
-  const trailingBoundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
+  const trailingBoundary = MENTION_BOUNDARY;
   let result = text;
   for (const tag of tags) {
     if (!tag) continue;
@@ -275,7 +366,6 @@ export function replaceAssetTagsWithImageNos(
   assetImageNo: Map<string, number | null>
 ): string {
   if (!text || assetImageNo.size === 0) return text ?? "";
-  const boundary = "[\\s，。、,\\.！？!?\\n：:；;）)、】\"'`（）\\[\\]{}｜|《》〈〉…\\-·@]";
   let result = text;
   const entries = Array.from(assetImageNo.entries()).sort(
     (a, b) => b[0].length - a[0].length
@@ -285,11 +375,11 @@ export function replaceAssetTagsWithImageNos(
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (no == null) {
       // 无参考图：去掉 @ 并吸收前后的空格（中文文本中多余，名称应与上下文相连）
-      const re = new RegExp(` ?@${escaped}(?=${boundary}|$) ?`, "g");
+      const re = new RegExp(` ?@${escaped}(?=${MENTION_BOUNDARY}|$) ?`, "g");
       result = result.replace(re, name);
     } else {
       // 有参考图：替换为 图片N，仅吸收尾随空格（图片N 是独立标记，前面留空格更清晰）
-      const re = new RegExp(`@${escaped}(?=${boundary}|$) ?`, "g");
+      const re = new RegExp(`@${escaped}(?=${MENTION_BOUNDARY}|$) ?`, "g");
       result = result.replace(re, `图片${no}`);
     }
   }
@@ -508,3 +598,45 @@ export function toCharacterProfile(raw: RawCharacter): CharacterProfile {
     relationships: raw.relationships?.trim() ?? "",
   };
 }
+
+/**
+ * 根据 @ 提及标签构建正则（最长优先，避免短名误匹配长名前缀）。
+ * 例：values=["图片1","图片10"] 时，正则会先匹配 "图片10" 再匹配 "图片1"，避免 "图片1" 被当作 "图片10" 的前缀。
+ */
+export function buildMentionRegex(values: string[]): RegExp | null {
+  const unique = Array.from(new Set(values)).filter(Boolean);
+  if (unique.length === 0) return null;
+  const sorted = unique.sort((a, b) => b.length - a.length);
+  const escaped = sorted.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(`@(${escaped.join("|")})`, "g");
+}
+
+/** 高亮切分片段：普通文字段 highlighted=false，@标签段 highlighted=true */
+export interface MentionSpan {
+  text: string;
+  highlighted: boolean;
+}
+
+/**
+ * 将文本按 @提及 标签切分为片段数组（供 React 组件 map 渲染为高亮 span）。
+ * values 为需要高亮的标签名列表（不含 @ 前缀）。
+ */
+export function renderMentionSpans(text: string, values: string[]): MentionSpan[] {
+  const regex = buildMentionRegex(values);
+  if (!regex) return [{ text, highlighted: false }];
+  const spans: MentionSpan[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      spans.push({ text: text.slice(lastIndex, match.index), highlighted: false });
+    }
+    spans.push({ text: match[0], highlighted: true });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    spans.push({ text: text.slice(lastIndex), highlighted: false });
+  }
+  return spans;
+}
+

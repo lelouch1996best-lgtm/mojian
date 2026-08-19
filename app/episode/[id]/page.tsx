@@ -15,12 +15,13 @@ import CharacterConflictModal, {
 import { getEpisode, saveEpisode, getEpisodesBySeries, getSeries, saveSeries } from "@/lib/storage";
 import { getSettings, PROVIDER_PRESETS } from "@/lib/llm-client";
 import { getStyleTemplates } from "@/lib/style-settings";
+import { getCustomPrompts } from "@/lib/system-prompts";
 import { emptyShot, debounce, removeTagPrefix, AUTOSAVE_DEBOUNCE_MS } from "@/lib/utils";
 import { useUnloadPersist } from "@/lib/use-unload-persist";
 import { getLatestVersions } from "@/lib/character-settings";
 import { getLatestObjectVersions } from "@/lib/object-settings";
 import { getLatestSceneVersions } from "@/lib/scene-settings";
-import type { Asset, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile, PreviousEpisodeContext } from "@/lib/types";
+import type { Asset, AssetStatus, Episode, Shot, ShotVideoConfig, VideoStatus, StyleSettings, WorldSettings, CharacterProfile, ObjectProfile, SceneProfile, PreviousEpisodeContext } from "@/lib/types";
 import { DEFAULT_SHOT_VIDEO_CONFIG, getDefaultShotVideoConfig } from "@/lib/model-presets";
 import type { ReactNode } from "react";
 
@@ -47,6 +48,54 @@ function MenuItem({ children, onClick }: { children: ReactNode; onClick?: () => 
       {children}
     </button>
   );
+}
+
+/**
+ * 按名字（大小写不敏感）查找系列设定并构造单个资产；未命中返回 null。
+ * 优先级：人物 > 物品 > 场景。字段映射与 AssetPreparation.buildAssetsFromSettings 一致。
+ */
+function buildAssetFromSettingName(
+  name: string,
+  characterSettings: CharacterProfile[] | null | undefined,
+  objectSettings: ObjectProfile[] | null | undefined,
+  sceneSettings: SceneProfile[] | null | undefined,
+): Asset | null {
+  const key = name.trim().toLowerCase();
+  if (!key) return null;
+  const c = getLatestVersions(characterSettings ?? []).find((x) => x.name.trim().toLowerCase() === key);
+  if (c) {
+    return {
+      id: crypto.randomUUID(),
+      name: c.name.trim(),
+      type: "character",
+      description: c.appearance.trim(),
+      imageUrl: c.imageUrl ?? "",
+      status: (c.imageUrl ? "ready" : "pending") as AssetStatus,
+    };
+  }
+  const o = getLatestObjectVersions(objectSettings ?? []).find((x) => x.name.trim().toLowerCase() === key);
+  if (o) {
+    return {
+      id: crypto.randomUUID(),
+      name: o.name.trim(),
+      type: "object",
+      description: o.appearance.trim(),
+      imageUrl: o.imageUrl ?? "",
+      status: (o.imageUrl ? "ready" : "pending") as AssetStatus,
+    };
+  }
+  const s = getLatestSceneVersions(sceneSettings ?? []).find((x) => x.name.trim().toLowerCase() === key);
+  if (s) {
+    return {
+      id: crypto.randomUUID(),
+      name: s.name.trim(),
+      type: "scene",
+      description: s.appearance.trim(),
+      imageUrl: s.imageUrl ?? "",
+      status: (s.imageUrl ? "ready" : "pending") as AssetStatus,
+    };
+  }
+  return null;
 }
 
 export default function EpisodePage() {
@@ -105,15 +154,16 @@ export default function EpisodePage() {
   }
 
   // 立即落盘（绕过 1500ms 防抖）：用于 imageTaskId 等关键恢复字段。
-  // setTimeout 推迟到渲染提交后读取 episodeRef，避免并发 setEpisode 闭包滞后读到旧值。
-  // mutate 可选：基于 ref 快照构造补丁对象直接落库——组件已卸载（提交在飞时切页）
-  // 时 setState 无效、ref 不再更新，此时 mutation 直写是 taskId 不丢的唯一保障。
+  // 同步执行（非 setTimeout）：mutate 基于当前 ref 快照构造补丁，读旧值也安全；
+  // 并同步写回 episodeRef.current，使切页/卸载时 useUnloadPersist 的 flush
+  // 能实时读到带 imageTaskId 的 episode，避免旧值覆盖导致任务丢失。
   const persistNow = useCallback((mutate?: (ep: Episode) => Episode) => {
-    setTimeout(() => {
-      const ep = episodeRef.current;
-      if (!ep) return;
-      void saveEpisode(mutate ? mutate(ep) : ep);
-    }, 0);
+    const ep = episodeRef.current;
+    if (!ep) return;
+    const next = mutate ? mutate(ep) : ep;
+    next.updatedAt = Date.now();
+    episodeRef.current = next;
+    void saveEpisode(next);
   }, []);
 
   // 监听 episode 变化，防抖保存（跳过首次加载，避免无意义回存）
@@ -171,6 +221,8 @@ export default function EpisodePage() {
       const allEpisodes = await getEpisodesBySeries(ep.seriesId);
       // 预加载全局风格模板缓存，保证 VideoGeneration 中 sync 函数能正确解析选中风格
       await getStyleTemplates();
+      // 预加载自定义 LLM 系统提示词缓存，保证 prompts.ts 中 sync 函数能读到用户自定义
+      await getCustomPrompts();
       const currentIdx = seriesData?.episodeOrder.indexOf(ep.id) ?? -1;
       setSeriesOrder(currentIdx >= 0 ? currentIdx + 1 : 1);
       setSeriesTitle(seriesData?.title ?? "");
@@ -530,6 +582,25 @@ export default function EpisodePage() {
     update((ep) => ({ ...ep, assets: [...ep.assets, asset] }));
   }
 
+  /**
+   * @ 选中某个设定时，确保对应资产已存在于资产准备中（不存在则按设定创建）。
+   * 返回资产 id（供第四步关联到镜头）；非设定标签（如「世界设定」、新建标签）返回 undefined。
+   */
+  function handleEnsureAssetForSetting(name: string): string | undefined {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === "世界设定") return undefined;
+    const lower = trimmed.toLowerCase();
+    const existing = episode?.assets.find((a) => a.name.toLowerCase() === lower);
+    if (existing) return existing.id;
+    const asset = buildAssetFromSettingName(trimmed, seriesCharacterSettings, seriesObjectSettings, seriesSceneSettings);
+    if (!asset) return undefined;
+    update((ep) => {
+      if (ep.assets.some((a) => a.name.toLowerCase() === lower)) return ep;
+      return { ...ep, assets: [...ep.assets, asset] };
+    });
+    return asset.id;
+  }
+
   function gotoStep(step: 1 | 2 | 3 | 4) {
     setCurrentStep(step);
     update((ep) => ({ ...ep, step }));
@@ -614,9 +685,10 @@ export default function EpisodePage() {
             }
           >
             <MenuItem onClick={() => router.push("/settings")}>设置</MenuItem>
+            <MenuItem onClick={() => router.push("/logs")}>任务日志</MenuItem>
             <MenuItem onClick={() => router.push("/assets")}>资产库</MenuItem>
             <MenuItem onClick={() => router.push("/preset-library")}>预设库</MenuItem>
-            <MenuItem onClick={() => router.push("/style-templates")}>风格模板</MenuItem>
+            <MenuItem onClick={() => router.push("/style-templates")}>提示词管理</MenuItem>
           </HoverMenu>
 
           <HoverMenu
@@ -638,7 +710,7 @@ export default function EpisodePage() {
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/characters`)}>人物设定</MenuItem>
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/objects`)}>物品设定</MenuItem>
             <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/scenes`)}>场景设定</MenuItem>
-            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/style-settings`)}>风格设定</MenuItem>
+            <MenuItem onClick={() => router.push(`/series/${episode.seriesId}/style-settings`)}>提示词设定</MenuItem>
           </HoverMenu>
         </div>
       </header>
@@ -662,6 +734,7 @@ export default function EpisodePage() {
             onShotsGenerated={handleShotsGenerated}
             onEnterStep2={() => gotoStep(2)}
             onCharactersExtracted={handleCharactersExtracted}
+            onAtMentionSelect={(name) => handleEnsureAssetForSetting(name)}
           />
         </div>
       ) : currentStep === 2 ? (
@@ -677,6 +750,7 @@ export default function EpisodePage() {
           onEnterStep3={() => gotoStep(3)}
           onRemoveTag={handleRemoveTag}
           onReplaceShots={handleReplaceShots}
+          onAtMentionSelect={(name) => handleEnsureAssetForSetting(name)}
           worldSettings={seriesWorldSettings}
           characterSettings={seriesCharacterSettings}
           objectSettings={seriesObjectSettings}
@@ -715,9 +789,11 @@ export default function EpisodePage() {
           onAddSmartShot={handleAddSmartShot}
           onDeleteRow={handleDeleteRow}
           onMoveRow={handleMoveRow}
+          onRemoveTag={handleRemoveTag}
           onLinkAsset={handleLinkAsset}
           onUnlinkAsset={handleUnlinkAsset}
           onAddScreenshot={handleAddScreenshot}
+          onEnsureAssetForSetting={handleEnsureAssetForSetting}
           onPersistNow={persistNow}
           seriesStyleSettings={seriesStyleSettings}
           characterSettings={seriesCharacterSettings}

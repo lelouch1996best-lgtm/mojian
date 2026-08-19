@@ -28,6 +28,8 @@ interface SceneAssetCardProps {
   onRegenerate?: () => void;
   /** 未提取时：是否正在重新生成外观 */
   isRegenerating?: boolean;
+  /** 停止重新生成外观 */
+  onCancelRegenerate?: () => void;
   onExtract?: () => void;
   seriesId?: string;
 }
@@ -43,21 +45,29 @@ export default function SceneAssetCard({
   isUploading = false,
   onRegenerate,
   isRegenerating = false,
+  onCancelRegenerate,
   onExtract,
   seriesId,
 }: SceneAssetCardProps) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [urlPasteOpen, setUrlPasteOpen] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
   const extracted = versions.length > 0;
 
   const [selectedId, setSelectedId] = useState<string>(() => {
     const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
-    return byImage?.id ?? versions[versions.length - 1]?.id ?? "";
+    if (byImage) return byImage.id;
+    // 首次添加资产时默认选最新（默认）版本：优先 isDefault，回退最高 version
+    const defaultVersion = versions.find((v) => v.isDefault);
+    return defaultVersion?.id ?? versions[versions.length - 1]?.id ?? "";
   });
 
   const selected = useMemo(
-    () => versions.find((v) => v.id === selectedId) ?? versions[versions.length - 1] ?? null,
+    () => versions.find((v) => v.id === selectedId)
+      ?? versions.find((v) => v.isDefault)
+      ?? versions[versions.length - 1]
+      ?? null,
     [versions, selectedId]
   );
 
@@ -75,7 +85,9 @@ export default function SceneAssetCard({
     if (versions.length === 0) return;
     if (selectedId && versions.some((v) => v.id === selectedId)) return;
     const byImage = versions.find((v) => v.imageUrl && v.imageUrl === asset.imageUrl);
-    setSelectedId(byImage?.id ?? versions[versions.length - 1]?.id ?? "");
+    if (byImage) { setSelectedId(byImage.id); return; }
+    const defaultVersion = versions.find((v) => v.isDefault);
+    setSelectedId(defaultVersion?.id ?? versions[versions.length - 1]?.id ?? "");
   }, [versions, selectedId, asset.imageUrl]);
 
   function handleSelectVersion(id: string) {
@@ -251,6 +263,7 @@ export default function SceneAssetCard({
                 {versions.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.versionLabel || `v${v.version ?? 1}`}
+                    {v.isDefault ? " · 默认" : ""}
                     {v.imageUrl ? " · 有图" : ""}
                   </option>
                 ))}
@@ -286,20 +299,21 @@ export default function SceneAssetCard({
                 <span>🎨 外观</span>
                 <div className="flex items-center gap-1">
                   {onRegenerate && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={onRegenerate}
-                      loading={isRegenerating}
-                      disabled={isRegenerating}
-                    >
-                      重新生成外观
-                    </Button>
+                    isRegenerating ? (
+                      <Button size="sm" variant="ghost" onClick={onCancelRegenerate} title="点击停止">
+                        <Spinner size={11} /> 停止
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="ghost" onClick={onRegenerate}>
+                        重新生成外观
+                      </Button>
+                    )
                   )}
                   <AiOptimizeButton
                     text={asset.description}
                     onOptimized={(v) => onUpdate("description", v)}
                     disabled={isRegenerating}
+                    onRunningChange={setOptimizing}
                   />
                 </div>
               </div>
@@ -309,6 +323,7 @@ export default function SceneAssetCard({
                 placeholder="描述场景外观特征…"
                 multiline
                 minWidth="100%"
+                disabled={isRegenerating || optimizing}
               />
             </div>
 

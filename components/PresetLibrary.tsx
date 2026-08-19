@@ -18,6 +18,7 @@ const TYPE_OPTIONS: { value: TypeFilter; label: string }[] = [
   { value: "video", label: "视频" },
   { value: "audio", label: "音频" },
   { value: "text", label: "文本" },
+  { value: "camera", label: "运镜" },
 ];
 
 const PRESET_TYPE_LABELS: Record<PresetType, string> = {
@@ -25,6 +26,7 @@ const PRESET_TYPE_LABELS: Record<PresetType, string> = {
   video: "视频",
   audio: "音频",
   text: "文本",
+  camera: "运镜",
 };
 
 const ADD_TYPE_OPTIONS: { value: PresetType; label: string }[] = [
@@ -32,6 +34,7 @@ const ADD_TYPE_OPTIONS: { value: PresetType; label: string }[] = [
   { value: "video", label: "视频" },
   { value: "audio", label: "音频" },
   { value: "text", label: "文本" },
+  { value: "camera", label: "运镜" },
 ];
 
 function typeAccept(t: PresetType): string {
@@ -444,6 +447,7 @@ function PresetCard({
   const isVideo = item.type === "video";
   const isAudio = item.type === "audio";
   const isText = item.type === "text";
+  const isCamera = item.type === "camera";
 
   const thumbnail = (
     <div className="group relative aspect-square w-full overflow-hidden bg-slate-100">
@@ -463,12 +467,19 @@ function PresetCard({
         <div className="flex h-full w-full items-center justify-center bg-slate-50 p-3">
           <audio controls src={item.url} className="w-full" />
         </div>
-      ) : isText ? (
-        <div className="flex h-full w-full items-center justify-center bg-amber-50 p-3 text-center">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" className="text-amber-400">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-            <path d="M14 2v6h6M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+      ) : isText || isCamera ? (
+        <div className={`flex h-full w-full items-center justify-center p-3 text-center ${isCamera ? "bg-sky-50" : "bg-amber-50"}`}>
+          {isCamera ? (
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" className="text-sky-400">
+              <path d="M23 7l-7 5 7 5V7z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <rect x="1" y="5" width="15" height="14" rx="2" stroke="currentColor" strokeWidth="1.8" />
+            </svg>
+          ) : (
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" className="text-amber-400">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M14 2v6h6M8 13h8M8 17h5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          )}
         </div>
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
@@ -530,7 +541,7 @@ function PresetCard({
         thumbnail
       ) : isVideo ? (
         <div onClick={onPreviewVideo} title="点击播放">{thumbnail}</div>
-      ) : isText ? (
+      ) : isText || isCamera ? (
         <div onClick={onPreviewText} title="点击查看内容">{thumbnail}</div>
       ) : isAudio ? (
         thumbnail
@@ -619,9 +630,9 @@ function PresetEditDialog({
       setError("请填写名称");
       return;
     }
-    if (type === "text") {
+    if (type === "text" || type === "camera") {
       if (!content.trim()) {
-        setError("请填写文本内容");
+        setError(type === "camera" ? "请填写运镜内容" : "请填写文本内容");
         return;
       }
     } else {
@@ -655,8 +666,8 @@ function PresetEditDialog({
         id: initial?.id ?? crypto.randomUUID(),
         name: name.trim(),
         type,
-        url: type === "text" ? "" : url,
-        content: type === "text" ? content : "",
+        url: type === "text" || type === "camera" ? "" : url,
+        content: type === "text" || type === "camera" ? content : "",
         tags: finalTags,
         createdAt: initial?.createdAt ?? now,
         updatedAt: now,
@@ -671,7 +682,7 @@ function PresetEditDialog({
     }
   }
 
-  const isMedia = type !== "text";
+  const isMedia = type !== "text" && type !== "camera";
 
   return (
     <div
@@ -786,7 +797,7 @@ function PresetEditDialog({
               <textarea
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
-                placeholder="输入文本内容（可随时修改）"
+                placeholder={type === "camera" ? "输入运镜文本，可用 {{人物1}}、{{运镜参考图}} 等占位符，使用时从参考图中选择资产填入" : "输入文本内容（可随时修改）"}
                 rows={6}
                 className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               />

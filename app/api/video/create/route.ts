@@ -4,6 +4,7 @@ import type {
   VideoCreateProxyResponse,
   VideoUpstreamPayload,
 } from "@/lib/types";
+import { logApiCall } from "@/lib/api-call-logger";
 
 export const runtime = "nodejs";
 
@@ -34,6 +35,12 @@ export async function POST(req: Request) {
       );
     }
     const url = `${base}/videos/generations`;
+    const t0 = Date.now();
+    const finish = (o: { status: "success" | "failed"; responseBody: string; error?: string; taskId?: string; finalStatus?: "done" | "failed"; finalResult?: string }) => {
+      const finalStatus = o.finalStatus ?? (o.status === "failed" ? "failed" : undefined);
+      const finalResult = o.finalResult ?? (o.status === "failed" ? (o.error ?? o.responseBody.slice(0, 500)) : undefined);
+      logApiCall({ type: "video", provider: "apimart", model: ap.model, upstreamUrl: url, requestBody: ap, durationMs: Date.now() - t0, status: o.status, responseBody: o.responseBody, error: o.error, taskId: o.taskId, finalStatus, finalResult });
+    };
     let upstream: Response;
     try {
       upstream = await fetch(url, {
@@ -46,6 +53,7 @@ export async function POST(req: Request) {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      finish({ status: "failed", responseBody: "", error: msg });
       return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });
     }
 
@@ -58,6 +66,7 @@ export async function POST(req: Request) {
       } catch {
         /* keep raw */
       }
+      finish({ status: "failed", responseBody: errText, error: friendly });
       return Response.json(
         { error: `上游错误（${upstream.status}）：${friendly}` },
         { status: upstream.status || 502 }
@@ -69,10 +78,12 @@ export async function POST(req: Request) {
     const taskId: string | undefined =
       Array.isArray(arr) && arr.length > 0 ? arr[0].task_id : undefined;
     if (!taskId) {
+      finish({ status: "failed", responseBody: JSON.stringify(data), error: "APIMart 未返回 task_id" });
       return Response.json({ error: "APIMart 未返回 task_id" }, { status: 502 });
     }
 
     const result: VideoCreateProxyResponse = { taskId, provider: "apimart" };
+    finish({ status: "success", responseBody: JSON.stringify(data), taskId });
     return Response.json(result);
   }
 
@@ -86,6 +97,12 @@ export async function POST(req: Request) {
   }
 
   const url = `${base}/contents/generations/tasks`;
+  const t0 = Date.now();
+  const finish = (o: { status: "success" | "failed"; responseBody: string; error?: string; taskId?: string; finalStatus?: "done" | "failed"; finalResult?: string }) => {
+    const finalStatus = o.finalStatus ?? (o.status === "failed" ? "failed" : undefined);
+    const finalResult = o.finalResult ?? (o.status === "failed" ? (o.error ?? o.responseBody.slice(0, 500)) : undefined);
+    logApiCall({ type: "video", provider: body.provider ?? "ark", model, upstreamUrl: url, requestBody: body.payload, durationMs: Date.now() - t0, status: o.status, responseBody: o.responseBody, error: o.error, taskId: o.taskId, finalStatus, finalResult });
+  };
 
   // 纯透传：前端已构造好完整的上游请求体，后端仅负责添加鉴权头并转发
   let upstream: Response;
@@ -100,6 +117,7 @@ export async function POST(req: Request) {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    finish({ status: "failed", responseBody: "", error: msg });
     return Response.json({ error: `请求上游失败：${msg}` }, { status: 502 });
   }
 
@@ -112,6 +130,7 @@ export async function POST(req: Request) {
     } catch {
       /* keep raw */
     }
+    finish({ status: "failed", responseBody: errText, error: friendly });
     return Response.json(
       { error: `上游错误（${upstream.status}）：${friendly}` },
       { status: upstream.status || 502 }
@@ -121,9 +140,11 @@ export async function POST(req: Request) {
   const data = await upstream.json();
   const taskId: string | undefined = data?.id;
   if (!taskId) {
+    finish({ status: "failed", responseBody: JSON.stringify(data), error: "上游未返回任务 ID" });
     return Response.json({ error: "上游未返回任务 ID" }, { status: 502 });
   }
 
   const result: VideoCreateProxyResponse = { taskId, provider: body.provider ?? "ark" };
+  finish({ status: "success", responseBody: JSON.stringify(data), taskId });
   return Response.json(result);
 }

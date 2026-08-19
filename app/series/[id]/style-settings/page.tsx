@@ -129,7 +129,7 @@ export default function StyleSettingsPage() {
             </svg>
           </button>
           <div>
-            <h1 className="text-lg font-semibold text-slate-800">风格设定</h1>
+            <h1 className="text-lg font-semibold text-slate-800">提示词设定</h1>
             <p className="text-xs text-slate-400">{series.title || "未命名企划"}</p>
           </div>
         </div>
@@ -142,20 +142,20 @@ export default function StyleSettingsPage() {
 
       {/* 说明条 */}
       <div className="mb-5 rounded-md bg-amber-50 px-4 py-2.5 text-xs leading-relaxed text-amber-800">
-        选择风格后，资产生成、图片生成和视频生成会自动应用对应风格的提示词模板。如需新增或编辑风格模板，请前往
+        选择提示词后，资产生成、图片生成和视频生成会自动应用对应提示词。如需新增或编辑提示词，请前往
         <button
           type="button"
           onClick={() => router.push("/style-templates")}
           className="mx-1 font-medium text-amber-900 underline underline-offset-2 hover:text-amber-700"
         >
-          风格模板
+          提示词管理
         </button>
         页面管理。
       </div>
 
       {/* 风格选择卡片 */}
       <div className="mb-6">
-        <label className="mb-3 block text-sm font-medium text-slate-700">选择风格</label>
+        <label className="mb-3 block text-sm font-medium text-slate-700">选择提示词</label>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {templates.map((style) => {
             const isSelected = selectedStyleId === style.id;
@@ -198,7 +198,7 @@ export default function StyleSettingsPage() {
           })}
           {templates.length === 0 && (
             <div className="col-span-full rounded-lg border border-dashed border-slate-300 py-8 text-center text-sm text-slate-400">
-              暂无风格模板，请先前往「风格模板」页面创建。
+              暂无提示词，请先前往「提示词管理」页面创建。
             </div>
           )}
         </div>
