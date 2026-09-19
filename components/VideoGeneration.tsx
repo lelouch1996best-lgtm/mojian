@@ -3767,7 +3767,7 @@ function VideoCard({
                       onClick={() => setPresetPickerTarget("promptText")}
                       className="block w-full px-3 py-1.5 text-left text-xs text-slate-600 hover:bg-brand-50 hover:text-brand-700"
                     >
-                      添加文本
+                      从预设库获取
                     </button>
                     {config.mode === "multimodal-ref" && (
                       <button

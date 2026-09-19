@@ -38,11 +38,16 @@ export default function ToolPageShell({ tool }: { tool: ToolDefinition }) {
           </span>
           <span className="text-sm text-slate-400">v{tool.version}</span>
         </div>
-        {tool.badge && (
-          <span className="rounded-md bg-amber-light px-2 py-0.5 text-xs font-medium text-amber-dark">
-            {tool.badge}
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {tool.badge && (
+            <span className="rounded-md bg-amber-light px-2 py-0.5 text-xs font-medium text-amber-dark">
+              {tool.badge}
+            </span>
+          )}
+          <Button variant="secondary" size="sm" onClick={() => router.push("/tools/tasks")}>
+            任务中心
+          </Button>
+        </div>
       </header>
       <div className="rounded-card border border-slate-200 bg-white p-6 shadow-card">
         <Comp />

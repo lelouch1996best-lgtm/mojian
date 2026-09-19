@@ -3,9 +3,13 @@ import SuperResolutionTool from "@/components/tools/super-resolution/SuperResolu
 import OutfitChangeTool from "@/components/tools/outfit-change/OutfitChangeTool";
 import ImageInpaintTool from "@/components/tools/image-inpaint/ImageInpaintTool";
 import MiniMaxVideoTool from "@/components/tools/minimax-video/MiniMaxVideoTool";
+import ZImageTool from "@/components/tools/z-image/ZImageTool";
 
 /** 工具分类枚举 */
 export type ToolCategory = "video" | "image" | "audio" | "text" | "utility";
+
+/** 工具来源：RunningHub 云端工作流 / 本地 ComfyUI 直连 */
+export type ToolSource = "runninghub" | "local";
 
 /** 工具定义 */
 export interface ToolDefinition {
@@ -16,6 +20,8 @@ export interface ToolDefinition {
   /** 一句话描述（卡片副标题） */
   description: string;
   category: ToolCategory;
+  /** 执行来源（云端 / 本地），工具页页签按此区分 */
+  source: ToolSource;
   /** 内联 SVG icon（与首页按钮风格一致） */
   icon: ReactNode;
   /** 语义化版本号，未来灰度/兼容用 */
@@ -34,6 +40,11 @@ export const CATEGORY_LABELS: Record<ToolCategory, string> = {
   audio: "音频",
   text: "文本",
   utility: "实用工具",
+};
+
+export const SOURCE_LABELS: Record<ToolSource, string> = {
+  runninghub: "RunningHub 云端",
+  local: "本地 ComfyUI",
 };
 
 function SparklesIcon() {
@@ -144,6 +155,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: "视频超分",
     description: "基于 RunningHub 云端 ComfyUI 工作流，将视频提升至 2x/3x/4x 分辨率",
     category: "video",
+    source: "runninghub",
     icon: <SuperResIcon />,
     version: "1.0.0",
     enabled: true,
@@ -155,6 +167,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: "AI 换装",
     description: "上传人物图与服装图，让人物穿上指定衣服（RunningHub 云端工作流）",
     category: "image",
+    source: "runninghub",
     icon: <OutfitChangeIcon />,
     version: "1.0.0",
     enabled: true,
@@ -166,6 +179,7 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: "图片局部编辑",
     description: "涂抹图片局部区域，用提示词修改画面内容（RunningHub 云端工作流）",
     category: "image",
+    source: "runninghub",
     icon: <InpaintIcon />,
     version: "1.0.0",
     enabled: true,
@@ -177,11 +191,24 @@ export const TOOL_REGISTRY: ToolDefinition[] = [
     name: "视频生成（MiniMax H3）",
     description: "文生 / 首尾帧 / 全能参考（图·视频·音频）三模式，动态拼图直连本地 ComfyUI 生成带原生音轨的视频",
     category: "video",
+    source: "local",
     icon: <MiniMaxVideoIcon />,
     version: "1.0.0",
     enabled: true,
     badge: "新",
     Component: MiniMaxVideoTool,
+  },
+  {
+    id: "z-image",
+    name: "文生图片（Z-Image Turbo）",
+    description: "提示词生成图片，Turbo 蒸馏 8 步极速出图（直连本地 ComfyUI，需本机运行）",
+    category: "image",
+    source: "local",
+    icon: <SparklesIcon />,
+    version: "1.0.0",
+    enabled: true,
+    badge: "新",
+    Component: ZImageTool,
   },
   // ← 后续新工具在此追加一项即可
 ];

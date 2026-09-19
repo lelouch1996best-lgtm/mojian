@@ -168,6 +168,27 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_api_call_logs_provider ON api_call_logs(provider);
     CREATE INDEX IF NOT EXISTS idx_api_call_logs_status ON api_call_logs(status);
     CREATE INDEX IF NOT EXISTS idx_api_call_logs_created_at ON api_call_logs(created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS tool_tasks (
+      id               TEXT PRIMARY KEY,
+      tool_id          TEXT NOT NULL,
+      tool_name        TEXT NOT NULL,
+      source           TEXT NOT NULL,
+      media_type       TEXT NOT NULL,
+      title            TEXT NOT NULL DEFAULT '',
+      prompt           TEXT NOT NULL DEFAULT '',
+      upstream_task_id TEXT,
+      base_url         TEXT,
+      status           TEXT NOT NULL,
+      result_url       TEXT,
+      error            TEXT,
+      fail_count       INTEGER NOT NULL DEFAULT 0,
+      created_at       INTEGER NOT NULL,
+      updated_at       INTEGER NOT NULL,
+      completed_at     INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_tasks_status ON tool_tasks(status);
+    CREATE INDEX IF NOT EXISTS idx_tool_tasks_created_at ON tool_tasks(created_at DESC);
   `);
 
   // 迁移：voice_personas 增加 series_id / series_title 列（历史数据为 NULL）

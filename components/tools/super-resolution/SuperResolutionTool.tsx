@@ -1,18 +1,18 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import RunningHubApiConfig from "@/components/tools/runninghub/RunningHubApiConfig";
+import { useTaskSubmit } from "@/components/tools/useTaskSubmit";
+import { apiClient } from "@/lib/api-client";
 import {
   SUPER_RESOLUTION_APP_ID,
   uploadMediaFile,
   submitSuperResolution,
-  pollRunningHubTask,
 } from "@/lib/runninghub-client";
-import type { SuperResolutionScale, RunningHubQueryProxyResponse } from "@/lib/types";
-
-type Stage = "idle" | "uploading" | "running" | "success" | "failed";
+import type { SuperResolutionScale } from "@/lib/types";
 
 const SCALE_OPTIONS: { value: SuperResolutionScale; label: string }[] = [
   { value: "2", label: "2x（推荐）" },
@@ -20,36 +20,28 @@ const SCALE_OPTIONS: { value: SuperResolutionScale; label: string }[] = [
   { value: "4", label: "4x" },
 ];
 
-const STATUS_LABELS: Record<string, string> = {
-  QUEUED: "排队中",
-  RUNNING: "处理中",
-  SUCCESS: "成功",
-  FAILED: "失败",
-};
-
 export default function SuperResolutionTool() {
+  const router = useRouter();
   const [configured, setConfigured] = useState<boolean | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
   const [scale, setScale] = useState<SuperResolutionScale>("2");
-  const [stage, setStage] = useState<Stage>("idle");
   const [statusText, setStatusText] = useState("");
-  const [resultUrl, setResultUrl] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const guard = useTaskSubmit();
 
-  async function handleStart() {
+  async function doSubmit() {
     if (!file || !configured) return;
     setError("");
-    setResultUrl("");
-    setStage("uploading");
+    setSubmitted(false);
     setStatusText("正在上传视频文件…");
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     try {
       const up = await uploadMediaFile(file);
-      setStage("running");
-      setStatusText("已提交，等待 RunningHub 处理…");
+      setStatusText("正在提交超分任务…");
       const run = await submitSuperResolution({
         // nodeId=6 file 节点的 fieldValue：优先用 download_url（可直接访问的完整地址）。
         // 若实际工作流要求 fileName 逻辑路径，可改为 up.fileName。
@@ -57,48 +49,30 @@ export default function SuperResolutionTool() {
         scale,
         signal: ctrl.signal,
       });
-      await pollRunningHubTask(
-        run.taskId,
-        (r: RunningHubQueryProxyResponse) => {
-          setStatusText(
-            `${STATUS_LABELS[r.status] ?? r.status}${
-              r.errorMessage ? "：" + r.errorMessage : ""
-            }`
-          );
-        },
-        {
-          signal: ctrl.signal,
-          onSuccess: (r: RunningHubQueryProxyResponse) => {
-            setResultUrl(r.results?.[0]?.url ?? "");
-          },
-        }
-      );
-      setStage("success");
+      // 注册进任务中心：服务端接管轮询，本页可关闭/继续发起新任务
+      await apiClient.registerToolTask({
+        toolId: "super-resolution",
+        toolName: "视频超分",
+        source: "runninghub",
+        mediaType: "video",
+        title: `${scale}x 超分 · ${file.name}`,
+        upstreamTaskId: run.taskId,
+      });
+      setSubmitted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setStage("failed");
     } finally {
       abortRef.current = null;
+      setStatusText("");
     }
   }
 
   function handleCancel() {
     abortRef.current?.abort();
-    setStage("idle");
     setStatusText("");
   }
 
-  function handleReset() {
-    setFile(null);
-    setResultUrl("");
-    setError("");
-    setStage("idle");
-    setStatusText("");
-  }
-
-  const busy = stage === "uploading" || stage === "running";
-  const fileInputDisabled = busy || stage === "success";
-  const canStart = !!file && configured && !busy;
+  const canStart = !!file && configured && !guard.disabled;
 
   return (
     <div className="space-y-5">
@@ -118,7 +92,7 @@ export default function SuperResolutionTool() {
                 <input
                   type="file"
                   accept="video/*"
-                  disabled={fileInputDisabled}
+                  disabled={guard.submitting}
                   onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                   className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-600 file:px-3 file:py-1.5 file:text-warm-50 file:disabled:opacity-50"
                 />
@@ -136,7 +110,7 @@ export default function SuperResolutionTool() {
                   <button
                     key={o.value}
                     type="button"
-                    disabled={busy}
+                    disabled={guard.submitting}
                     onClick={() => setScale(o.value)}
                     className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                       scale === o.value
@@ -151,24 +125,20 @@ export default function SuperResolutionTool() {
             </div>
           </div>
 
-          {/* 操作按钮 */}
+          {/* 操作按钮：提交期间禁用，结束后 1s 冷却再恢复（可连续发起多个任务） */}
           <div className="flex flex-wrap items-center gap-2">
-            {!busy && stage !== "success" ? (
-              <Button onClick={handleStart} disabled={!canStart}>
-                {stage === "failed" ? "重试" : "开始超分"}
-              </Button>
-            ) : busy ? (
+            {guard.submitting ? (
               <>
                 <Button variant="secondary" disabled>
-                  <Spinner size={14} /> {stage === "uploading" ? "上传中…" : "处理中…"}
+                  <Spinner size={14} /> 提交中…
                 </Button>
                 <Button variant="ghost" onClick={handleCancel}>
-                  取消
+                  取消提交
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" onClick={handleReset}>
-                开始新任务
+              <Button onClick={() => void guard.run(doSubmit)} disabled={!canStart}>
+                开始超分
               </Button>
             )}
           </div>
@@ -181,28 +151,13 @@ export default function SuperResolutionTool() {
             <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
           )}
 
-          {/* 结果视频 + 下载 */}
-          {stage === "success" && resultUrl && (
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-emerald-700">超分完成（结果链接 24h 内有效，请尽快下载保存）</p>
-              <video src={resultUrl} controls className="w-full max-h-[420px] rounded-lg bg-black" />
-              <Button
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = `/api/runninghub/download?url=${encodeURIComponent(resultUrl)}`;
-                  a.download = "";
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                }}
-              >
-                下载到本地
+          {/* 提交成功：引导去任务中心查看进度与结果 */}
+          {submitted && (
+            <div className="flex flex-wrap items-center gap-3 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              <span>任务已提交，进度与结果请在任务中心查看（页面可关闭）</span>
+              <Button size="sm" onClick={() => router.push("/tools/tasks")}>
+                前往任务中心
               </Button>
-            </div>
-          )}
-          {stage === "success" && !resultUrl && (
-            <div className="rounded-lg bg-amber-light px-4 py-2 text-sm text-amber-dark">
-              任务已完成，但未解析到结果地址，可前往「任务日志」查看返回详情。
             </div>
           )}
         </>

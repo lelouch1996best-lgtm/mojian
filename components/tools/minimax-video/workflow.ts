@@ -1,10 +1,17 @@
 /**
  * MiniMax H3 视频（本地 ComfyUI 动态拼图）。
- * 官方标准节点链路（不依赖任何已保存的工作流）：
+ *
+ * 标准链路（官方标准节点，不依赖任何已保存的工作流）：
  *   UNETLoader → MiniMaxH3SigmaShift → BasicGuider ┐
  *   MiniMaxH3ImageToVideo / MiniMaxH3ReferenceToVideo ┤→ SamplerCustomAdvanced
  *   RandomNoise + KSamplerSelect + BasicScheduler ┘
  *   → MiniMaxH3AVDecodeT8 → VHS_VideoCombine（H.264 + 原生音轨）
+ *
+ * 加速链路（accelerated=true，对应原 "Dual-clock 8-step Generator" 工作流）：
+ *   UNETLoader → MiniMaxH3MemoryEfficientSageAttentionPatch（kjnodes，SageAttention 省显存）
+ *   → LoraLoaderBypassModelOnly（turbo 蒸馏 LoRA，步数压到 4-8 步）
+ *   → MiniMaxH3DualClockSamplerT8（dual_clock_euler + native_flow，视频/音频双时钟，
+ *     输出 [MODEL, SAMPLER, SIGMAS] 直接喂 SamplerCustomAdvanced，替代 SigmaShift 组合）
  *
  * 三种模式：
  * - t2v    文生视频（MiniMaxH3ImageToVideo，无图）
@@ -35,6 +42,10 @@ export interface BuildMinimaxVideoParams {
   seed: number;
   /** 采样步数 */
   steps: number;
+  /** 加速模式：SageAttention patch + turbo LoRA + 双时钟采样器（原 Dual-clock 8-step 工作流） */
+  accelerated?: boolean;
+  /** 加速模式 turbo LoRA（LoraLoaderBypassModelOnly.lora_name），如 minimax_h3_turbo_4STEPS_comfyui.safetensors */
+  loraName?: string;
   /** UNETLoader.unet_name */
   unetName: string;
   /** CLIPLoader.clip_name */
@@ -105,11 +116,6 @@ export function buildMinimaxVideoWorkflow(p: BuildMinimaxVideoParams): Record<st
   g["2"] = { class_type: "CLIPLoader", inputs: { clip_name: p.clipName, type: "minimax" } };
   g["3"] = { class_type: "VAELoader", inputs: { vae_name: p.vaeVideoName } };
   g["4"] = { class_type: "VAELoader", inputs: { vae_name: p.vaeAudioName } };
-  // 视频/音频双流 shift（官方推荐 video 12 / audio 3）
-  g["5"] = {
-    class_type: "MiniMaxH3SigmaShift",
-    inputs: { model: ["1", 0], shift_video: 12.0, shift_audio: 3.0 },
-  };
 
   // ---- 条件节点（模式相关） ----
   if (p.mode === "ref2va") {
@@ -178,24 +184,64 @@ export function buildMinimaxVideoWorkflow(p: BuildMinimaxVideoParams): Record<st
     g["6"] = { class_type: "MiniMaxH3ImageToVideo", inputs };
   }
 
-  // ---- 采样 ----
-  g["7"] = { class_type: "BasicGuider", inputs: { model: ["5", 0], conditioning: ["6", 0] } };
+  // ---- 采样（标准 / 加速两条链路） ----
   g["8"] = { class_type: "RandomNoise", inputs: { noise_seed: p.seed } };
-  g["9"] = { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } };
-  g["10"] = {
-    class_type: "BasicScheduler",
-    inputs: { model: ["5", 0], scheduler: "simple", steps: p.steps, denoise: 1.0 },
-  };
-  g["11"] = {
-    class_type: "SamplerCustomAdvanced",
-    inputs: {
-      noise: ["8", 0],
-      guider: ["7", 0],
-      sampler: ["9", 0],
-      sigmas: ["10", 0],
-      latent_image: ["6", 1],
-    },
-  };
+  if (p.accelerated) {
+    // 加速：SageAttention 省显存 patch → turbo LoRA → 双时钟采样器（输出 model/sampler/sigmas）
+    g["14"] = {
+      class_type: "MiniMaxH3MemoryEfficientSageAttentionPatch",
+      inputs: { model: ["1", 0] },
+    };
+    g["15"] = {
+      class_type: "LoraLoaderBypassModelOnly",
+      inputs: { model: ["14", 0], lora_name: p.loraName ?? "", strength_model: 1 },
+    };
+    g["16"] = {
+      class_type: "MiniMaxH3DualClockSamplerT8",
+      inputs: {
+        model: ["15", 0],
+        av_latent: ["6", 1],
+        steps: p.steps,
+        shift_video: 12.0,
+        shift_audio: 3.0,
+        sampler_name: "dual_clock_euler",
+        scheduler: "native_flow",
+      },
+    };
+    g["7"] = { class_type: "BasicGuider", inputs: { model: ["16", 0], conditioning: ["6", 0] } };
+    g["11"] = {
+      class_type: "SamplerCustomAdvanced",
+      inputs: {
+        noise: ["8", 0],
+        guider: ["7", 0],
+        sampler: ["16", 1],
+        sigmas: ["16", 2],
+        latent_image: ["6", 1],
+      },
+    };
+  } else {
+    // 标准：视频/音频双流 shift（官方推荐 video 12 / audio 3）
+    g["5"] = {
+      class_type: "MiniMaxH3SigmaShift",
+      inputs: { model: ["1", 0], shift_video: 12.0, shift_audio: 3.0 },
+    };
+    g["7"] = { class_type: "BasicGuider", inputs: { model: ["5", 0], conditioning: ["6", 0] } };
+    g["9"] = { class_type: "KSamplerSelect", inputs: { sampler_name: "res_multistep" } };
+    g["10"] = {
+      class_type: "BasicScheduler",
+      inputs: { model: ["5", 0], scheduler: "simple", steps: p.steps, denoise: 1.0 },
+    };
+    g["11"] = {
+      class_type: "SamplerCustomAdvanced",
+      inputs: {
+        noise: ["8", 0],
+        guider: ["7", 0],
+        sampler: ["9", 0],
+        sigmas: ["10", 0],
+        latent_image: ["6", 1],
+      },
+    };
+  }
 
   // ---- 解码 + 合成（T8 节点输出 [IMAGE, AUDIO]） ----
   g["12"] = {

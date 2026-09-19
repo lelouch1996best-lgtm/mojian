@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import ComfyUiConfig from "@/components/tools/comfyui/ComfyUiConfig";
 import { usePreviewUrl } from "@/components/tools/runninghub/usePreviewUrl";
+import { useTaskSubmit } from "@/components/tools/useTaskSubmit";
+import { apiClient } from "@/lib/api-client";
 import {
   buildMinimaxVideoWorkflow,
   minimaxCanvas,
@@ -15,14 +18,10 @@ import {
   uploadComfyUiFile,
   comfyUiImagePath,
   submitComfyUiPrompt,
-  pollComfyUiPrompt,
-  interruptComfyUi,
   fetchComfyUiModels,
   freeComfyUiMemory,
 } from "@/lib/comfyui-client";
-import type { ComfyUiHistoryResponse, ComfyUiModelsResponse } from "@/lib/types";
-
-type Stage = "idle" | "uploading" | "running" | "success" | "failed";
+import type { ComfyUiModelsResponse } from "@/lib/types";
 
 const MODE_OPTIONS: { value: MinimaxMode; label: string; hint: string }[] = [
   { value: "t2v", label: "文生视频 T2V", hint: "纯提示词生成，视频自带原生立体声音轨" },
@@ -42,11 +41,10 @@ const RESOLUTION_OPTIONS: { value: number; label: string }[] = [
   { value: 768, label: "768p（标准 · H3 上限）" },
 ];
 
-const STATUS_LABELS: Record<string, string> = {
-  running: "生成中（本机 ComfyUI 执行）",
-  success: "成功",
-  error: "失败",
-  cancelled: "已取消",
+const MODE_LABEL_SHORT: Record<MinimaxMode, string> = {
+  t2v: "T2V",
+  i2v: "I2V",
+  ref2va: "R2V",
 };
 
 const LOG_MODEL_BY_MODE: Record<MinimaxMode, string> = {
@@ -92,6 +90,7 @@ function FilePreview({ file, video }: { file: File; video?: boolean }) {
 }
 
 export default function MiniMaxVideoTool() {
+  const router = useRouter();
   const [online, setOnline] = useState<boolean | null>(null);
   const [baseUrl, setBaseUrl] = useState("");
 
@@ -103,6 +102,7 @@ export default function MiniMaxVideoTool() {
   const [clipName, setClipName] = useState("");
   const [vaeVideoName, setVaeVideoName] = useState("");
   const [vaeAudioName, setVaeAudioName] = useState("");
+  const [loraName, setLoraName] = useState("");
 
   // 生成参数
   const [mode, setMode] = useState<MinimaxMode>("ref2va");
@@ -111,7 +111,8 @@ export default function MiniMaxVideoTool() {
   const [shortSide, setShortSide] = useState(768);
   const [duration, setDuration] = useState(5);
   const [seed, setSeed] = useState(42);
-  const [steps, setSteps] = useState(20);
+  const [steps, setSteps] = useState(8);
+  const [accelerated, setAccelerated] = useState(true);
 
   // 模式相关输入
   const [firstFrame, setFirstFrame] = useState<File | null>(null);
@@ -120,15 +121,14 @@ export default function MiniMaxVideoTool() {
   const [refVideos, setRefVideos] = useState<{ file: File; withAudio: boolean }[]>([]);
   const [refAudios, setRefAudios] = useState<File[]>([]);
 
-  const [stage, setStage] = useState<Stage>("idle");
   const [statusText, setStatusText] = useState("");
-  const [resultUrl, setResultUrl] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const modelsLoadedRef = useRef(false);
+  const guard = useTaskSubmit();
 
-  const busy = stage === "uploading" || stage === "running";
-  const formDisabled = busy || stage === "success";
+  const formDisabled = guard.submitting;
 
   // 在线后自动拉取模型列表（每次地址变更后仅拉一次）
   useEffect(() => {
@@ -155,6 +155,7 @@ export default function MiniMaxVideoTool() {
       setClipName((prev) => prev || prefer(m.clip, ["minimax", "int8"]));
       setVaeVideoName((prev) => prev || prefer(m.vae, ["video"]));
       setVaeAudioName((prev) => prev || prefer(m.vae, ["audio"]));
+      setLoraName((prev) => prev || prefer(m.lora, ["turbo"]));
     } catch (e) {
       setModelsError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -166,7 +167,7 @@ export default function MiniMaxVideoTool() {
   const length = minimaxSecondsToLength(duration);
   const actualShort = Math.min(canvas.width, canvas.height);
 
-  async function handleStart() {
+  async function doSubmit() {
     if (!baseUrl) return;
     const p = prompt.trim();
     if (!p) {
@@ -175,6 +176,10 @@ export default function MiniMaxVideoTool() {
     }
     if (!unetName || !clipName || !vaeVideoName || !vaeAudioName) {
       setError("请先加载并选择模型（Diffusion / 文本编码器 / 视频 VAE / 音频 VAE）");
+      return;
+    }
+    if (accelerated && !loraName) {
+      setError("加速模式需要选择 turbo LoRA（模型列表里没有 LoRA 时请点「刷新模型列表」或关闭加速模式）");
       return;
     }
     if (mode === "i2v" && !firstFrame) {
@@ -190,8 +195,7 @@ export default function MiniMaxVideoTool() {
       return;
     }
     setError("");
-    setResultUrl("");
-    setStage("uploading");
+    setSubmitted(false);
     setStatusText("正在上传素材到本地 ComfyUI…");
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -229,6 +233,8 @@ export default function MiniMaxVideoTool() {
         length,
         seed,
         steps,
+        accelerated,
+        loraName,
         unetName,
         clipName,
         vaeVideoName,
@@ -239,8 +245,7 @@ export default function MiniMaxVideoTool() {
         refVideos: refVideoPaths,
         refAudioPaths,
       });
-      setStage("running");
-      setStatusText("已提交，本机 ComfyUI 生成中（视频任务较慢，请耐心等待）…");
+      setStatusText("正在提交生成任务…");
       const run = await submitComfyUiPrompt({
         workflow,
         baseUrl,
@@ -249,38 +254,28 @@ export default function MiniMaxVideoTool() {
         signal: ctrl.signal,
       });
 
-      // 3) 轮询结果
-      await pollComfyUiPrompt(
-        run.promptId,
+      // 3) 注册进任务中心：服务端接管轮询，本页可关闭/继续发起新任务
+      await apiClient.registerToolTask({
+        toolId: "minimax-video",
+        toolName: LOG_MODEL_BY_MODE[mode],
+        source: "comfyui",
+        mediaType: "video",
+        title: `${MODE_LABEL_SHORT[mode]} · ${duration}s · ${ratio} · ${canvas.width}×${canvas.height}${accelerated ? " · 加速" : ""}`,
+        prompt: p,
+        upstreamTaskId: run.promptId,
         baseUrl,
-        (r: ComfyUiHistoryResponse) => {
-          setStatusText(
-            `${STATUS_LABELS[r.status] ?? r.status}${r.errorMessage ? "：" + r.errorMessage : ""}`
-          );
-        },
-        {
-          signal: ctrl.signal,
-          onSuccess: (r: ComfyUiHistoryResponse) => {
-            const video = r.files.find(
-              (f) => /\.mp4($|\?)/i.test(f.url) || /\.mp4$/i.test(f.filename)
-            );
-            setResultUrl(video?.url ?? r.files[0]?.url ?? "");
-          },
-        }
-      );
-      setStage("success");
+      });
+      setSubmitted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setStage("failed");
     } finally {
       abortRef.current = null;
+      setStatusText("");
     }
   }
 
   function handleCancel() {
     abortRef.current?.abort();
-    void interruptComfyUi(baseUrl); // 真正中断本机执行，而非仅停止轮询
-    setStage("idle");
     setStatusText("");
   }
 
@@ -295,20 +290,21 @@ export default function MiniMaxVideoTool() {
     }
   }
 
-  function handleReset() {
-    setFirstFrame(null);
-    setLastFrame(null);
-    setRefImages([]);
-    setRefVideos([]);
-    setRefAudios([]);
-    setPrompt("");
-    setResultUrl("");
-    setError("");
-    setStage("idle");
-    setStatusText("");
+  function handleToggleAccelerated(on: boolean) {
+    setAccelerated(on);
+    // 仅当步数处于另一档推荐值时才自动带到本档推荐值（加速 8 / 标准 20），用户自定义值不覆盖
+    setSteps((s) => (on ? (s === 20 ? 8 : s) : s === 8 ? 20 : s));
   }
 
-  const canStart = !!prompt.trim() && !busy && online === true && !!unetName && !!clipName && !!vaeVideoName && !!vaeAudioName;
+  const canStart =
+    !!prompt.trim() &&
+    !guard.disabled &&
+    online === true &&
+    !!unetName &&
+    !!clipName &&
+    !!vaeVideoName &&
+    !!vaeAudioName &&
+    (!accelerated || !!loraName);
 
   const modeHint = MODE_OPTIONS.find((m) => m.value === mode)?.hint ?? "";
 
@@ -395,10 +391,27 @@ export default function MiniMaxVideoTool() {
                   {!models?.vae.length && <option value="">{modelsLoading ? "加载中…" : "点「刷新模型列表」"}</option>}
                 </select>
               </div>
+              {accelerated && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-500">Turbo LoRA（加速蒸馏，配合 4-8 步）</label>
+                  <select
+                    value={loraName}
+                    onChange={(e) => setLoraName(e.target.value)}
+                    disabled={formDisabled || !models?.lora.length}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700"
+                  >
+                    {(models?.lora ?? []).map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                    {!models?.lora.length && <option value="">{modelsLoading ? "加载中…" : "无可用 LoRA（或点「刷新模型列表」）"}</option>}
+                  </select>
+                </div>
+              )}
             </div>
             {modelsError && <p className="mt-2 text-sm text-red-600">{modelsError}</p>}
             <p className="mt-2 text-xs text-slate-400">
               T2V / I2V 用 fl2va 权重，R2V 用 ref2va 权重（如 minimax_h3_fl2va_int8_convrot / minimax_h3_ref2va_pruned_int8_convrot）。
+              加速模式需本机装有 SageAttention 与 turbo LoRA（如 minimax_h3_turbo_4STEPS_comfyui.safetensors）。
             </p>
           </div>
 
@@ -430,7 +443,7 @@ export default function MiniMaxVideoTool() {
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
+              disabled={formDisabled}
               rows={6}
               placeholder={PROMPT_PLACEHOLDER}
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
@@ -599,7 +612,9 @@ export default function MiniMaxVideoTool() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-600">采样步数</label>
+                <label className="block text-sm font-medium text-slate-600">
+                  采样步数{accelerated ? "（加速推荐 8：4 视频 + 4 音频）" : "（标准推荐 20）"}
+                </label>
                 <input
                   type="number"
                   value={steps}
@@ -611,6 +626,23 @@ export default function MiniMaxVideoTool() {
                 />
               </div>
             </div>
+            <div className="flex items-center gap-2 pt-1">
+              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={accelerated}
+                  disabled={formDisabled}
+                  onChange={(e) => handleToggleAccelerated(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                加速模式
+              </label>
+              <span className="text-xs text-slate-400">
+                {accelerated
+                  ? "SageAttention 省显存 + turbo LoRA 蒸馏 + 双时钟采样（dual_clock_euler），对应原 Dual-clock 8-step 工作流"
+                  : "官方标准节点链路（SigmaShift + res_multistep + simple 调度器）"}
+              </span>
+            </div>
           </div>
           <p className="text-xs text-slate-400">
             实际画布：{canvas.width} × {canvas.height}
@@ -620,25 +652,19 @@ export default function MiniMaxVideoTool() {
 
           {/* 操作按钮 */}
           <div className="flex flex-wrap items-center gap-2">
-            {!busy && stage !== "success" ? (
-              <Button onClick={handleStart} disabled={!canStart}>
-                {stage === "failed" ? "重试" : "开始生成"}
-              </Button>
-            ) : busy ? (
-              <>
-                <Button variant="secondary" disabled>
-                  <Spinner size={14} /> {stage === "uploading" ? "上传中…" : "生成中…"}
-                </Button>
-                <Button variant="ghost" onClick={handleCancel}>
-                  取消（中断本机执行）
-                </Button>
-              </>
-            ) : (
-              <Button variant="ghost" onClick={handleReset}>
-                开始新任务
+            <Button
+              onClick={() => void guard.run(doSubmit)}
+              disabled={!canStart}
+              loading={guard.submitting}
+            >
+              {guard.submitting ? "提交中…" : "开始生成"}
+            </Button>
+            {guard.submitting && (
+              <Button variant="ghost" onClick={handleCancel}>
+                取消提交
               </Button>
             )}
-            <Button variant="ghost" disabled={busy} onClick={() => void handleFreeMemory()}>
+            <Button variant="ghost" disabled={guard.submitting} onClick={() => void handleFreeMemory()}>
               释放内存
             </Button>
           </div>
@@ -651,30 +677,17 @@ export default function MiniMaxVideoTool() {
             <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
           )}
 
-          {/* 结果视频 + 下载（文件保存在本地 ComfyUI output 目录，长期有效） */}
-          {stage === "success" && resultUrl && (
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-emerald-700">
-                生成完成（文件已保存在本机 ComfyUI 输出目录，可随时回看）
-              </p>
-              <video src={resultUrl} controls className="w-full max-h-[420px] rounded-lg bg-black" />
-              <Button
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = `/api/runninghub/download?url=${encodeURIComponent(resultUrl)}&name=${encodeURIComponent("minimax-h3.mp4")}`;
-                  a.download = "";
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                }}
+          {/* 提交成功：结果在任务中心查看（服务端轮询，页面可关闭） */}
+          {submitted && (
+            <div className="rounded-lg bg-emerald-50 px-4 py-2 text-sm text-emerald-700">
+              任务已提交，服务端正在后台轮询，本页面可以关闭或继续发起新任务。
+              <button
+                type="button"
+                className="ml-1 font-medium underline underline-offset-2 hover:text-emerald-800"
+                onClick={() => router.push("/tools/tasks")}
               >
-                下载到本地
-              </Button>
-            </div>
-          )}
-          {stage === "success" && !resultUrl && (
-            <div className="rounded-lg bg-amber-light px-4 py-2 text-sm text-amber-dark">
-              任务已完成，但未解析到结果文件，可前往「任务日志」查看返回详情。
+                前往任务中心查看进度 →
+              </button>
             </div>
           )}
         </>

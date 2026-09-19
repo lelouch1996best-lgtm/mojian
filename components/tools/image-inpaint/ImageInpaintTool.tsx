@@ -1,26 +1,18 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Button from "@/components/ui/Button";
 import Spinner from "@/components/ui/Spinner";
 import RunningHubApiConfig from "@/components/tools/runninghub/RunningHubApiConfig";
 import { usePreviewUrl } from "@/components/tools/runninghub/usePreviewUrl";
+import { useTaskSubmit } from "@/components/tools/useTaskSubmit";
+import { apiClient } from "@/lib/api-client";
 import {
   INPAINT_APP_ID,
   uploadMediaFile,
   submitInpaint,
-  pollRunningHubTask,
 } from "@/lib/runninghub-client";
-import type { RunningHubQueryProxyResponse } from "@/lib/types";
-
-type Stage = "idle" | "uploading" | "running" | "success" | "failed";
-
-const STATUS_LABELS: Record<string, string> = {
-  QUEUED: "排队中",
-  RUNNING: "处理中",
-  SUCCESS: "成功",
-  FAILED: "失败",
-};
 
 /** 涂抹颜色（显示用半透明红） */
 const MASK_COLOR = "rgba(239, 68, 68, 0.55)";
@@ -60,6 +52,7 @@ function composeMaskedPng(img: HTMLImageElement, mask: HTMLCanvasElement): Promi
 }
 
 export default function ImageInpaintTool() {
+  const router = useRouter();
   const [configured, setConfigured] = useState<boolean | null>(null);
 
   const [file, setFile] = useState<File | null>(null);
@@ -68,11 +61,11 @@ export default function ImageInpaintTool() {
   const [hasMask, setHasMask] = useState(false);
   const [brushSize, setBrushSize] = useState(36);
   const [prompt, setPrompt] = useState("");
-  const [stage, setStage] = useState<Stage>("idle");
   const [statusText, setStatusText] = useState("");
-  const [resultUrl, setResultUrl] = useState("");
+  const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
+  const guard = useTaskSubmit();
 
   const imgRef = useRef<HTMLImageElement | null>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -126,7 +119,7 @@ export default function ImageInpaintTool() {
   }
 
   function handlePointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
-    if (stage === "uploading" || stage === "running" || stage === "success") return;
+    if (guard.submitting) return;
     const ctx = e.currentTarget.getContext("2d");
     if (!ctx) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -163,15 +156,14 @@ export default function ImageInpaintTool() {
     setHasMask(false);
   }
 
-  async function handleStart() {
+  async function doSubmit() {
     const img = imgRef.current;
     const mask = maskCanvasRef.current;
     if (!file || !img || !mask || !configured) return;
     const p = prompt.trim();
     if (!p) return;
     setError("");
-    setResultUrl("");
-    setStage("uploading");
+    setSubmitted(false);
     setStatusText("正在上传图片…");
     const ctrl = new AbortController();
     abortRef.current = ctrl;
@@ -180,56 +172,38 @@ export default function ImageInpaintTool() {
       const blob = await composeMaskedPng(img, mask);
       const maskedFile = new File([blob], "masked.png", { type: "image/png" });
       const up = await uploadMediaFile(maskedFile);
-      setStage("running");
-      setStatusText("已提交，等待 RunningHub 处理…");
+      setStatusText("正在提交局部编辑任务…");
       const run = await submitInpaint({
         imageFieldValue: up.fileName,
         prompt: p,
         signal: ctrl.signal,
       });
-      await pollRunningHubTask(
-        run.taskId,
-        (r: RunningHubQueryProxyResponse) => {
-          setStatusText(
-            `${STATUS_LABELS[r.status] ?? r.status}${
-              r.errorMessage ? "：" + r.errorMessage : ""
-            }`
-          );
-        },
-        {
-          signal: ctrl.signal,
-          onSuccess: (r: RunningHubQueryProxyResponse) => {
-            setResultUrl(r.results?.[0]?.url ?? "");
-          },
-        }
-      );
-      setStage("success");
+      // 注册进任务中心：服务端接管轮询，本页可关闭/继续发起新任务
+      await apiClient.registerToolTask({
+        toolId: "image-inpaint",
+        toolName: "图片局部编辑",
+        source: "runninghub",
+        mediaType: "image",
+        title: `局部编辑 · ${p.slice(0, 30)}`,
+        prompt: p,
+        upstreamTaskId: run.taskId,
+      });
+      setSubmitted(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setStage("failed");
     } finally {
       abortRef.current = null;
+      setStatusText("");
     }
   }
 
   function handleCancel() {
     abortRef.current?.abort();
-    setStage("idle");
     setStatusText("");
   }
 
-  function handleReset() {
-    setFile(null);
-    setPrompt("");
-    setResultUrl("");
-    setError("");
-    setStage("idle");
-    setStatusText("");
-  }
-
-  const busy = stage === "uploading" || stage === "running";
-  const fileInputDisabled = busy || stage === "success";
-  const canStart = !!file && imgLoaded && !!prompt.trim() && !!configured && !busy;
+  const fileInputDisabled = guard.submitting;
+  const canStart = !!file && imgLoaded && !!prompt.trim() && !!configured && !guard.disabled;
 
   return (
     <div className="space-y-5">
@@ -310,31 +284,27 @@ export default function ImageInpaintTool() {
             <textarea
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              disabled={busy}
+              disabled={guard.submitting}
               rows={2}
               placeholder="例如：戴一顶帽子"
               className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40"
             />
           </div>
 
-          {/* 操作按钮 */}
+          {/* 操作按钮：提交期间禁用，结束后 1s 冷却再恢复（可连续发起多个任务） */}
           <div className="flex flex-wrap items-center gap-2">
-            {!busy && stage !== "success" ? (
-              <Button onClick={handleStart} disabled={!canStart}>
-                {stage === "failed" ? "重试" : "开始编辑"}
-              </Button>
-            ) : busy ? (
+            {guard.submitting ? (
               <>
                 <Button variant="secondary" disabled>
-                  <Spinner size={14} /> {stage === "uploading" ? "上传中…" : "处理中…"}
+                  <Spinner size={14} /> 提交中…
                 </Button>
                 <Button variant="ghost" onClick={handleCancel}>
-                  取消
+                  取消提交
                 </Button>
               </>
             ) : (
-              <Button variant="ghost" onClick={handleReset}>
-                开始新任务
+              <Button onClick={() => void guard.run(doSubmit)} disabled={!canStart}>
+                开始编辑
               </Button>
             )}
           </div>
@@ -347,33 +317,13 @@ export default function ImageInpaintTool() {
             <div className="rounded-lg bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
           )}
 
-          {/* 结果图片 + 下载 */}
-          {stage === "success" && resultUrl && (
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-emerald-700">编辑完成（结果链接 24h 内有效，请尽快下载保存）</p>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={resultUrl}
-                alt="编辑结果"
-                className="max-h-[520px] w-auto rounded-lg border border-slate-200"
-              />
-              <Button
-                onClick={() => {
-                  const a = document.createElement("a");
-                  a.href = `/api/runninghub/download?url=${encodeURIComponent(resultUrl)}`;
-                  a.download = "";
-                  document.body.appendChild(a);
-                  a.click();
-                  a.remove();
-                }}
-              >
-                下载到本地
+          {/* 提交成功：引导去任务中心查看进度与结果 */}
+          {submitted && (
+            <div className="flex flex-wrap items-center gap-3 rounded-lg bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+              <span>任务已提交，进度与结果请在任务中心查看（页面可关闭）</span>
+              <Button size="sm" onClick={() => router.push("/tools/tasks")}>
+                前往任务中心
               </Button>
-            </div>
-          )}
-          {stage === "success" && !resultUrl && (
-            <div className="rounded-lg bg-amber-light px-4 py-2 text-sm text-amber-dark">
-              任务已完成，但未解析到结果地址，可前往「任务日志」查看返回详情。
             </div>
           )}
         </>

@@ -37,12 +37,16 @@ export default function CharacterSettingsPage() {
   const [notFound, setNotFound] = useState(false);
   const [generatingImageIds, setGeneratingImageIds] = useState<Set<string>>(new Set());
   const [uploadingImageIds, setUploadingImageIds] = useState<Set<string>>(new Set());
+  const [generatingAssetIds, setGeneratingAssetIds] = useState<Set<string>>(new Set());
+  const [uploadingAssetIds, setUploadingAssetIds] = useState<Set<string>>(new Set());
   const [imageConfigured, setImageConfigured] = useState(false);
   const [cosConfigured, setCosConfigured] = useState(false);
   const [imageConfig, setImageConfig] = useState<AssetImageConfig>(DEFAULT_ASSET_IMAGE_CONFIG);
   // 所有「已配置 API Key」图片供应商的全部模型（聚合，供模型选择弹框使用）
   const [imageOptions, setImageOptions] = useState<ModelOption[]>([]);
   const [genTargetId, setGenTargetId] = useState<string | null>(null);
+  // 弹框确认结果的去向：main = 写人物主图 imageUrl，asset = 追加到人物资产图 assetImages
+  const [genMode, setGenMode] = useState<"main" | "asset">("main");
   const [configOpen, setConfigOpen] = useState(false);
   const [genInitialPrompt, setGenInitialPrompt] = useState("");
   const [styleTemplate, setStyleTemplate] = useState<string | null>(null);
@@ -152,12 +156,24 @@ export default function CharacterSettingsPage() {
     const entries = characters
       .filter((c) => c.imageTaskId)
       .map((c) => ({ key: c.id, jobId: c.imageTaskId!, provider: c.imageTaskProvider }));
+    // 人物资产图任务（每人可多个并发，用 复合键 charId::jobId 区分）
+    for (const c of characters) {
+      for (const t of c.assetImageTasks ?? []) {
+        entries.push({ key: `${c.id}::${t.jobId}`, jobId: t.jobId, provider: t.provider });
+      }
+    }
     if (entries.length === 0) return;
 
     // 进入恢复时立即显示占位（重新生成场景下旧 imageUrl 仍在，但 imageTaskId 表明有进行中任务）
     setGeneratingImageIds((prev) => {
       const next = new Set(prev);
-      entries.forEach((e) => next.add(e.key));
+      entries.forEach((e) => { if (!e.key.includes("::")) next.add(e.key); });
+      return next;
+    });
+    // 资产任务恢复占位：有人物维度的待恢复任务即显示网格占位格
+    setGeneratingAssetIds((prev) => {
+      const next = new Set(prev);
+      entries.forEach((e) => { if (e.key.includes("::")) next.add(e.key.split("::")[0]); });
       return next;
     });
 
@@ -165,10 +181,45 @@ export default function CharacterSettingsPage() {
       onDone: async (key, imageUrl) => {
         // imageUrl 已经服务端 COS 转存，无需再转存
         try {
-          // 读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原任务可能已完成并写入新 imageUrl）
           const entry = entries.find((e) => e.key === key);
+          if (!entry) return;
+          // 资产图任务（复合键 charId::jobId）：校验任务仍存在（未被新数据覆盖）后追加到 assetImages
+          if (key.includes("::")) {
+            const [charId, jobId] = [key.split("::")[0], key.split("::")[1]];
+            const latest = charactersRef.current.find((c) => c.id === charId);
+            if (!latest || !(latest.assetImageTasks ?? []).some((t) => t.jobId === jobId)) return;
+            const updated = charactersRef.current.map((c) =>
+              c.id === charId
+                ? {
+                    ...c,
+                    assetImages: [...(c.assetImages ?? []), imageUrl],
+                    assetImageTasks: (c.assetImageTasks ?? []).filter((t) => t.jobId !== jobId),
+                  }
+                : c
+            );
+            setCharacters(updated);
+            const s = seriesRef.current;
+            if (s) {
+              const updatedSeries = { ...s, characterSettings: updated };
+              await saveSeries(updatedSeries);
+              seriesRef.current = updatedSeries;
+              setSavedHint(true);
+              setTimeout(() => setSavedHint(false), 1500);
+              void recordMediaAsset({
+                mediaType: "image",
+                url: imageUrl,
+                entityType: "character",
+                entityName: latest.name || "未命名人物",
+                source: "generated",
+                seriesId: s.id,
+                seriesTitle: s.title,
+              });
+            }
+            return;
+          }
+          // 主图任务：读取最新状态做去重判断（避免闭包捕获过期数据；切页期间原任务可能已完成并写入新 imageUrl）
           const latest = charactersRef.current.find((c) => c.id === key);
-          if (latest && entry && latest.imageTaskId !== entry.jobId) {
+          if (latest && latest.imageTaskId !== entry.jobId) {
             // taskId 已变化（被新的生成覆盖），不处理这次结果
             return;
           }
@@ -192,11 +243,33 @@ export default function CharacterSettingsPage() {
             });
           }
         } finally {
-          setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(key); return n; });
+          // 资产任务：该人物已无剩余待恢复任务时才清占位（本会话内新生成的任务已写入 assetImageTasks，可一并判断）；主图任务直接清
+          if (key.includes("::")) {
+            const charId = key.split("::")[0];
+            const rest = charactersRef.current.find((c) => c.id === charId)?.assetImageTasks ?? [];
+            if (rest.length === 0) {
+              setGeneratingAssetIds((prev) => { const n = new Set(prev); n.delete(charId); return n; });
+            }
+          } else {
+            setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(key); return n; });
+          }
         }
       },
       onFailed: (key, error) => {
         // 仅真实失败才回调（取消/切页由 recoverImageTasks 静默，taskId 保留待下次恢复）
+        if (key.includes("::")) {
+          const [charId, jobId] = [key.split("::")[0], key.split("::")[1]];
+          const name = charactersRef.current.find((c) => c.id === charId)?.name ?? "";
+          setCharacters((prev) => prev.map((c) =>
+            c.id === charId ? { ...c, assetImageTasks: (c.assetImageTasks ?? []).filter((t) => t.jobId !== jobId) } : c
+          ));
+          showError(`「${name}」人物资产图生成失败：${error}`);
+          const rest = (charactersRef.current.find((c) => c.id === charId)?.assetImageTasks ?? []).filter((t) => t.jobId !== jobId);
+          if (rest.length === 0) {
+            setGeneratingAssetIds((prev) => { const n = new Set(prev); n.delete(charId); return n; });
+          }
+          return;
+        }
         const name = charactersRef.current.find((c) => c.id === key)?.name ?? "";
         setCharacters((prev) => prev.map((c) => (c.id === key ? { ...c, imageTaskId: undefined } : c)));
         showError(`「${name}」图片生成失败：${error}`);
@@ -242,6 +315,7 @@ export default function CharacterSettingsPage() {
       ...source, id: uuid(), characterId: source.characterId || source.id,
       version: maxVersion + 1, versionLabel: `v${maxVersion + 1}`,
       imageUrl: undefined, referenceImages: [], imageTaskId: undefined,
+      assetImages: [], assetImageTasks: undefined,
     };
     setCharacters((prev) => [...prev, newVersion]);
     setDetailTargetId(newVersion.id);
@@ -280,7 +354,26 @@ export default function CharacterSettingsPage() {
     const prompt = char.appearance.trim() || char.name.trim();
     setGenInitialPrompt(prompt);
     setGenTargetId(char.id);
+    setGenMode("main");
     setRefImages(char.referenceImages ?? []);
+    setConfigOpen(true);
+  }
+
+  /** 打开人物资产图生成弹框（详情页「人物资产」tab）：自动带主图作参考图，提示词留空（可从预设库添加） */
+  async function openGenerateAssetImageDialog(char: CharacterProfile) {
+    if (!imageConfigured) {
+      showError("未配置图片生成 API，请先在「设置」中配置");
+      return;
+    }
+    const template = await getAssetTemplate("character", series?.styleSettings ?? null);
+    setStyleTemplate(template);
+    const refImage = await getAssetReferenceImage("character", series?.styleSettings ?? null);
+    setTemplateReferenceImage(refImage ?? null);
+    // 提示词保留为空，不拼接模板；用户可通过弹框「添加提示词」从预设库获取或自行输入
+    setGenInitialPrompt("");
+    setGenTargetId(char.id);
+    setGenMode("asset");
+    setRefImages(char.imageUrl ? [char.imageUrl] : []);
     setConfigOpen(true);
   }
 
@@ -354,10 +447,10 @@ export default function CharacterSettingsPage() {
     return urls;
   }
 
-  /** 参考图变更：更新 refImages 状态并同步到人物设定数据（触发自动保存） */
+  /** 参考图变更：更新 refImages 状态；主图模式同步到人物设定 referenceImages（资产模式的参考图是临时生成输入，不落设定数据） */
   function handleRefImagesChange(newImages: string[]) {
     setRefImages(newImages);
-    if (genTargetId) {
+    if (genTargetId && genMode === "main") {
       setCharacters((prev) => prev.map((c) =>
         c.id === genTargetId ? { ...c, referenceImages: newImages } : c
       ));
@@ -426,6 +519,142 @@ export default function CharacterSettingsPage() {
     } finally {
       setGeneratingImageIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
     }
+  }
+
+  /** 为人物生成资产图（提示词 + 可选参考图，由弹框确认传入）：追加到 assetImages，任务落 assetImageTasks 支持切页恢复 */
+  async function handleGenerateAssetImage(
+    char: CharacterProfile,
+    params: { prompt: string; images: string[]; config: AssetImageConfig }
+  ) {
+    setGeneratingAssetIds((prev) => new Set(prev).add(char.id));
+    let thisJobId: string | undefined;
+    try {
+      const { prompt, images, config } = params;
+      const result = await generateImage(prompt, config, images.length > 0 ? images : undefined, async (jobId) => {
+        thisJobId = jobId;
+        // 异步任务创建后立即持久化任务条目（切页/刷新后可恢复轮询），keepalive fetch 同步落库防 SPA 路由切换丢失
+        const updated = charactersRef.current.map((c) =>
+          c.id === char.id
+            ? { ...c, assetImageTasks: [...(c.assetImageTasks ?? []), { jobId, provider: config.provider }] }
+            : c
+        );
+        setCharacters(updated);
+        const s = seriesRef.current;
+        if (s) {
+          const updatedSeries = { ...s, characterSettings: updated };
+          seriesRef.current = updatedSeries;
+          fetch("/api/data/series", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? ""}`,
+            },
+            body: JSON.stringify(updatedSeries),
+            keepalive: true,
+          });
+        }
+      }, abortRef.current?.signal, { cosPrefix: "ai-script/characters" });
+      // imageUrl 已经服务端 COS 转存，无需再转存
+      const imageUrl = result.imageUrl;
+
+      const updated = charactersRef.current.map((c) =>
+        c.id === char.id
+          ? {
+              ...c,
+              assetImages: [...(c.assetImages ?? []), imageUrl],
+              // 成功后仅移除本次任务条目（同一人物可能有多个并发任务）
+              assetImageTasks: (c.assetImageTasks ?? []).filter((t) => t.jobId !== thisJobId),
+            }
+          : c
+      );
+      setCharacters(updated);
+      if (series) {
+        const updatedSeries = { ...series, characterSettings: updated };
+        await saveSeries(updatedSeries);
+        seriesRef.current = updatedSeries;
+        setSavedHint(true);
+        setTimeout(() => setSavedHint(false), 1500);
+        void recordMediaAsset({
+          mediaType: "image",
+          url: imageUrl,
+          entityType: "character",
+          entityName: char.name || "未命名人物",
+          prompt,
+          source: "generated",
+          seriesId: series.id,
+          seriesTitle: series.title,
+        });
+      }
+    } catch (e) {
+      // 切页/卸载导致轮询被取消时，保留 assetImageTasks 以便重新挂载后恢复；仅真实失败时清除并提示
+      const isAborted = (e as Error)?.name === "AbortError" || (e as Error)?.message === "已取消";
+      if (!isAborted) {
+        setCharacters((prev) => prev.map((c) => {
+          if (c.id !== char.id) return c;
+          // 失败时无法得知具体 jobId，保守起见清空该人物全部资产任务（真实失败场景任务已终止）
+          return { ...c, assetImageTasks: undefined };
+        }));
+        showError(`「${char.name}」人物资产图生成失败：${(e as Error).message}`);
+      }
+    } finally {
+      const rest = charactersRef.current.find((c) => c.id === char.id)?.assetImageTasks ?? [];
+      if (rest.length === 0) {
+        setGeneratingAssetIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
+      }
+    }
+  }
+
+  /** 上传本地图片追加为人物资产图（转 base64 后调用存储上传 API） */
+  async function handleUploadAssetImage(char: CharacterProfile, file: File) {
+    if (!(await isCosConfigured())) {
+      showError("未配置对象存储（COS），无法上传图片，请先在「设置」中配置");
+      return;
+    }
+    const allowed = ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"];
+    if (!allowed.includes(file.type)) {
+      showError(`不支持的图片格式：${file.type || "未知"}，仅支持 png/jpg/webp/gif/bmp`);
+      return;
+    }
+    setUploadingAssetIds((prev) => new Set(prev).add(char.id));
+    try {
+      // 读取文件为 base64 data URL
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => reject(new Error("读取文件失败"));
+        reader.readAsDataURL(file);
+      });
+      const { url } = await uploadBase64(base64, file.name);
+      const updated = characters.map((c) => (c.id === char.id ? { ...c, assetImages: [...(c.assetImages ?? []), url] } : c));
+      setCharacters(updated);
+      if (series) {
+        const updatedSeries = { ...series, characterSettings: updated };
+        await saveSeries(updatedSeries);
+        seriesRef.current = updatedSeries;
+        setSavedHint(true);
+        setTimeout(() => setSavedHint(false), 1500);
+        void recordMediaAsset({
+          mediaType: "image",
+          url,
+          entityType: "character",
+          entityName: char.name || "未命名人物",
+          source: "manual",
+          seriesId: series.id,
+          seriesTitle: series.title,
+        });
+      }
+    } catch (e) {
+      showError(`「${char.name}」资产图上传失败：${(e as Error).message}`);
+    } finally {
+      setUploadingAssetIds((prev) => { const n = new Set(prev); n.delete(char.id); return n; });
+    }
+  }
+
+  /** 删除人物资产图（交给自动保存持久化） */
+  function handleRemoveAssetImage(char: CharacterProfile, url: string) {
+    setCharacters((prev) => prev.map((c) =>
+      c.id === char.id ? { ...c, assetImages: (c.assetImages ?? []).filter((u) => u !== url) } : c
+    ));
   }
 
   /** 上传本地图片作为人物形象图（转 base64 后调用存储上传 API） */
@@ -745,12 +974,18 @@ export default function CharacterSettingsPage() {
         onImagesChange={handleRefImagesChange}
         onUploadFiles={handleUploadRefFiles}
         imageOptions={imageOptions}
-        loading={genTargetId ? generatingImageIds.has(genTargetId) : false}
+        enablePresetPrompt
+        defaultSeriesId={seriesId}
+        loading={genTargetId
+          ? (genMode === "asset" ? generatingAssetIds.has(genTargetId) : generatingImageIds.has(genTargetId))
+          : false}
         onConfirm={(params) => {
           setImageConfig(params.config);
           setConfigOpen(false);
           const target = characters.find((c) => c.id === genTargetId);
-          if (target) void handleGenerateImage(target, params);
+          if (!target) return;
+          if (genMode === "asset") void handleGenerateAssetImage(target, params);
+          else void handleGenerateImage(target, params);
         }}
       />
 
@@ -798,6 +1033,11 @@ export default function CharacterSettingsPage() {
         onUploadVoice={(file) => detailTarget && handleUploadVoice(detailTarget, file)}
         isUploadingVoice={detailTarget ? uploadingVoiceIds.has(detailTarget.id) : false}
         onRemoveVoice={() => detailTarget && handleRemoveVoice(detailTarget)}
+        onGenerateAssetImage={() => detailTarget && openGenerateAssetImageDialog(detailTarget)}
+        isGeneratingAsset={detailTarget ? generatingAssetIds.has(detailTarget.id) : false}
+        onUploadAssetImage={(file) => detailTarget && handleUploadAssetImage(detailTarget, file)}
+        isUploadingAsset={detailTarget ? uploadingAssetIds.has(detailTarget.id) : false}
+        onRemoveAssetImage={(url) => detailTarget && handleRemoveAssetImage(detailTarget, url)}
       />
     </main>
   );

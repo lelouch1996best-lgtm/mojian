@@ -1,6 +1,6 @@
 /** 服务端 API 客户端 */
 
-import type { ApiCallLog, ApiCallLogListResponse, AssetLibraryItem, ImageTaskRecord, MediaAsset, MediaAssetInput, PresetItem, PresetTag, VoicePersona } from "@/lib/types";
+import type { ApiCallLog, ApiCallLogListResponse, AssetLibraryItem, ImageTaskRecord, MediaAsset, MediaAssetInput, PresetItem, PresetTag, ToolTaskListResponse, ToolTaskRecord, ToolTaskRegisterInput, VoicePersona } from "@/lib/types";
 import { findNonSerializablePath } from "@/lib/utils";
 
 const TOKEN = process.env.NEXT_PUBLIC_STORAGE_TOKEN ?? "";
@@ -180,5 +180,28 @@ export const apiClient = {
     request<{ ok: boolean }>("/data/api-logs", {
       method: "POST",
       body: JSON.stringify({ taskId, finalStatus, finalResult }),
+    }),
+
+  // Tool Tasks（AI 小工具任务中心）
+  listToolTasks: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.status) q.set("status", params.status);
+    q.set("limit", String(params.limit ?? 100));
+    q.set("offset", String(params.offset ?? 0));
+    return request<ToolTaskListResponse>(`/tool-tasks?${q.toString()}`);
+  },
+  registerToolTask: (input: ToolTaskRegisterInput) =>
+    request<{ task: ToolTaskRecord }>("/tool-tasks", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  cancelToolTask: (id: string) =>
+    request<{ task: ToolTaskRecord }>(`/tool-tasks/${encodeURIComponent(id)}/cancel`, {
+      method: "POST",
+    }),
+  deleteToolTasks: (ids?: string[]) =>
+    request<{ ok: boolean; deleted: number }>("/tool-tasks", {
+      method: "DELETE",
+      body: JSON.stringify(ids && ids.length ? { ids } : {}),
     }),
 };

@@ -61,6 +61,10 @@ export interface CharacterProfile {
   relationships: string;
   /** 人物形象图 URL（未来扩展） */
   imageUrl?: string;
+  /** 人物资产图 URL 列表（详情页「人物资产」tab 管理，可上传或生成） */
+  assetImages?: string[];
+  /** 进行中的资产图生成任务（jobId + provider，切页/刷新后可恢复轮询；同一人物可多个并发） */
+  assetImageTasks?: { jobId: string; provider?: ImageGenSettings["provider"] }[];
   /** 参考图 URL 列表（COS URL，用于图片生成时引用，持久化到设定数据） */
   referenceImages?: string[];
   /** 音色音频 URL（COS 持久 URL） */
@@ -467,6 +471,53 @@ export interface ApiCallLog {
 export interface ApiCallLogListResponse {
   items: ApiCallLog[];
   total: number;
+}
+
+/** AI 小工具任务中心：任务状态 */
+export type ToolTaskStatus = "running" | "done" | "failed" | "cancelled" | "expired";
+
+/** AI 小工具任务中心：任务来源 */
+export type ToolTaskSource = "runninghub" | "comfyui";
+
+/** AI 小工具任务中心：任务记录（API 响应层，不含敏感信息） */
+export interface ToolTaskRecord {
+  /** 本地任务 id（uuid） */
+  id: string;
+  toolId: string;
+  toolName: string;
+  source: ToolTaskSource;
+  /** image | video：结果文件挑选 + 预览方式 */
+  mediaType: "image" | "video";
+  /** 摘要（模式/倍率/时长/比例等） */
+  title: string;
+  prompt: string;
+  /** 上游任务 id（RunningHub taskId / ComfyUI promptId） */
+  upstreamTaskId?: string;
+  /** 仅 comfyui：本机 ComfyUI 地址 */
+  baseUrl?: string;
+  status: ToolTaskStatus;
+  resultUrl?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+}
+
+export interface ToolTaskListResponse {
+  items: ToolTaskRecord[];
+  total: number;
+}
+
+/** 注册任务请求体（POST /api/tool-tasks） */
+export interface ToolTaskRegisterInput {
+  toolId: string;
+  toolName: string;
+  source: ToolTaskSource;
+  mediaType: "image" | "video";
+  title?: string;
+  prompt?: string;
+  upstreamTaskId: string;
+  baseUrl?: string;
 }
 
 /** 腾讯云 COS 配置 */
@@ -980,6 +1031,8 @@ export interface ComfyUiModelsResponse {
   clip: string[];
   /** VAELoader.vae_name 可选值 */
   vae: string[];
+  /** LoraLoaderBypassModelOnly.lora_name 可选值（拉取失败时为空数组，加速模式不可用） */
+  lora: string[];
 }
 
 /** /api/comfyui/prompt 响应 */

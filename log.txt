@@ -1,0 +1,851 @@
+节点在执行过程中发生错误。
+
+
+# ComfyUI Error Report
+## Error Details
+- **Node ID:** 6
+- **Node Type:** MiniMaxH3AudioConditioningT8
+- **Exception Type:** RuntimeError
+- **Exception Message:** RuntimeError: HostBuffer.read_file_slice failed
+
+## Stack Trace
+```
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 545, in execute
+    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 344, in get_output_data
+    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 318, in _async_map_node_over_list
+    await process_inputs(input_dict, i)
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 306, in process_inputs
+    result = f(**inputs)
+             ^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\internal\__init__.py", line 149, in wrapped_func
+    return method(locked_class, **inputs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\latest\_io.py", line 1990, in EXECUTE_NORMALIZED
+    to_return = cls.execute(*args, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\nodes.py", line 78, in execute
+    return io.NodeOutput(*build_conditioning(
+                          ^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\conditioning.py", line 315, in build_conditioning
+    conditioning = clip.encode_from_tokens_scheduled(tokens)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 336, in encode_from_tokens_scheduled
+    pooled_dict = self.encode_from_tokens(tokens, return_pooled=return_pooled, return_dict=True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 405, in encode_from_tokens
+    o = self.cond_stage_model.encode_token_weights(tokens)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 743, in encode_token_weights
+    out = getattr(self, self.clip).encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 110, in encode_token_weights
+    out = super().encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 45, in encode_token_weights
+    o = self.encode(to_encode)
+        ^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 306, in encode
+    return self(tokens)
+           ^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 279, in forward
+    outputs = self.transformer(None, attention_mask_model, embeds=embeds, num_tokens=num_tokens, intermediate_output=intermediate_output, final_layer_norm_intermediate=self.layer_norm_hidden_state, dtype=torch.float32, embeds_info=embeds_info)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 96, in forward
+    return super().forward(input_ids, attention_mask=attention_mask, embeds=embeds,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\qwen3vl.py", line 100, in forward
+    return self.model(
+           ^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 782, in forward
+    x, current_kv = layer(
+                    ^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 614, in forward
+    x = self.mlp(x)
+        ^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 581, in forward
+    return self.down_proj(self.activation(self.gate_proj(x)) * self.up_proj(x))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1430, in forward
+    output = self.forward_comfy_cast_weights(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1360, in forward_comfy_cast_weights
+    weight, bias, offload_stream = cast_bias_weight(
+                                   ^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 371, in cast_bias_weight
+    offload_stream = cast_modules_with_vbar([s], dtype, device, bias_dtype, non_blocking)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 230, in cast_modules_with_vbar
+    handle_pin(s, pin, xfer_source, xfer_dest, subset=subset, size=dest_size)
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 228, in handle_pin
+    cast_maybe_lowvram_patch(source, pin, offload_stream, xfer_dest2=dest)
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 219, in cast_maybe_lowvram_patch
+    comfy.model_management.cast_to_gathered(xfer_source, xfer_dest, non_blocking=non_blocking, stream=stream, r2=xfer_dest2)
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\model_management.py", line 1500, in cast_to_gathered
+    if comfy.memory_management.read_tensor_file_slice_into(tensor, dest_view, stream=stream, destination2=dest2_view):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 21, in read_tensor_file_slice_into
+    if not read_tensor_file_slice_into(tensor._qdata,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 70, in read_tensor_file_slice_into
+    hostbuf.read_file_slice(file_obj, info.offset, info.size,
+
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\comfy_aimdo\host_buffer.py", line 109, in read_file_slice
+    raise RuntimeError("HostBuffer.read_file_slice failed")
+
+```
+## System Information
+- **ComfyUI Version:** 0.31.1
+- **Arguments:** E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\main.py --listen --auto-launch --preview-method auto --disable-cuda-malloc --enable-cors-header *
+- **OS:** win32
+- **Python Version:** 3.12.10 (tags/v3.12.10:0cc8128, Apr  8 2025, 12:21:36) [MSC v.1943 64 bit (AMD64)]
+- **Embedded Python:** false
+- **PyTorch Version:** 2.10.0+cu130
+## Devices
+
+- **Name:** cuda:0 NVIDIA GeForce RTX 5070 Ti : cudaMallocAsync
+  - **Type:** cuda
+  - **VRAM Total:** 17094475776
+  - **VRAM Free:** 15644221440
+  - **Torch VRAM Total:** 100663296
+  - **Torch VRAM Free:** 82305024
+
+## Logs
+```
+2026-08-26T16:40:58.294704 - OpenCV Python FFMPEG support is enabled2026-08-26T16:40:58.294704 - 
+2026-08-26T16:40:58.294704 - WAS Node Suite: 2026-08-26T16:40:58.294704 - `ffmpeg_bin_path` is set to: ../python/Lib/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe2026-08-26T16:40:58.294704 - 
+2026-08-26T16:40:59.707289 - WAS Node Suite: 2026-08-26T16:40:59.707289 - Finished.2026-08-26T16:40:59.707289 -  2026-08-26T16:40:59.707289 - Loaded2026-08-26T16:40:59.707289 -  2026-08-26T16:40:59.707289 - 2202026-08-26T16:40:59.707289 -  2026-08-26T16:40:59.707289 - nodes successfully.2026-08-26T16:40:59.707289 - 
+2026-08-26T16:40:59.707289 - 
+	2026-08-26T16:40:59.707289 - "Success is not final, failure is not fatal: It is the courage to continue that counts."2026-08-26T16:40:59.707289 -  - Winston Churchill2026-08-26T16:40:59.707289 - 
+2026-08-26T16:40:59.707289 - 
+2026-08-26T16:40:59.718763 - [32m[INFO][0m 
+Import times for custom nodes:
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\websocket_image_save.py
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_memory_cleanup
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-PainterLongVideo
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\Comfyui_Prompt_Edit
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-MiniMaxH3-AVCache-CN
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\wanblockswap
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Licon-MSR
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\HeartMuLa_ComfyUI
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-PainterI2V
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-WanMoeKSampler
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-DD-Translation
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\Comfyui-PainterAudioCut-main
+2026-08-26T16:40:59.718763 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\masquerade-nodes-comfyui
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\reservedvram
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\qweneditutils
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI_UniBlockSwap
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-TT-Resolution_selector-Node
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-inpaint-cropandstitch
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Ideogram4-DirectJSON-Modified
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-NativeLooping_testing
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Krea2-StyleTransfer
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-blockcache-T8
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-PainterI2Vadvanced
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\cg-use-everywhere
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Qwen-Image-Integrated-KSampler
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-qwenmultiangle
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-PainterAI2V
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-PZ-EasyUse
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-GGUF
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-EulerDiscreteScheduler
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_instantid
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\Comfyui_TTP_Toolset
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Wan22FMLF
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-inpaint-nodes
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-WanAnimatePreprocess
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\LanPaint
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-various
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-ConditioningKrea2Rebalance
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyMath
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\WhatDreamsCost-ComfyUI
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_essentials
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-custom-scripts
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-frame-interpolation
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI_Qwen3-VL-Instruct
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-FlashVSR_Ultra_Fast
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-FunPack-main
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-videohelpersuite
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-advanced-controlnet
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\prompt-assistant
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\rgthree-comfy
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\Comfyui-SecNodes
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds (IMPORT FAILED): E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\llama-cpp_vllm
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Sharp
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI_Comfyroll_CustomNodes
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-kjnodes
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-LTXVideo
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_controlnet_aux
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI_LayerStyle_Advance
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-TD-Qwen3TTS
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_layerstyle
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\pulid_comfyui
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-impact-subpack
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI_StringOps
+2026-08-26T16:40:59.719278 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-impact-pack
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-vrgamedevgirl
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.2 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-utils-nodes
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.2 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-rmbg
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.3 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-SeedVR2_VideoUpscaler
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.3 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\RES4LYF
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.3 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-LLM_Prompt_XML_Formatter
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.4 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-WanVideoWrapper
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.4 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\audio-separation-nodes-comfyui
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.6 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-GIMM-VFI
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.7 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Manager
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.9 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\Goohaitools-comfyui
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    0.9 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-Crystools
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    1.7 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_fill-nodes
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    2.0 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_custom_nodes_alekpet
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    2.1 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    2.3 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui_faceanalysis
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    2.8 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\was-ns
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    5.3 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\ComfyUI-GeometryPack
+2026-08-26T16:40:59.720293 - [32m[INFO][0m    8.7 seconds: E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-easy-use
+2026-08-26T16:40:59.720293 - [32m[INFO][0m 
+2026-08-26T16:40:59.738849 - [32m[INFO][0m Context impl SQLiteImpl.
+2026-08-26T16:40:59.738849 - [32m[INFO][0m Will assume non-transactional DDL.
+2026-08-26T16:40:59.860436 - [32m[INFO][0m Using RAM pressure cache.
+2026-08-26T16:40:59.861448 - [32m[INFO][0m Starting server
+
+2026-08-26T16:40:59.861448 - [32m[INFO][0m To see the GUI go to: http://0.0.0.0:8188
+2026-08-26T16:40:59.861448 - [32m[INFO][0m To see the GUI go to: http://[::]:8188
+2026-08-26T16:41:01.521962 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /scripts/ui/components/buttonGroup.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:41:01.523966 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /scripts/ui.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:41:01.524984 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /extensions/core/clipspace.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:41:01.526488 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /extensions/core/groupNode.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:41:01.526488 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe-lightbox.esm.min.js2026-08-26T16:41:01.526488 - 
+2026-08-26T16:41:01.527708 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /extensions/core/widgetInputs.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:41:01.549771 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/pickr.min.js2026-08-26T16:41:01.549771 - 
+2026-08-26T16:41:01.554814 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe.min.css2026-08-26T16:41:01.554814 - 
+2026-08-26T16:41:01.576296 - Use Proxy:2026-08-26T16:41:01.576296 -  2026-08-26T16:41:01.576296 - http://127.0.0.1:78972026-08-26T16:41:01.576296 - 
+2026-08-26T16:41:01.618089 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/model-viewer.min.js2026-08-26T16:41:01.618089 - 
+2026-08-26T16:41:01.623124 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.css2026-08-26T16:41:01.623124 - 
+2026-08-26T16:41:01.624645 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/classic.min.css2026-08-26T16:41:01.624645 - 
+2026-08-26T16:41:01.629698 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.min.js2026-08-26T16:41:01.629698 - 
+2026-08-26T16:41:02.453480 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T16:41:02.453480 - 
+2026-08-26T16:41:02.453480 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T16:41:02.453480 - 
+2026-08-26T16:41:03.462086 - [1m[33m[WARNING][0m [DEPRECATION WARNING] Detected import of deprecated legacy API: /scripts/ui/components/button.js. This is likely caused by a custom node extension using outdated APIs. Please update your extensions or contact the extension author for an updated version.
+2026-08-26T16:42:30.515638 - [32m[INFO][0m got prompt
+2026-08-26T16:42:30.611138 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float32
+2026-08-26T16:42:30.810146 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float16
+2026-08-26T16:42:31.087328 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T16:42:31.088332 - [32m[INFO][0m Using MixedPrecisionOps for text encoder
+2026-08-26T16:42:31.336614 - [32m[INFO][0m CLIP/text encoder model load device: cuda:0, offload device: cpu, current: cpu, dtype: torch.float16
+2026-08-26T16:42:31.459923 - [32m[INFO][0m Requested to load MiniMaxH3VideoVAE
+2026-08-26T16:42:31.530850 - [32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+2026-08-26T16:42:32.369909 - [32m[INFO][0m Requested to load MiniMaxH3TEModel_
+2026-08-26T16:42:32.461685 - [32m[INFO][0m Model MiniMaxH3TEModel_ prepared for dynamic VRAM loading. 25882MB Staged. 0 patches attached. Force pre-loaded 310 weights: 1272 KB.
+2026-08-26T16:43:09.551459 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T16:43:09.552463 - [32m[INFO][0m Detected mixed precision quantization
+2026-08-26T16:43:09.552463 - [32m[INFO][0m Using mixed precision operations
+2026-08-26T16:43:09.552463 - [32m[INFO][0m Native ops: float8_e5m2, mxfp8, nvfp4, convrot_w4a4, float8_e4m3fn, int8_tensorwise, asym_w4a8_int8 
+2026-08-26T16:43:10.193129 - [32m[INFO][0m model weight dtype torch.bfloat16, manual cast: torch.bfloat16
+2026-08-26T16:43:10.194659 - [32m[INFO][0m model_type FLOW_AV
+2026-08-26T16:43:10.434109 - [32m[INFO][0m Applying MiniMax H3 Memory Efficient Sage Attention Patch to all transformer blocks
+2026-08-26T16:43:10.723624 - [32m[INFO][0m Requested to load MiniMaxH3
+2026-08-26T16:43:10.724626 - [32m[INFO][0m 0 models unloaded.
+2026-08-26T16:43:10.788413 - [32m[INFO][0m Model MiniMaxH3 prepared for dynamic VRAM loading. 32427MB Staged. 0 patches attached. Force pre-loaded 210 weights: 1142 KB.
+2026-08-26T16:45:46.044764 - [32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+2026-08-26T16:46:17.671652 - [32m[INFO][0m Requested to load MiniMaxH3AudioVAE
+2026-08-26T16:46:17.787585 - [32m[INFO][0m Model MiniMaxH3AudioVAE prepared for dynamic VRAM loading. 576MB Staged. 0 patches attached. Force pre-loaded 401 weights: 539 KB.
+2026-08-26T16:46:20.911059 - [32m[INFO][0m [32mPrompt executed in 230.39 seconds[0m
+2026-08-26T16:47:33.878406 - [32m[INFO][0m Using RAM pressure cache.
+2026-08-26T16:48:02.164588 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe-lightbox.esm.min.js2026-08-26T16:48:02.164588 - 
+2026-08-26T16:48:02.181147 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe.min.css2026-08-26T16:48:02.181147 - 
+2026-08-26T16:48:02.198650 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/pickr.min.js2026-08-26T16:48:02.198650 - 
+2026-08-26T16:48:02.312264 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/classic.min.css2026-08-26T16:48:02.312264 - 
+2026-08-26T16:48:02.314873 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.css2026-08-26T16:48:02.314873 - 
+2026-08-26T16:48:02.321418 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/model-viewer.min.js2026-08-26T16:48:02.321418 - 
+2026-08-26T16:48:02.327668 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.min.js2026-08-26T16:48:02.327668 - 
+2026-08-26T16:48:03.356482 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T16:48:03.356482 - 
+2026-08-26T16:48:03.356482 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T16:48:03.356482 - 
+2026-08-26T17:05:08.897092 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe-lightbox.esm.min.js2026-08-26T17:05:08.902214 - 
+2026-08-26T17:05:08.927270 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/pickr.min.js2026-08-26T17:05:08.927270 - 
+2026-08-26T17:05:08.934079 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe.min.css2026-08-26T17:05:08.934079 - 
+2026-08-26T17:05:08.989813 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/classic.min.css2026-08-26T17:05:08.989813 - 
+2026-08-26T17:05:08.990812 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.css2026-08-26T17:05:08.990812 - 
+2026-08-26T17:05:08.993825 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/model-viewer.min.js2026-08-26T17:05:08.993825 - 
+2026-08-26T17:05:09.000069 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.min.js2026-08-26T17:05:09.000069 - 
+2026-08-26T17:05:09.928594 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:05:09.928594 - 
+2026-08-26T17:05:09.928594 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:05:09.928594 - 
+2026-08-26T17:07:43.478624 - [32m[INFO][0m got prompt
+2026-08-26T17:07:43.562972 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float32
+2026-08-26T17:07:43.773120 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float16
+2026-08-26T17:07:44.092080 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T17:07:44.092080 - [32m[INFO][0m Using MixedPrecisionOps for text encoder
+2026-08-26T17:07:44.346489 - [32m[INFO][0m CLIP/text encoder model load device: cuda:0, offload device: cpu, current: cpu, dtype: torch.float16
+2026-08-26T17:07:44.454855 - [32m[INFO][0m Requested to load MiniMaxH3VideoVAE
+2026-08-26T17:07:44.520059 - [32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+2026-08-26T17:07:44.973178 - [32m[INFO][0m Requested to load MiniMaxH3TEModel_
+2026-08-26T17:07:45.056942 - [32m[INFO][0m Model MiniMaxH3TEModel_ prepared for dynamic VRAM loading. 25882MB Staged. 0 patches attached. Force pre-loaded 310 weights: 1272 KB.
+2026-08-26T17:08:41.411978 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002B8C offset=23021461848 size=2097152
+2026-08-26T17:08:41.411978 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002B8C offset=23050821976 size=2097152
+2026-08-26T17:08:41.411978 - [1m[31m[ERROR][0m aimdo: src/xfer-file.c:118:ERROR:xfer_file_read: worker failed handle=0x2b8c offset=23015170392 size=67108864
+2026-08-26T17:08:41.411978 - [1m[31m[ERROR][0m aimdo: src/hostbuf-file-reader.c:83:ERROR:hostbuf_file_reader_read: file read failed handle=0x2b8c offset=23015170392 size=67108864
+2026-08-26T17:08:42.029581 - [1m[31m[ERROR][0m !!! Exception during processing !!! hostbuf_file_reader_read failed
+2026-08-26T17:08:42.040235 - [1m[31m[ERROR][0m Traceback (most recent call last):
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 545, in execute
+    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 344, in get_output_data
+    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 318, in _async_map_node_over_list
+    await process_inputs(input_dict, i)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 306, in process_inputs
+    result = f(**inputs)
+             ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\internal\__init__.py", line 149, in wrapped_func
+    return method(locked_class, **inputs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\latest\_io.py", line 1990, in EXECUTE_NORMALIZED
+    to_return = cls.execute(*args, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_extras\nodes_minimax_h3.py", line 277, in execute
+    cond = clip.encode_from_tokens_scheduled(tokens)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 336, in encode_from_tokens_scheduled
+    pooled_dict = self.encode_from_tokens(tokens, return_pooled=return_pooled, return_dict=True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 405, in encode_from_tokens
+    o = self.cond_stage_model.encode_token_weights(tokens)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 743, in encode_token_weights
+    out = getattr(self, self.clip).encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 110, in encode_token_weights
+    out = super().encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 45, in encode_token_weights
+    o = self.encode(to_encode)
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 306, in encode
+    return self(tokens)
+           ^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 279, in forward
+    outputs = self.transformer(None, attention_mask_model, embeds=embeds, num_tokens=num_tokens, intermediate_output=intermediate_output, final_layer_norm_intermediate=self.layer_norm_hidden_state, dtype=torch.float32, embeds_info=embeds_info)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 96, in forward
+    return super().forward(input_ids, attention_mask=attention_mask, embeds=embeds,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\qwen3vl.py", line 100, in forward
+    return self.model(
+           ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 782, in forward
+    x, current_kv = layer(
+                    ^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 614, in forward
+    x = self.mlp(x)
+        ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 581, in forward
+    return self.down_proj(self.activation(self.gate_proj(x)) * self.up_proj(x))
+                                                               ^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1430, in forward
+    output = self.forward_comfy_cast_weights(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1360, in forward_comfy_cast_weights
+    weight, bias, offload_stream = cast_bias_weight(
+                                   ^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 371, in cast_bias_weight
+    offload_stream = cast_modules_with_vbar([s], dtype, device, bias_dtype, non_blocking)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 230, in cast_modules_with_vbar
+    handle_pin(s, pin, xfer_source, xfer_dest, subset=subset, size=dest_size)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 228, in handle_pin
+    cast_maybe_lowvram_patch(source, pin, offload_stream, xfer_dest2=dest)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 219, in cast_maybe_lowvram_patch
+    comfy.model_management.cast_to_gathered(xfer_source, xfer_dest, non_blocking=non_blocking, stream=stream, r2=xfer_dest2)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\model_management.py", line 1500, in cast_to_gathered
+    if comfy.memory_management.read_tensor_file_slice_into(tensor, dest_view, stream=stream, destination2=dest2_view):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 21, in read_tensor_file_slice_into
+    if not read_tensor_file_slice_into(tensor._qdata,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 59, in read_tensor_file_slice_into
+    comfy_aimdo.host_buffer.read_file_to_device(file_obj, info.offset, info.size,
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\comfy_aimdo\host_buffer.py", line 71, in read_file_to_device
+    raise RuntimeError("hostbuf_file_reader_read failed")
+RuntimeError: hostbuf_file_reader_read failed
+
+2026-08-26T17:08:42.047290 - [32m[INFO][0m [32mPrompt executed in 58.56 seconds[0m
+2026-08-26T17:10:19.032025 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe-lightbox.esm.min.js2026-08-26T17:10:19.032025 - 
+2026-08-26T17:10:19.072327 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe.min.css2026-08-26T17:10:19.072327 - 
+2026-08-26T17:10:19.073860 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/pickr.min.js2026-08-26T17:10:19.073860 - 
+2026-08-26T17:10:19.189569 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/model-viewer.min.js2026-08-26T17:10:19.189569 - 
+2026-08-26T17:10:19.198157 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.css2026-08-26T17:10:19.198157 - 
+2026-08-26T17:10:19.200235 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/classic.min.css2026-08-26T17:10:19.200235 - 
+2026-08-26T17:10:19.205006 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.min.js2026-08-26T17:10:19.205006 - 
+2026-08-26T17:10:20.271110 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:10:20.271110 - 
+2026-08-26T17:10:20.271110 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:10:20.271110 - 
+2026-08-26T17:10:56.227544 - [32m[INFO][0m Using RAM pressure cache.
+2026-08-26T17:11:51.530554 - [32m[INFO][0m got prompt
+2026-08-26T17:11:51.603791 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float32
+2026-08-26T17:11:51.800677 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float16
+2026-08-26T17:11:52.064768 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T17:11:52.064768 - [32m[INFO][0m Using MixedPrecisionOps for text encoder
+2026-08-26T17:11:52.260958 - [32m[INFO][0m CLIP/text encoder model load device: cuda:0, offload device: cpu, current: cpu, dtype: torch.float16
+2026-08-26T17:11:52.369549 - [32m[INFO][0m Requested to load MiniMaxH3VideoVAE
+2026-08-26T17:11:52.419471 - [32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+2026-08-26T17:11:52.850858 - [32m[INFO][0m Requested to load MiniMaxH3TEModel_
+2026-08-26T17:11:52.933748 - [32m[INFO][0m Model MiniMaxH3TEModel_ prepared for dynamic VRAM loading. 25882MB Staged. 0 patches attached. Force pre-loaded 310 weights: 1272 KB.
+2026-08-26T17:12:12.866167 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=000000000000293C offset=21807210840 size=2097152
+2026-08-26T17:12:12.866167 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=000000000000293C offset=21805113688 size=2097152
+2026-08-26T17:12:12.870716 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=000000000000293C offset=21819793752 size=2097152
+2026-08-26T17:12:12.879882 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=000000000000293C offset=21834473816 size=2097152
+2026-08-26T17:12:12.879882 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=000000000000293C offset=21836570968 size=2097152
+2026-08-26T17:12:12.890812 - [1m[31m[ERROR][0m aimdo: src/xfer-file.c:118:ERROR:xfer_file_read: worker failed handle=0x293c offset=21777850712 size=67108864
+2026-08-26T17:12:12.891811 - [1m[31m[ERROR][0m aimdo: src/hostbuf.c:275:ERROR:hostbuf_read_file_slice: file read failed handle=0x293c file_offset=21777850712 size=67108864 host_offset=10285147136
+2026-08-26T17:12:13.150220 - [1m[31m[ERROR][0m !!! Exception during processing !!! HostBuffer.read_file_slice failed
+2026-08-26T17:12:13.152256 - [1m[31m[ERROR][0m Traceback (most recent call last):
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 545, in execute
+    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 344, in get_output_data
+    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 318, in _async_map_node_over_list
+    await process_inputs(input_dict, i)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 306, in process_inputs
+    result = f(**inputs)
+             ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\internal\__init__.py", line 149, in wrapped_func
+    return method(locked_class, **inputs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\latest\_io.py", line 1990, in EXECUTE_NORMALIZED
+    to_return = cls.execute(*args, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_extras\nodes_minimax_h3.py", line 277, in execute
+    cond = clip.encode_from_tokens_scheduled(tokens)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 336, in encode_from_tokens_scheduled
+    pooled_dict = self.encode_from_tokens(tokens, return_pooled=return_pooled, return_dict=True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 405, in encode_from_tokens
+    o = self.cond_stage_model.encode_token_weights(tokens)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 743, in encode_token_weights
+    out = getattr(self, self.clip).encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 110, in encode_token_weights
+    out = super().encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 45, in encode_token_weights
+    o = self.encode(to_encode)
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 306, in encode
+    return self(tokens)
+           ^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 279, in forward
+    outputs = self.transformer(None, attention_mask_model, embeds=embeds, num_tokens=num_tokens, intermediate_output=intermediate_output, final_layer_norm_intermediate=self.layer_norm_hidden_state, dtype=torch.float32, embeds_info=embeds_info)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 96, in forward
+    return super().forward(input_ids, attention_mask=attention_mask, embeds=embeds,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\qwen3vl.py", line 100, in forward
+    return self.model(
+           ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 782, in forward
+    x, current_kv = layer(
+                    ^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 614, in forward
+    x = self.mlp(x)
+        ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 581, in forward
+    return self.down_proj(self.activation(self.gate_proj(x)) * self.up_proj(x))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1430, in forward
+    output = self.forward_comfy_cast_weights(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1360, in forward_comfy_cast_weights
+    weight, bias, offload_stream = cast_bias_weight(
+                                   ^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 371, in cast_bias_weight
+    offload_stream = cast_modules_with_vbar([s], dtype, device, bias_dtype, non_blocking)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 230, in cast_modules_with_vbar
+    handle_pin(s, pin, xfer_source, xfer_dest, subset=subset, size=dest_size)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 228, in handle_pin
+    cast_maybe_lowvram_patch(source, pin, offload_stream, xfer_dest2=dest)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 219, in cast_maybe_lowvram_patch
+    comfy.model_management.cast_to_gathered(xfer_source, xfer_dest, non_blocking=non_blocking, stream=stream, r2=xfer_dest2)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\model_management.py", line 1500, in cast_to_gathered
+    if comfy.memory_management.read_tensor_file_slice_into(tensor, dest_view, stream=stream, destination2=dest2_view):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 21, in read_tensor_file_slice_into
+    if not read_tensor_file_slice_into(tensor._qdata,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 70, in read_tensor_file_slice_into
+    hostbuf.read_file_slice(file_obj, info.offset, info.size,
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\comfy_aimdo\host_buffer.py", line 109, in read_file_slice
+    raise RuntimeError("HostBuffer.read_file_slice failed")
+RuntimeError: HostBuffer.read_file_slice failed
+
+2026-08-26T17:12:13.156281 - [32m[INFO][0m [32mPrompt executed in 21.62 seconds[0m
+2026-08-26T17:14:09.305004 - [32m[INFO][0m got prompt
+2026-08-26T17:14:09.359317 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T17:14:09.360604 - [32m[INFO][0m Using MixedPrecisionOps for text encoder
+2026-08-26T17:14:09.587890 - [1m[31m[ERROR][0m !!! Exception during processing !!! 
+2026-08-26T17:14:09.591508 - [1m[31m[ERROR][0m Traceback (most recent call last):
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 545, in execute
+    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 344, in get_output_data
+    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 318, in _async_map_node_over_list
+    await process_inputs(input_dict, i)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 306, in process_inputs
+    result = f(**inputs)
+             ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\nodes.py", line 1024, in load_clip
+    clip = comfy.sd.load_clip(ckpt_paths=[clip_path], embedding_directory=folder_paths.get_folder_paths("embeddings"), clip_type=clip_type, model_options=model_options)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 1462, in load_clip
+    clip = load_text_encoder_state_dicts(clip_data, embedding_directory=embedding_directory, clip_type=clip_type, model_options=model_options, disable_dynamic=disable_dynamic)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 1906, in load_text_encoder_state_dicts
+    clip = CLIP(clip_target, embedding_directory=embedding_directory, parameters=parameters, tokenizer_data=tokenizer_data, state_dict=clip_data, model_options=model_options, disable_dynamic=disable_dynamic)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 260, in __init__
+    self.tokenizer = tokenizer(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 128, in __init__
+    super().__init__(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data, name="qwen3vl_32b", tokenizer=tokenizer)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 696, in __init__
+    setattr(self, self.clip, tokenizer(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data))
+                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 127, in <lambda>
+    tokenizer = lambda *a, **kw: Qwen3VLSDTokenizer(*a, **kw, embedding_size=5120, embedding_key="qwen3vl_32b")
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\qwen3vl.py", line 150, in __init__
+    super().__init__(tokenizer_path, pad_with_end=False, embedding_directory=embedding_directory, embedding_size=embedding_size, embedding_key=embedding_key, tokenizer_class=Qwen2Tokenizer,
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 490, in __init__
+    self.tokenizer = tokenizer_class.from_pretrained(tokenizer_path, **tokenizer_args)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\transformers\tokenization_utils_base.py", line 2097, in from_pretrained
+    return cls._from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\transformers\tokenization_utils_base.py", line 2343, in _from_pretrained
+    tokenizer = cls(*init_inputs, **init_kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\transformers\models\qwen2\tokenization_qwen2.py", line 185, in __init__
+    self.bpe_ranks = dict(zip(bpe_merges, range(len(bpe_merges))))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+MemoryError
+
+2026-08-26T17:14:09.596277 - [32m[INFO][0m [32mPrompt executed in 0.28 seconds[0m
+2026-08-26T17:14:46.177225 - [32m[INFO][0m Using RAM pressure cache.
+2026-08-26T17:14:59.518490 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe-lightbox.esm.min.js2026-08-26T17:14:59.518490 - 
+2026-08-26T17:14:59.545411 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/photoswipe.min.css2026-08-26T17:14:59.545923 - 
+2026-08-26T17:14:59.550093 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/pickr.min.js2026-08-26T17:14:59.550093 - 
+2026-08-26T17:14:59.651089 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.min.js2026-08-26T17:14:59.651089 - 
+2026-08-26T17:14:59.652395 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/juxtapose.css2026-08-26T17:14:59.652395 - 
+2026-08-26T17:14:59.653915 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/classic.min.css2026-08-26T17:14:59.653915 - 
+2026-08-26T17:14:59.657952 - E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-mixlab-nodes\webApp\lib/model-viewer.min.js2026-08-26T17:14:59.657952 - 
+2026-08-26T17:15:00.610440 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:15:00.610440 - 
+2026-08-26T17:15:00.610440 - [LLM_Prompt_Formatter]: 读取API失败，请检查配置文件。你可以在节点输入相关信息。请注意，你的API会在原图中保存，分享原图可能会导致API泄露。强烈建议使用配置文件，完成配置后按F5刷新页面并重新创建此节点。2026-08-26T17:15:00.610440 - 
+2026-08-26T17:15:16.800229 - [32m[INFO][0m got prompt
+2026-08-26T17:15:16.879404 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float32
+2026-08-26T17:15:17.078907 - [32m[INFO][0m VAE load device: cuda:0, offload device: cpu, dtype: torch.float16
+2026-08-26T17:15:17.344478 - [32m[INFO][0m Found quantization metadata version 1
+2026-08-26T17:15:17.345486 - [32m[INFO][0m Using MixedPrecisionOps for text encoder
+2026-08-26T17:15:17.572031 - [32m[INFO][0m CLIP/text encoder model load device: cuda:0, offload device: cpu, current: cpu, dtype: torch.float16
+2026-08-26T17:15:17.694408 - [32m[INFO][0m Requested to load MiniMaxH3VideoVAE
+2026-08-26T17:15:17.738954 - [32m[INFO][0m Model MiniMaxH3VideoVAE prepared for dynamic VRAM loading. 4965MB Staged. 0 patches attached. Force pre-loaded 128 weights: 348 KB.
+2026-08-26T17:15:18.254534 - [32m[INFO][0m Requested to load MiniMaxH3TEModel_
+2026-08-26T17:15:18.342722 - [32m[INFO][0m Model MiniMaxH3TEModel_ prepared for dynamic VRAM loading. 25882MB Staged. 0 patches attached. Force pre-loaded 310 weights: 1272 KB.
+2026-08-26T17:15:51.914416 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002A84 offset=20327670104 size=2097152
+2026-08-26T17:15:51.914416 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002A84 offset=20344447320 size=2097152
+2026-08-26T17:15:51.914416 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002A84 offset=20373807448 size=2097152
+2026-08-26T17:15:51.916926 - [1m[31m[ERROR][0m aimdo: src-win/xfer-file-plat.c:43:ERROR:xfer_file_read_at: GetOverlappedResult failed error=1450 handle=0000000000002A84 offset=20348641624 size=2097152
+2026-08-26T17:15:51.923652 - [1m[31m[ERROR][0m aimdo: src/xfer-file.c:118:ERROR:xfer_file_read: worker failed handle=0x2a84 offset=20315087192 size=67108864
+2026-08-26T17:15:51.923652 - [1m[31m[ERROR][0m aimdo: src/hostbuf.c:275:ERROR:hostbuf_read_file_slice: file read failed handle=0x2a84 file_offset=20315087192 size=67108864 host_offset=2144859136
+2026-08-26T17:15:52.490228 - [1m[31m[ERROR][0m !!! Exception during processing !!! HostBuffer.read_file_slice failed
+2026-08-26T17:15:52.493843 - [1m[31m[ERROR][0m Traceback (most recent call last):
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 545, in execute
+    output_data, output_ui, has_subgraph, has_pending_tasks = await get_output_data(prompt_id, unique_id, obj, input_data_all, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                                                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 344, in get_output_data
+    return_values = await _async_map_node_over_list(prompt_id, unique_id, obj, input_data_all, obj.FUNCTION, allow_interrupt=True, execution_block_cb=execution_block_cb, pre_execute_cb=pre_execute_cb, v3_data=v3_data)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 318, in _async_map_node_over_list
+    await process_inputs(input_dict, i)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\execution.py", line 306, in process_inputs
+    result = f(**inputs)
+             ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\internal\__init__.py", line 149, in wrapped_func
+    return method(locked_class, **inputs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy_api\latest\_io.py", line 1990, in EXECUTE_NORMALIZED
+    to_return = cls.execute(*args, **kwargs)
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\nodes.py", line 78, in execute
+    return io.NodeOutput(*build_conditioning(
+                          ^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\custom_nodes\comfyui-minimax-h3-audio-T8\conditioning.py", line 315, in build_conditioning
+    conditioning = clip.encode_from_tokens_scheduled(tokens)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 336, in encode_from_tokens_scheduled
+    pooled_dict = self.encode_from_tokens(tokens, return_pooled=return_pooled, return_dict=True)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd.py", line 405, in encode_from_tokens
+    o = self.cond_stage_model.encode_token_weights(tokens)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 743, in encode_token_weights
+    out = getattr(self, self.clip).encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 110, in encode_token_weights
+    out = super().encode_token_weights(token_weight_pairs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 45, in encode_token_weights
+    o = self.encode(to_encode)
+        ^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 306, in encode
+    return self(tokens)
+           ^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\sd1_clip.py", line 279, in forward
+    outputs = self.transformer(None, attention_mask_model, embeds=embeds, num_tokens=num_tokens, intermediate_output=intermediate_output, final_layer_norm_intermediate=self.layer_norm_hidden_state, dtype=torch.float32, embeds_info=embeds_info)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\minimax.py", line 96, in forward
+    return super().forward(input_ids, attention_mask=attention_mask, embeds=embeds,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\qwen3vl.py", line 100, in forward
+    return self.model(
+           ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 782, in forward
+    x, current_kv = layer(
+                    ^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 614, in forward
+    x = self.mlp(x)
+        ^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\text_encoders\llama.py", line 581, in forward
+    return self.down_proj(self.activation(self.gate_proj(x)) * self.up_proj(x))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1430, in forward
+    output = self.forward_comfy_cast_weights(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 1360, in forward_comfy_cast_weights
+    weight, bias, offload_stream = cast_bias_weight(
+                                   ^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 371, in cast_bias_weight
+    offload_stream = cast_modules_with_vbar([s], dtype, device, bias_dtype, non_blocking)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 230, in cast_modules_with_vbar
+    handle_pin(s, pin, xfer_source, xfer_dest, subset=subset, size=dest_size)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 228, in handle_pin
+    cast_maybe_lowvram_patch(source, pin, offload_stream, xfer_dest2=dest)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\ops.py", line 219, in cast_maybe_lowvram_patch
+    comfy.model_management.cast_to_gathered(xfer_source, xfer_dest, non_blocking=non_blocking, stream=stream, r2=xfer_dest2)
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\model_management.py", line 1500, in cast_to_gathered
+    if comfy.memory_management.read_tensor_file_slice_into(tensor, dest_view, stream=stream, destination2=dest2_view):
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 21, in read_tensor_file_slice_into
+    if not read_tensor_file_slice_into(tensor._qdata,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "E:\comfyui\Comfyui-WF-2026.8.8\ComfyUI\comfy\memory_management.py", line 70, in read_tensor_file_slice_into
+    hostbuf.read_file_slice(file_obj, info.offset, info.size,
+  File "E:\comfyui\Comfyui-WF-2026.8.8\python\Lib\site-packages\comfy_aimdo\host_buffer.py", line 109, in read_file_slice
+    raise RuntimeError("HostBuffer.read_file_slice failed")
+RuntimeError: HostBuffer.read_file_slice failed
+
+2026-08-26T17:15:52.497465 - [32m[INFO][0m [32mPrompt executed in 35.69 seconds[0m
+
+```
+## Attached Workflow
+Please make sure that workflow does not contain any sensitive information such as API keys or passwords.
+```
+Workflow too large. Please manually upload the workflow from local file system.
+```
+
+## Additional Context
+(Please add any additional context or steps to reproduce the error here)

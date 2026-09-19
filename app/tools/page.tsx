@@ -7,7 +7,9 @@ import {
   TOOL_REGISTRY,
   getEnabledTools,
   CATEGORY_LABELS,
+  SOURCE_LABELS,
   type ToolCategory,
+  type ToolSource,
 } from "@/lib/tools/registry";
 
 function BackArrow() {
@@ -19,6 +21,20 @@ function BackArrow() {
         strokeWidth="1.8"
         strokeLinecap="round"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TaskIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+      <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M8 10h8M8 14h5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
       />
     </svg>
   );
@@ -50,9 +66,15 @@ function FilterPill({
 
 export default function ToolsHubPage() {
   const router = useRouter();
+  const [source, setSource] = useState<ToolSource>("runninghub");
   const [filter, setFilter] = useState<ToolCategory | "all">("all");
-  const tools = getEnabledTools().filter((t) => filter === "all" || t.category === filter);
-  const categories = Array.from(new Set(getEnabledTools().map((t) => t.category)));
+  const enabled = getEnabledTools();
+  const tools = enabled.filter(
+    (t) => t.source === source && (filter === "all" || t.category === filter)
+  );
+  const categories = Array.from(
+    new Set(enabled.filter((t) => t.source === source).map((t) => t.category))
+  );
 
   return (
     <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-6">
@@ -65,7 +87,29 @@ export default function ToolsHubPage() {
           <h1 className="font-serif text-xl font-semibold text-slate-800">AI 小工具</h1>
           <span className="text-sm text-slate-400">集合各类 AI 辅助能力</span>
         </div>
+        <Button variant="secondary" size="sm" onClick={() => router.push("/tools/tasks")}>
+          <TaskIcon />
+          任务中心
+        </Button>
       </header>
+
+      {/* 来源页签：RunningHub 云端 / 本地 ComfyUI */}
+      <div className="mb-4 flex gap-1 border-b border-slate-200">
+        {(["runninghub", "local"] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setSource(s)}
+            className={`-mb-px rounded-t-lg border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+              source === s
+                ? "border-brand-600 text-brand-700"
+                : "border-transparent text-slate-500 hover:text-slate-700"
+            }`}
+          >
+            {`${SOURCE_LABELS[s]}（${enabled.filter((t) => t.source === s).length}）`}
+          </button>
+        ))}
+      </div>
 
       {/* 分类筛选 */}
       <div className="mb-5 flex flex-wrap items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
@@ -101,6 +145,13 @@ export default function ToolsHubPage() {
             <p className="mt-1.5 text-sm text-slate-600 line-clamp-2">{t.description}</p>
             <div className="mt-3 flex items-center gap-2 text-xs text-slate-400">
               <span className="rounded bg-slate-100 px-1.5 py-0.5">{CATEGORY_LABELS[t.category]}</span>
+              <span
+                className={`rounded px-1.5 py-0.5 ${
+                  t.source === "local" ? "bg-emerald-50 text-emerald-700" : "bg-sky-50 text-sky-700"
+                }`}
+              >
+                {SOURCE_LABELS[t.source]}
+              </span>
               <span>v{t.version}</span>
             </div>
           </button>

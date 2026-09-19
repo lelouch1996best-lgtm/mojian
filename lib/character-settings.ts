@@ -77,6 +77,8 @@ export function isCharacterProfileValid(c: CharacterProfile | null | undefined):
       c.imageUrl ||
       c.voiceUrl ||
       (c.referenceImages && c.referenceImages.length > 0) ||
+      (c.assetImages && c.assetImages.length > 0) ||
+      (c.assetImageTasks && c.assetImageTasks.length > 0) ||
       c.imageTaskId
   );
 }
