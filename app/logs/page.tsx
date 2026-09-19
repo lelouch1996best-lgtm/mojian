@@ -10,11 +10,22 @@ import type { ApiCallLog } from "@/lib/types";
 
 const PAGE_SIZE = 50;
 
+const PROVIDER_LABELS: Record<string, string> = {
+  ark: "火山方舟",
+  "ark-plan": "火山引擎 Plan",
+  apimart: "APIMart",
+  custom: "自定义",
+  runninghub: "RunningHub",
+  comfyui: "ComfyUI 本地",
+};
+
 const PROVIDER_OPTIONS = [
   { value: "", label: "全部供应商" },
   { value: "ark", label: "火山方舟" },
   { value: "ark-plan", label: "火山引擎 Plan" },
   { value: "apimart", label: "APIMart" },
+  { value: "runninghub", label: "RunningHub" },
+  { value: "comfyui", label: "ComfyUI 本地" },
   { value: "custom", label: "自定义" },
 ];
 
@@ -124,7 +135,7 @@ export default function LogsPage() {
   const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
 
   return (
-    <main className="mx-auto min-h-screen max-w-7xl px-4 py-6">
+    <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-6">
       <header className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="md" onClick={() => router.back()}>
@@ -177,7 +188,7 @@ export default function LogsPage() {
                       {log.type === "image" ? "图片" : "视频"}
                     </span>
                     <span className="shrink-0 text-xs text-slate-400">{formatTime(log.createdAt)}</span>
-                    <span className="truncate text-sm text-slate-600">{log.provider} · {log.model}</span>
+                    <span className="truncate text-sm text-slate-600">{PROVIDER_LABELS[log.provider] ?? log.provider} · {log.model}</span>
                   </div>
                   <div className="flex shrink-0 items-center gap-3">
                     <span className={`rounded-md px-2 py-0.5 text-xs font-medium ${log.status === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>

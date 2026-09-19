@@ -65,7 +65,7 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-4 py-8 sm:px-6">
+    <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-8 sm:px-6">
       <header className="mb-8 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <a
@@ -132,6 +132,14 @@ export default function Home() {
               <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             任务日志
+          </Button>
+          {/* 新增：AI 小工具 —— 插在「任务日志」与「设置」之间 */}
+          <Button variant="ghost" size="md" onClick={() => router.push("/tools")}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">
+              <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5L12 3z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+              <path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9L19 14z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+            AI 小工具
           </Button>
           <Button variant="ghost" size="md" onClick={() => router.push("/settings")}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className="mr-1">

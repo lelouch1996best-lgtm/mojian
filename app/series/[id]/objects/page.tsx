@@ -480,7 +480,7 @@ export default function ObjectSettingsPage() {
   const detailTarget = objects.find((o) => o.id === detailTargetId) ?? null;
 
   return (
-    <main className="mx-auto min-h-screen max-w-6xl px-4 py-8 sm:px-6">
+    <main className="mx-auto min-h-screen max-w-[1400px] px-4 py-8 sm:px-6">
       <header className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <button onClick={handleBack} className="text-slate-400 hover:text-slate-600" title="返回企划">

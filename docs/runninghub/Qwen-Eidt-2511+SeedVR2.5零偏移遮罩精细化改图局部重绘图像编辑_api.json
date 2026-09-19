@@ -1,0 +1,333 @@
+{
+  "107": {
+    "inputs": {
+      "image": "clipspace/774236683e3367754c82f5a0d57fcb66_2be3c9c330db56cb58068651edc8ceb72a5c5d95275f6646d453b7f64e045301.png [input]"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "181": {
+    "inputs": {
+      "conditioning": [
+        "284",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Conditioning Zero Out"
+    }
+  },
+  "223": {
+    "inputs": {
+      "value": "不要胸罩了，直接露出胸部"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text (Multiline)"
+    }
+  },
+  "283": {
+    "inputs": {
+      "to_ref": true,
+      "ref_main_image": true,
+      "ref_longest_edge": 1024,
+      "ref_crop": "pad",
+      "ref_upscale": "lanczos",
+      "to_vl": true,
+      "vl_resize": true,
+      "vl_target_size": 384,
+      "vl_crop": "center",
+      "vl_upscale": "bicubic",
+      "image": [
+        "323",
+        1
+      ],
+      "mask": [
+        "323",
+        2
+      ]
+    },
+    "class_type": "QwenEditConfigPreparer",
+    "_meta": {
+      "title": "Qwen Edit Config Preparer"
+    }
+  },
+  "284": {
+    "inputs": {
+      "prompt": [
+        "223",
+        0
+      ],
+      "return_full_refs_cond": true,
+      "instruction": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.",
+      "clip": [
+        "351",
+        1
+      ],
+      "vae": [
+        "351",
+        2
+      ],
+      "configs": [
+        "283",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImageEditPlusCustom_lrzjason",
+    "_meta": {
+      "title": "TextEncodeQwenImageEditPlusCustom lrzjason"
+    }
+  },
+  "302": {
+    "inputs": {
+      "seed": 817987634210965,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "351",
+        0
+      ],
+      "positive": [
+        "330",
+        0
+      ],
+      "negative": [
+        "331",
+        0
+      ],
+      "latent_image": [
+        "284",
+        1
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "303": {
+    "inputs": {
+      "samples": [
+        "302",
+        0
+      ],
+      "vae": [
+        "351",
+        2
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "304": {
+    "inputs": {
+      "custom_output": [
+        "284",
+        2
+      ]
+    },
+    "class_type": "QwenEditOutputExtractor",
+    "_meta": {
+      "title": "Qwen Edit Output Extractor"
+    }
+  },
+  "305": {
+    "inputs": {
+      "image": [
+        "352",
+        0
+      ],
+      "pad_info": [
+        "304",
+        0
+      ]
+    },
+    "class_type": "CropWithPadInfo",
+    "_meta": {
+      "title": "Crop With Pad Info"
+    }
+  },
+  "323": {
+    "inputs": {
+      "context_expand_pixels": 20,
+      "context_expand_factor": 1,
+      "fill_mask_holes": true,
+      "blur_mask_pixels": 16,
+      "invert_mask": false,
+      "blend_pixels": 16,
+      "rescale_algorithm": "bicubic",
+      "mode": "forced size",
+      "force_width": 1024,
+      "force_height": 1024,
+      "rescale_factor": 1,
+      "min_width": 512,
+      "min_height": 512,
+      "max_width": 768,
+      "max_height": 768,
+      "padding": 32,
+      "image": [
+        "107",
+        0
+      ],
+      "mask": [
+        "107",
+        1
+      ]
+    },
+    "class_type": "InpaintCrop",
+    "_meta": {
+      "title": "(OLD 💀, use the new ✂️ Inpaint Crop node)"
+    }
+  },
+  "324": {
+    "inputs": {
+      "rescale_algorithm": "bislerp",
+      "stitch": [
+        "323",
+        0
+      ],
+      "inpainted_image": [
+        "305",
+        0
+      ]
+    },
+    "class_type": "InpaintStitch",
+    "_meta": {
+      "title": "(OLD 💀, use the new ✂️ Inpaint Stitch node)"
+    }
+  },
+  "327": {
+    "inputs": {
+      "rgthree_comparer": {
+        "images": [
+          {
+            "name": "A",
+            "selected": true,
+            "url": "/view?filename=rgthree.compare._temp_udaxi_00001_sdjrg_1787675270.jpg&type=temp&subfolder=&rand=0.9684664244163262&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3NzQyMzY2ODNlMzM2Nzc1NGM4MmY1YTBkNTdmY2I2NiIsInNpZ25FeHBpcmUiOjE3ODgyODAwMTQzMDgsInRzIjoxNzg3Njc1MjE0MzA4LCJzaWduIjoiODIzZTM5MmEzYTE2ZWNiNjljNmNkNzk3ZWUzOTUxN2EifQ==&Rh-Identify=774236683e3367754c82f5a0d57fcb66"
+          },
+          {
+            "name": "B",
+            "selected": true,
+            "url": "/view?filename=rgthree.compare._temp_udaxi_00002_yqolg_1787675275.jpg&type=temp&subfolder=&rand=0.4444133802428757&Rh-Comfy-Auth=eyJ1c2VySWQiOiI3NzQyMzY2ODNlMzM2Nzc1NGM4MmY1YTBkNTdmY2I2NiIsInNpZ25FeHBpcmUiOjE3ODgyODAwMTQzMDgsInRzIjoxNzg3Njc1MjE0MzA4LCJzaWduIjoiODIzZTM5MmEzYTE2ZWNiNjljNmNkNzk3ZWUzOTUxN2EifQ==&Rh-Identify=774236683e3367754c82f5a0d57fcb66"
+          }
+        ]
+      },
+      "image_a": [
+        "107",
+        0
+      ],
+      "image_b": [
+        "353",
+        0
+      ]
+    },
+    "class_type": "Image Comparer (rgthree)",
+    "_meta": {
+      "title": "Image Comparer (rgthree)"
+    }
+  },
+  "330": {
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "284",
+        0
+      ]
+    },
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "_meta": {
+      "title": "Edit Model Reference Method"
+    }
+  },
+  "331": {
+    "inputs": {
+      "reference_latents_method": "index_timestep_zero",
+      "conditioning": [
+        "181",
+        0
+      ]
+    },
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "_meta": {
+      "title": "Edit Model Reference Method"
+    }
+  },
+  "337": {
+    "inputs": {
+      "mask_opacity": 0.5,
+      "mask_color": "45,255,50",
+      "pass_through": true,
+      "image": [
+        "107",
+        0
+      ],
+      "mask": [
+        "107",
+        1
+      ]
+    },
+    "class_type": "ImageAndMaskPreview",
+    "_meta": {
+      "title": "ImageAndMaskPreview"
+    }
+  },
+  "345": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "353",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  },
+  "351": {
+    "inputs": {
+      "ckpt_name": "WuJi_Qwen2511-AIO-SFW聚合版_2603.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "Load Checkpoint"
+    }
+  },
+  "352": {
+    "inputs": {
+      "清理模式": "极限清理",
+      "任意连接": [
+        "303",
+        0
+      ]
+    },
+    "class_type": "WujiCleaner",
+    "_meta": {
+      "title": "☯️无极清理器"
+    }
+  },
+  "353": {
+    "inputs": {
+      "放大模型": "seedvr2_ema_3b-Q4_K_M.gguf",
+      "最短边尺寸": 1080,
+      "颜色校对": "lab",
+      "预览开关": false,
+      "图像": [
+        "324",
+        0
+      ]
+    },
+    "class_type": "WujiUpscaler",
+    "_meta": {
+      "title": "☯️无极放大器"
+    }
+  }
+}

@@ -936,3 +936,121 @@ export interface PickedPresetItem {
   url?: string;
   content?: string;
 }
+
+// ===================== AI 小工具 / RunningHub =====================
+
+/** RunningHub API 配置（云端 ComfyUI 工作流平台，存 settings key="runninghub"） */
+export interface RunningHubSettings {
+  apiKey: string;
+}
+
+/** RunningHub nodeInfoList 节点项（AI 应用模式） */
+export interface RunningHubNodeInfo {
+  nodeId: string;
+  fieldName: string;
+  fieldValue: string;
+  description: string;
+}
+
+/** 本地 ComfyUI 连接配置（存 settings key="comfyui"，所有本地直连小工具共用） */
+export interface ComfyUiSettings {
+  /** ComfyUI 服务地址，默认 http://127.0.0.1:8188 */
+  baseUrl: string;
+}
+
+/** /api/comfyui/status 响应 */
+export interface ComfyUiStatusResponse {
+  online: boolean;
+  /** ComfyUI 版本号（在线时） */
+  version?: string;
+}
+
+/** /api/comfyui/upload 响应（ComfyUI /upload/image 原样返回） */
+export interface ComfyUiUploadResponse {
+  name: string;
+  subfolder: string;
+  type: string;
+}
+
+/** /api/comfyui/models 响应（来自 /object_info 的已安装模型名列表） */
+export interface ComfyUiModelsResponse {
+  /** UNETLoader.unet_name 可选值 */
+  unet: string[];
+  /** CLIPLoader.clip_name 可选值 */
+  clip: string[];
+  /** VAELoader.vae_name 可选值 */
+  vae: string[];
+}
+
+/** /api/comfyui/prompt 响应 */
+export interface ComfyUiSubmitResponse {
+  promptId: string;
+}
+
+/** ComfyUI 输出文件（/view 可访问） */
+export interface ComfyUiOutputFile {
+  url: string;
+  filename: string;
+  subfolder: string;
+  type: string;
+}
+
+/** /api/comfyui/history 响应（已归一化） */
+export interface ComfyUiHistoryResponse {
+  status: "running" | "success" | "error" | "cancelled";
+  files: ComfyUiOutputFile[];
+  errorMessage?: string;
+}
+
+/** 超分倍率 */
+export type SuperResolutionScale = "2" | "3" | "4";
+
+/** 前端 → /api/runninghub/run 请求体（前端构造完整上游 payload，后端透传加 Bearer 头） */
+export interface RunningHubRunProxyRequest {
+  apiKey: string;
+  /** RunningHub AI 应用 ID，超分工作流固定 2034560632665677825 */
+  appId: string;
+  /** 日志归类（图片/视频小工具），代理路由据此写 api_call_logs.type */
+  logType?: "image" | "video";
+  /** 日志显示名（工具名），缺省记 appId */
+  logModel?: string;
+  payload: {
+    nodeInfoList: RunningHubNodeInfo[];
+    instanceType?: string; // default | plus
+    usePersonalQueue?: string; // "true" | "false"
+  };
+}
+
+/** /api/runninghub/run 响应 */
+export interface RunningHubRunProxyResponse {
+  taskId: string;
+  status: string; // QUEUED | RUNNING | SUCCESS | FAILED
+}
+
+/** 前端 → /api/runninghub/query 请求体 */
+export interface RunningHubQueryProxyRequest {
+  apiKey: string;
+  taskId: string;
+}
+
+/** /api/runninghub/query 响应（已归一化） */
+export interface RunningHubQueryProxyResponse {
+  status: "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED";
+  /** 成功时的结果列表 */
+  results?: Array<{
+    url: string;
+    nodeId: string;
+    outputType: string; // mp4 / png / txt
+    text?: string | null;
+  }>;
+  errorMessage?: string;
+}
+
+/** /api/runninghub/upload 响应（multipart，请求不用 JSON 类型） */
+export interface RunningHubUploadProxyResponse {
+  /** 上传后可直接访问的下载地址（24h 有效）。作为 nodeId=6 file 节点的 fieldValue 候选值。 */
+  downloadUrl: string;
+  /** 上传返回的逻辑路径（形如 openapi/xxxx.mp4），备选 fieldValue。 */
+  fileName: string;
+  size: string;
+}
